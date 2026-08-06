@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   definePluginApp,
   useBbNavigate,
@@ -8,6 +8,10 @@ import { toast } from "sonner";
 import type { ReviewTarget, rpcContract } from "./server";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import {
+  SearchablePicker,
+  type SearchableOption,
+} from "@/components/searchable-picker";
 
 type Review = {
   status: "starting" | "running" | "exited" | "disconnected";
@@ -51,6 +55,9 @@ function ReviewPanel({ threadId }: { threadId: string }) {
   const rpc = useRpc<typeof rpcContract>();
   const [targetKind, setTargetKind] = useState<ReviewTarget["kind"]>("uncommitted");
   const [targetValue, setTargetValue] = useState("");
+  const [selectedOption, setSelectedOption] = useState<SearchableOption | null>(null);
+  const [instructions, setInstructions] = useState("");
+  const commitCache = useRef<SearchableOption[] | null>(null);
   const [restoring, setRestoring] = useState(true);
   const [starting, setStarting] = useState(false);
   const [terminalId, setTerminalId] = useState<string | null>(null);
@@ -63,7 +70,9 @@ function ReviewPanel({ threadId }: { threadId: string }) {
       ? { kind: "uncommitted" }
       : targetKind === "base"
         ? { kind: "base", branch: value }
-        : { kind: "commit", sha: value };
+        : targetKind === "commit"
+          ? { kind: "commit", sha: value }
+          : { kind: "custom", instructions: instructions.trim() };
 
     setStarting(true);
     setTerminalId(null);
@@ -82,6 +91,46 @@ function ReviewPanel({ threadId }: { threadId: string }) {
       setStarting(false);
     }
   }
+
+  useEffect(() => {
+    commitCache.current = null;
+  }, [threadId]);
+
+  const loadBranches = useCallback(async (query: string) => {
+    const { branches } = await rpc.call("searchBranches", { threadId, query });
+    return branches.map(({ name, kind }) => ({
+      value: name,
+      label: name,
+      badge: kind,
+    }));
+  }, [rpc, threadId]);
+
+  const loadCommits = useCallback(async (query: string) => {
+    if (!commitCache.current) {
+      const { commits } = await rpc.call("listRecentCommits", { threadId });
+      commitCache.current = commits.map((commit) => ({
+        value: commit.sha,
+        label: `${commit.shortSha}  ${commit.subject}`,
+        description: new Date(commit.committedAt).toLocaleString(),
+      }));
+    }
+    const lowered = query.trim().toLowerCase();
+    return commitCache.current.filter((option) =>
+      !lowered || option.label.toLowerCase().includes(lowered),
+    );
+  }, [rpc, threadId]);
+
+  const customCommit = useCallback((query: string) => {
+    const sha = query.trim();
+    return /^[0-9a-fA-F]{4,64}$/.test(sha)
+      ? {
+          value: sha,
+          label: sha,
+          description: "Use this commit SHA",
+          badge: "SHA",
+        }
+      : null;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -142,6 +191,9 @@ function ReviewPanel({ threadId }: { threadId: string }) {
     !!terminalId &&
     (!review || review.status === "starting" || review.status === "running");
   const busy = restoring || starting || running;
+  const targetReady = targetKind === "uncommitted"
+    || ((targetKind === "base" || targetKind === "commit") && !!targetValue.trim())
+    || (targetKind === "custom" && !!instructions.trim());
   const statusLabel = error
     ? "Review unavailable"
     : restoring
@@ -176,25 +228,68 @@ function ReviewPanel({ threadId }: { threadId: string }) {
             onChange={(event) => {
               setTargetKind(event.target.value as ReviewTarget["kind"]);
               setTargetValue("");
+              setSelectedOption(null);
+              setInstructions("");
             }}
           >
             <option value="uncommitted">Uncommitted changes</option>
             <option value="base">Changes against a base branch</option>
             <option value="commit">One commit</option>
+            <option value="custom">Custom instructions</option>
           </select>
         </label>
 
-        {targetKind !== "uncommitted" && (
-          <label className="block space-y-1 text-sm">
-            <span className="font-medium">
-              {targetKind === "base" ? "Base branch" : "Commit SHA"}
-            </span>
-            <input
-              className="h-9 w-full rounded-md border border-input bg-background px-3 font-mono text-sm text-foreground"
-              value={targetValue}
+        {targetKind === "base" && (
+          <div className="space-y-1 text-sm">
+            <span className="font-medium">Base branch</span>
+            <SearchablePicker
+              title="Choose a base branch"
+              description="Search local and remote branches in this exact worktree."
+              placeholder="Select a branch"
+              searchPlaceholder="Search branches…"
+              emptyLabel="No matching branches."
               disabled={busy}
-              placeholder={targetKind === "base" ? "main" : "abc1234"}
-              onChange={(event) => setTargetValue(event.target.value)}
+              value={selectedOption}
+              loadOptions={loadBranches}
+              onSelect={(option) => {
+                setSelectedOption(option);
+                setTargetValue(option.value);
+              }}
+            />
+          </div>
+        )}
+
+        {targetKind === "commit" && (
+          <div className="space-y-1 text-sm">
+            <span className="font-medium">Commit</span>
+            <SearchablePicker
+              title="Choose a commit"
+              description="Search the 20 most recent commits across local and remote refs, or enter a SHA."
+              placeholder="Select a commit"
+              searchPlaceholder="Search commits or enter a SHA…"
+              emptyLabel="No matching recent commits."
+              disabled={busy}
+              value={selectedOption}
+              loadOptions={loadCommits}
+              customOption={customCommit}
+              onSelect={(option) => {
+                setSelectedOption(option);
+                setTargetValue(option.value);
+              }}
+            />
+          </div>
+        )}
+
+        {targetKind === "custom" && (
+          <label className="block space-y-1 text-sm">
+            <span className="font-medium">Review instructions</span>
+            <textarea
+              className="min-h-28 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              value={instructions}
+              maxLength={20_000}
+              disabled={busy}
+              placeholder="Describe what Codex should review…"
+              onChange={(event) => setInstructions(event.target.value)}
             />
           </label>
         )}
@@ -202,7 +297,7 @@ function ReviewPanel({ threadId }: { threadId: string }) {
         <Button
           type="submit"
           size="sm"
-          disabled={busy || (targetKind !== "uncommitted" && !targetValue.trim())}
+          disabled={busy || !targetReady}
         >
           {busy ? "Reviewing…" : "Run review"}
         </Button>

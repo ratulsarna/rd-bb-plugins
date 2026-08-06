@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Codex Review",
-    "description": "Review a thread's uncommitted changes with Codex.",
+    "description": "Run native Codex reviews from bb threads and agents.",
     "branding": {
       "icon": "FileDiff"
     },
