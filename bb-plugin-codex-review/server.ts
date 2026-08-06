@@ -9,9 +9,11 @@ import { z } from "zod";
 
 const REVIEW_TITLE = "Codex Review";
 const METADATA_TITLE = "Codex Review metadata";
-const RESULT_MAX_BYTES = 200_000;
-const RESULT_STORAGE_MAX_BYTES = 240_000;
+const RESULT_MAX_BYTES = 100_000;
+const RESULT_STORAGE_MAX_BYTES = 120_000;
+const ERROR_TAIL_MAX_BYTES = 8_000;
 const RECENT_COMMIT_LIMIT = 20;
+const CLI_WAIT_MAX_MS = 180_000;
 const runningStatuses = new Set(["starting", "running"]);
 const outputKey = (terminalId: string) => `review-output:${terminalId}`;
 const resultKey = (terminalId: string) => `review-result:${terminalId}`;
@@ -34,6 +36,22 @@ type ReviewState = {
 };
 
 const reviewStatus = z.enum(["starting", "running", "exited", "disconnected"]);
+const reasoningEffortSchema = z.enum([
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "ultracode",
+  "max",
+  "ultra",
+]);
+const reviewExecutionOptionsSchema = z
+  .object({
+    model: z.string().trim().min(1).max(255).optional(),
+    reasoningEffort: reasoningEffortSchema.optional(),
+  })
+  .strict();
 const reviewTargetSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("uncommitted") }).strict(),
   z
@@ -70,8 +88,32 @@ const commitOptionSchema = z
     committedAt: z.string(),
   })
   .strict();
+const reviewModelSchema = z
+  .object({
+    model: z.string(),
+    displayName: z.string(),
+    description: z.string(),
+    supportedReasoningEfforts: z.array(
+      z
+        .object({
+          reasoningEffort: reasoningEffortSchema,
+          description: z.string(),
+        })
+        .strict(),
+    ),
+    defaultReasoningEffort: reasoningEffortSchema,
+  })
+  .strict();
 
 export type ReviewTarget = z.infer<typeof reviewTargetSchema>;
+export type ReviewExecutionOptions = z.infer<typeof reviewExecutionOptionsSchema>;
+export type ReasoningEffort = z.infer<typeof reasoningEffortSchema>;
+export type ReviewModel = z.infer<typeof reviewModelSchema>;
+
+type ReviewRequest = {
+  target: ReviewTarget;
+  options: ReviewExecutionOptions;
+};
 
 export const rpcContract = defineRpcContract({
   searchBranches: {
@@ -84,12 +126,17 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: z.string().min(1) }).strict(),
     output: z.object({ commits: z.array(commitOptionSchema) }).strict(),
   },
+  listReviewModels: {
+    input: z.object({ threadId: z.string().min(1) }).strict(),
+    output: z.object({ models: z.array(reviewModelSchema) }).strict(),
+  },
   startReview: {
     input: z
       .object({
         threadId: z.string().min(1),
         runId: z.string().min(1),
         target: reviewTargetSchema,
+        options: reviewExecutionOptionsSchema.optional(),
       })
       .strict(),
     output: z.object({ terminalId: z.string() }).strict(),
@@ -121,23 +168,25 @@ export const rpcContract = defineRpcContract({
 export default function plugin(bb: BbPluginApi) {
   const starts = new Map<
     string,
-    { target: ReviewTarget; promise: Promise<{ terminalId: string }> }
+    { request: ReviewRequest; promise: Promise<{ terminalId: string }> }
   >();
 
   async function startReview(
     threadId: string,
     target: ReviewTarget,
+    options: ReviewExecutionOptions,
     runId: string,
   ) {
     const previous = await bb.storage.kv.get<ReviewRun>(runKey(threadId, runId));
     if (previous) return previous;
 
+    const request = { target, options };
     let pending = starts.get(threadId);
-    if (pending && !sameTarget(pending.target, target)) {
+    if (pending && !sameRequest(pending.request, request)) {
       throw new Error("A different Codex review is already starting in this thread.");
     }
     if (!pending) {
-      pending = { target, promise: createReview(bb, threadId, target) };
+      pending = { request, promise: createReview(bb, threadId, request) };
       starts.set(threadId, pending);
     }
     try {
@@ -160,22 +209,11 @@ export default function plugin(bb: BbPluginApi) {
       if (!record || record.threadId !== threadId) {
         throw new Error("Review output is unavailable.");
       }
-      try {
-        const result = fitReviewResult(
-          await readTerminalTail(bb, terminalId),
-          threadId,
-        );
-        return {
-          status: terminal.status,
-          exitCode: terminal.exitCode,
-          output: result.output,
-        };
-      } catch (error) {
-        const refreshed = await bb.sdk.terminals.get({ terminalId });
-        assertThreadTerminal(refreshed.threadId, threadId);
-        if (runningStatuses.has(refreshed.status)) throw error;
-        terminal = refreshed;
-      }
+      return {
+        status: terminal.status,
+        exitCode: terminal.exitCode,
+        output: "",
+      };
     }
     const result = record?.threadId === threadId
       ? await persistResultOrFallback(bb, terminalId, record, cached)
@@ -194,11 +232,10 @@ export default function plugin(bb: BbPluginApi) {
     assertThreadTerminal(terminal.threadId, threadId);
     const record = await bb.storage.kv.get<ReviewOutput>(outputKey(terminalId));
     if (runningStatuses.has(terminal.status)) {
-      const result = fitReviewResult(
-        await readTerminalTail(bb, terminalId),
+      await bb.storage.kv.set(resultKey(terminalId), {
+        output: "Codex review stopped.",
         threadId,
-      );
-      await bb.storage.kv.set(resultKey(terminalId), result);
+      });
     } else if (record) {
       await persistResultAndRemoveFile(bb, terminalId, record);
     }
@@ -217,8 +254,12 @@ export default function plugin(bb: BbPluginApi) {
       return { commits: await listRecentCommits(bb, threadId) };
     },
 
-    async startReview({ threadId, runId, target }) {
-      return startReview(threadId, target, runId);
+    async listReviewModels({ threadId }) {
+      return { models: await listReviewModels(bb, threadId) };
+    },
+
+    async startReview({ threadId, runId, target, options }) {
+      return startReview(threadId, target, options ?? {}, runId);
     },
 
     async getReview({ threadId, terminalId }) {
@@ -243,22 +284,27 @@ export default function plugin(bb: BbPluginApi) {
       {
         name: "uncommitted",
         summary: "Review staged, unstaged, and untracked changes",
-        usage: "bb codex-review uncommitted [--thread <threadId>]",
+        usage: "bb codex-review uncommitted [--model <model>] [--effort <effort>] [--thread <threadId>]",
       },
       {
         name: "base",
         summary: "Review changes against a base branch",
-        usage: "bb codex-review base <branch> [--thread <threadId>]",
+        usage: "bb codex-review base <branch> [--model <model>] [--effort <effort>] [--thread <threadId>]",
       },
       {
         name: "commit",
         summary: "Review one commit",
-        usage: "bb codex-review commit <sha> [--thread <threadId>]",
+        usage: "bb codex-review commit <sha> [--model <model>] [--effort <effort>] [--thread <threadId>]",
       },
       {
         name: "custom",
         summary: "Run a review using custom instructions",
-        usage: "bb codex-review custom <instructions...> [--thread <threadId>]",
+        usage: "bb codex-review custom <instructions...> [--model <model>] [--effort <effort>] [--thread <threadId>]",
+      },
+      {
+        name: "result",
+        summary: "Wait for and print the latest review result",
+        usage: "bb codex-review result [--thread <threadId>]",
       },
     ],
     async run(argv, ctx) {
@@ -270,19 +316,35 @@ export default function plugin(bb: BbPluginApi) {
         return { exitCode: 2, stderr: `${parsed.error}\n\n${cliUsage()}\n` };
       }
       try {
+        if (parsed.action === "result") {
+          const terminalId = await findLatestReview(bb, parsed.threadId);
+          if (!terminalId) {
+            return {
+              exitCode: 1,
+              stderr: "No Codex review exists in this thread.\n",
+            };
+          }
+          return cliReviewResult(
+            await waitForReview(
+              () => getReview(parsed.threadId, terminalId),
+              ctx.signal,
+              CLI_WAIT_MAX_MS,
+            ),
+            parsed.threadId,
+          );
+        }
         const { terminalId } = await startReview(
           parsed.threadId,
           parsed.target,
+          parsed.options,
           randomUUID(),
         );
         const review = await waitForReview(
           () => getReview(parsed.threadId, terminalId),
           ctx.signal,
+          CLI_WAIT_MAX_MS,
         );
-        return {
-          exitCode: review.exitCode ?? 1,
-          stdout: review.output,
-        };
+        return cliReviewResult(review, parsed.threadId);
       } catch (error) {
         return {
           exitCode: 1,
@@ -365,6 +427,34 @@ async function listRecentCommits(bb: BbPluginApi, threadId: string) {
   return commits;
 }
 
+async function listReviewModels(bb: BbPluginApi, threadId: string) {
+  const environment = await getReviewEnvironment(bb, threadId);
+  const available = await bb.sdk.providers.models({
+    environmentId: environment.id,
+    providerId: "codex",
+  });
+  const models = Array.from(
+    new Map(
+      [...available.models, ...available.selectedOnlyModels].map((model) => [
+        model.model,
+        {
+          model: model.model,
+          displayName: model.displayName,
+          description: model.description,
+          supportedReasoningEfforts: model.supportedReasoningEfforts,
+          defaultReasoningEffort: model.defaultReasoningEffort,
+        },
+      ]),
+    ).values(),
+  );
+  if (models.length === 0 && available.modelLoadError) {
+    throw new Error(
+      `Could not load Codex models (${available.modelLoadError.code.replaceAll("_", " ")}).`,
+    );
+  }
+  return models;
+}
+
 function dedupeBranches(
   branches: Array<{ name: string; kind: "local" | "remote" }>,
 ) {
@@ -395,7 +485,7 @@ async function getReviewEnvironment(bb: BbPluginApi, threadId: string) {
 async function createReview(
   bb: BbPluginApi,
   threadId: string,
-  target: ReviewTarget,
+  request: ReviewRequest,
 ) {
   const environment = await getReviewEnvironment(bb, threadId);
 
@@ -407,10 +497,10 @@ async function createReview(
       session.title === REVIEW_TITLE && runningStatuses.has(session.status),
   );
   if (existing) {
-    const existingTarget = await bb.storage.kv.get<ReviewTarget>(
+    const existingRequest = await bb.storage.kv.get<ReviewRequest>(
       requestKey(existing.id),
     );
-    if (existingTarget && sameTarget(existingTarget, target)) {
+    if (existingRequest && sameRequest(existingRequest, request)) {
       return { terminalId: existing.id };
     }
     throw new Error("A different Codex review is already running in this thread.");
@@ -425,7 +515,7 @@ async function createReview(
     title: REVIEW_TITLE,
     start: {
       mode: "command",
-      command: reviewCommand(environment.path, outputPath, target),
+      command: reviewCommand(environment.path, outputPath, request),
     },
   });
   await bb.storage.kv.set(outputKey(terminal.id), {
@@ -433,11 +523,11 @@ async function createReview(
     path: outputPath,
     threadId,
   });
-  await bb.storage.kv.set(requestKey(terminal.id), target);
+  await bb.storage.kv.set(requestKey(terminal.id), request);
   return { terminalId: terminal.id };
 }
 
-function sameTarget(left: ReviewTarget, right: ReviewTarget) {
+function sameRequest(left: ReviewRequest, right: ReviewRequest) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
@@ -511,17 +601,8 @@ async function persistResultOrFallback(
   try {
     return await persistResultAndRemoveFile(bb, terminalId, record);
   } catch (error) {
-    let result = cached;
-    if (!result) {
-      try {
-        result = fitReviewResult(
-          await readTerminalTail(bb, terminalId),
-          record.threadId,
-        );
-      } catch {
-        throw error;
-      }
-    }
+    const result = cached;
+    if (!result) throw error;
     await bb.storage.kv.set(resultKey(terminalId), result);
     await removeOutputFile(bb, terminalId, record);
     return result;
@@ -574,20 +655,6 @@ async function removeOutputFile(
   } finally {
     await bb.storage.kv.delete(outputKey(terminalId));
   }
-}
-
-async function readTerminalTail(bb: BbPluginApi, terminalId: string) {
-  const { chunks } = await bb.sdk.terminals.output({
-    terminalId,
-    tailBytes: RESULT_MAX_BYTES,
-  });
-  return normalizeOutput(
-    chunks
-      .map(({ dataBase64 }) =>
-        Buffer.from(dataBase64, "base64").toString("utf8"),
-      )
-      .join(""),
-  );
 }
 
 async function runEnvironmentCommand(
@@ -665,35 +732,87 @@ function parseCliRequest(
   argv: string[],
   ctx: PluginCliContext,
 ):
-  | { ok: true; threadId: string; target: ReviewTarget }
+  | {
+      ok: true;
+      action: "start";
+      threadId: string;
+      target: ReviewTarget;
+      options: ReviewExecutionOptions;
+    }
+  | { ok: true; action: "result"; threadId: string }
   | { ok: false; error: string } {
   const args = [...argv];
-  let threadId = ctx.threadId;
-  if (args[0] === "--thread") {
-    threadId = args[1];
-    args.splice(0, 2);
-  } else if (args.at(-2) === "--thread") {
-    threadId = args.at(-1);
-    args.splice(-2, 2);
+  let optionBoundary = args.indexOf("--");
+  if (optionBoundary === -1) optionBoundary = args.length;
+  const flags = new Map<string, string>();
+  for (let index = 0; index < optionBoundary;) {
+    const flag = args[index];
+    if (flag !== "--thread" && flag !== "--model" && flag !== "--effort") {
+      index += 1;
+      continue;
+    }
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) {
+      return { ok: false, error: `${flag} requires a value.` };
+    }
+    if (flags.has(flag)) {
+      return { ok: false, error: `${flag} may only be provided once.` };
+    }
+    flags.set(flag, value);
+    args.splice(index, 2);
+    optionBoundary -= 2;
   }
+  if (args[optionBoundary] === "--") args.splice(optionBoundary, 1);
+  const threadId = flags.get("--thread") ?? ctx.threadId;
   if (!threadId) {
     return {
       ok: false,
       error: "No bb thread context. Run from a thread or pass --thread <threadId>.",
     };
   }
+  const parsedOptions = reviewExecutionOptionsSchema.safeParse({
+    ...(flags.has("--model") ? { model: flags.get("--model") } : {}),
+    ...(flags.has("--effort")
+      ? { reasoningEffort: flags.get("--effort") }
+      : {}),
+  });
+  if (!parsedOptions.success) {
+    return {
+      ok: false,
+      error: "Enter a valid model and reasoning effort.",
+    };
+  }
+  const options = parsedOptions.data;
 
   const command = args.shift() ?? "uncommitted";
+  if (command === "result" && args.length === 0) {
+    if (Object.keys(options).length > 0) {
+      return { ok: false, error: "result only accepts --thread." };
+    }
+    return { ok: true, action: "result", threadId };
+  }
   if (command === "uncommitted" && args.length === 0) {
-    return { ok: true, threadId, target: { kind: "uncommitted" } };
+    return {
+      ok: true,
+      action: "start",
+      threadId,
+      target: { kind: "uncommitted" },
+      options,
+    };
   }
   if (command === "base" && args.length === 1) {
-    return { ok: true, threadId, target: { kind: "base", branch: args[0]! } };
+    return {
+      ok: true,
+      action: "start",
+      threadId,
+      target: { kind: "base", branch: args[0]! },
+      options,
+    };
   }
   if (command === "commit" && args.length === 1) {
     const parsed = reviewTargetSchema.safeParse({ kind: "commit", sha: args[0] });
     if (!parsed.success) return { ok: false, error: "Enter a valid commit SHA." };
-    return { ok: true, threadId, target: parsed.data };
+    return { ok: true, action: "start", threadId, target: parsed.data, options };
   }
   if (command === "custom" && args.length > 0) {
     const parsed = reviewTargetSchema.safeParse({
@@ -703,7 +822,7 @@ function parseCliRequest(
     if (!parsed.success) {
       return { ok: false, error: "Custom review instructions are required." };
     }
-    return { ok: true, threadId, target: parsed.data };
+    return { ok: true, action: "start", threadId, target: parsed.data, options };
   }
   return { ok: false, error: `Invalid codex-review command: ${command}` };
 }
@@ -711,25 +830,50 @@ function parseCliRequest(
 function cliUsage() {
   return [
     "Usage:",
-    "  bb codex-review uncommitted [--thread <threadId>]",
-    "  bb codex-review base <branch> [--thread <threadId>]",
-    "  bb codex-review commit <sha> [--thread <threadId>]",
-    "  bb codex-review custom <instructions...> [--thread <threadId>]",
+    "  bb codex-review uncommitted [--model <model>] [--effort <effort>] [--thread <threadId>]",
+    "  bb codex-review base <branch> [--model <model>] [--effort <effort>] [--thread <threadId>]",
+    "  bb codex-review commit <sha> [--model <model>] [--effort <effort>] [--thread <threadId>]",
+    "  bb codex-review custom <instructions...> [--model <model>] [--effort <effort>] [--thread <threadId>]",
+    "  bb codex-review result [--thread <threadId>]",
+    "",
+    "Omit --model or --effort to use Codex's configured defaults.",
+    "Use -- before custom instructions that contain option names.",
+    "Long reviews continue in bb; run result again to retrieve their output.",
   ].join("\n");
 }
 
 async function waitForReview(
   load: () => Promise<ReviewState>,
   signal?: AbortSignal,
+  timeoutMs?: number,
 ) {
+  const deadline = timeoutMs ? Date.now() + timeoutMs : null;
   while (true) {
     if (signal?.aborted) {
       throw new Error("CLI disconnected; the review is still running in bb.");
     }
     const review = await load();
     if (!runningStatuses.has(review.status)) return review;
+    if (deadline && Date.now() >= deadline) return null;
     await delay(1_000, signal);
   }
+}
+
+function cliReviewResult(review: ReviewState | null, threadId: string) {
+  if (!review) {
+    return {
+      exitCode: 0,
+      stdout: [
+        "Review is still running in bb.",
+        `Run: bb codex-review result --thread ${threadId}`,
+        "",
+      ].join("\n"),
+    };
+  }
+  return {
+    exitCode: review.exitCode ?? 1,
+    stdout: review.output,
+  };
 }
 
 function delay(durationMs: number, signal?: AbortSignal) {
@@ -754,7 +898,7 @@ function delay(durationMs: number, signal?: AbortSignal) {
 function reviewCommand(
   workspacePath: string,
   outputPath: string,
-  target: ReviewTarget,
+  request: ReviewRequest,
 ) {
   const workspaceBase64 = Buffer.from(workspacePath).toString("base64");
   const argsBase64 = Buffer.from(
@@ -762,13 +906,13 @@ function reviewCommand(
       "exec",
       "--output-last-message",
       outputPath,
-      ...reviewArgs(target),
+      ...reviewArgs(request),
     ]),
   ).toString("base64");
   const collector = [
     'const fs=require("node:fs");',
     'const {spawn}=require("node:child_process");',
-    `const limit=${RESULT_MAX_BYTES};`,
+    `const limit=${ERROR_TAIL_MAX_BYTES};`,
     "let chunks=[],size=0;",
     "let finished=false;",
     'const collect=chunk=>{',
@@ -781,8 +925,13 @@ function reviewCommand(
     'const child=spawn("codex",args,{cwd});',
     'child.stdout.on("data",collect);child.stderr.on("data",collect);',
     'const finish=code=>{if(finished)return;finished=true;',
-    `if(!fs.existsSync("${outputPath}")||fs.statSync("${outputPath}").size===0)`,
-    `fs.writeFileSync("${outputPath}",Buffer.concat(chunks),{mode:0o600});`,
+    `if(!fs.existsSync("${outputPath}")||fs.statSync("${outputPath}").size===0){`,
+    'const detail=Buffer.concat(chunks).toString().trim();',
+    'const summary=detail.split(/\\r?\\n/).filter(Boolean).at(-1)?.slice(-1000);',
+    'const message=code===0?"Codex review completed without a final message.":',
+    '`Codex review failed (exit ${code}).${summary?`\\n\\n${summary}`:""}`+',
+    '"\\n\\nOpen the Codex Review terminal for full logs.";',
+    `fs.writeFileSync("${outputPath}",message,{mode:0o600});}`,
     "process.exitCode=code;};",
     'child.on("error",error=>{collect(Buffer.from(`${error.message}\\n`));finish(1);});',
     'child.on("close",code=>finish(code??1));',
@@ -790,8 +939,16 @@ function reviewCommand(
   return `node -e ${shellQuote(collector)}`;
 }
 
-function reviewArgs(target: ReviewTarget) {
-  const args = ["review"];
+function reviewArgs({ target, options }: ReviewRequest) {
+  const args: string[] = [];
+  if (options.model) args.push("--model", options.model);
+  if (options.reasoningEffort) {
+    args.push(
+      "--config",
+      `model_reasoning_effort=${JSON.stringify(options.reasoningEffort)}`,
+    );
+  }
+  args.push("review");
   if (target.kind === "uncommitted") args.push("--uncommitted");
   if (target.kind === "base") args.push("--base", target.branch);
   if (target.kind === "commit") args.push("--commit", target.sha);

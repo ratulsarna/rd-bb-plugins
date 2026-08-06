@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-codex-review",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "engines": {
     "bb": ">=0.35",

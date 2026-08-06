@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Markdown,
   definePluginApp,
   useBbNavigate,
   useRpc,
 } from "@bb/plugin-sdk/app";
 import { toast } from "sonner";
-import type { ReviewTarget, rpcContract } from "./server";
+import type {
+  ReasoningEffort,
+  ReviewModel,
+  ReviewTarget,
+  rpcContract,
+} from "./server";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import {
@@ -18,6 +24,12 @@ type Review = {
   exitCode: number | null;
   output: string;
 };
+
+function reasoningLabel(effort: ReasoningEffort) {
+  if (effort === "xhigh") return "Extra high";
+  if (effort === "ultracode") return "Ultra code";
+  return `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`;
+}
 
 function ReviewButton({
   isCompactViewport,
@@ -57,6 +69,11 @@ function ReviewPanel({ threadId }: { threadId: string }) {
   const [targetValue, setTargetValue] = useState("");
   const [selectedOption, setSelectedOption] = useState<SearchableOption | null>(null);
   const [instructions, setInstructions] = useState("");
+  const [models, setModels] = useState<ReviewModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [model, setModel] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort | "">("");
   const commitCache = useRef<SearchableOption[] | null>(null);
   const [restoring, setRestoring] = useState(true);
   const [starting, setStarting] = useState(false);
@@ -83,6 +100,10 @@ function ReviewPanel({ threadId }: { threadId: string }) {
         threadId,
         runId: crypto.randomUUID(),
         target,
+        options: {
+          ...(model ? { model } : {}),
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+        },
       });
       setTerminalId(started.terminalId);
     } catch (cause) {
@@ -95,6 +116,33 @@ function ReviewPanel({ threadId }: { threadId: string }) {
   useEffect(() => {
     commitCache.current = null;
   }, [threadId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setModels([]);
+    setModelsLoading(true);
+    setModelsError(null);
+    setModel("");
+    setReasoningEffort("");
+    void rpc
+      .call("listReviewModels", { threadId })
+      .then(({ models: availableModels }) => {
+        if (!cancelled) setModels(availableModels);
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setModelsError(
+            cause instanceof Error ? cause.message : "Could not load Codex models",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc, threadId]);
 
   const loadBranches = useCallback(async (query: string) => {
     const { branches } = await rpc.call("searchBranches", { threadId, query });
@@ -194,6 +242,8 @@ function ReviewPanel({ threadId }: { threadId: string }) {
   const targetReady = targetKind === "uncommitted"
     || ((targetKind === "base" || targetKind === "commit") && !!targetValue.trim())
     || (targetKind === "custom" && !!instructions.trim());
+  const effectiveModel = models.find((candidate) => candidate.model === model)
+    ?? null;
   const statusLabel = error
     ? "Review unavailable"
     : restoring
@@ -294,6 +344,60 @@ function ReviewPanel({ threadId }: { threadId: string }) {
           </label>
         )}
 
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="block space-y-1 text-sm">
+            <span className="font-medium">Model</span>
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+              value={model}
+              disabled={busy || modelsLoading}
+              onChange={(event) => {
+                const nextModel = event.target.value;
+                setModel(nextModel);
+                setReasoningEffort(
+                  models.find((candidate) => candidate.model === nextModel)
+                    ?.defaultReasoningEffort ?? "",
+                );
+              }}
+            >
+              <option value="">
+                {modelsLoading
+                  ? "Loading models…"
+                  : "Codex configured default"}
+              </option>
+              {models.map((candidate) => (
+                <option key={candidate.model} value={candidate.model}>
+                  {candidate.displayName}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block space-y-1 text-sm">
+            <span className="font-medium">Reasoning effort</span>
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+              value={reasoningEffort}
+              disabled={busy || modelsLoading || !effectiveModel}
+              onChange={(event) =>
+                setReasoningEffort(event.target.value as ReasoningEffort | "")
+              }
+            >
+              {!effectiveModel && <option value="">Choose a model first</option>}
+              {effectiveModel?.supportedReasoningEfforts.map(({ reasoningEffort }) => (
+                <option key={reasoningEffort} value={reasoningEffort}>
+                  {reasoningLabel(reasoningEffort)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {modelsError && (
+          <p className="text-xs text-destructive">
+            {modelsError} Reviews will use Codex defaults.
+          </p>
+        )}
+
         <Button
           type="submit"
           size="sm"
@@ -329,14 +433,20 @@ function ReviewPanel({ threadId }: { threadId: string }) {
           </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
-          {(!error || terminalId) && (
-            <pre className="min-h-32 whitespace-pre-wrap break-words rounded-md border border-border bg-muted/30 p-3 font-mono text-xs text-foreground">
-              {review?.output || (restoring
-                ? "Loading latest review…"
-                : busy
-                  ? "Codex is starting…"
-                  : "No output received.")}
-            </pre>
+          {busy && (
+            <p className="rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+              Codex is reviewing. Final findings will appear when it finishes.
+            </p>
+          )}
+          {!busy && review?.output && (
+            <div className="rounded-md border border-border bg-muted/30 p-3">
+              <Markdown content={review.output} />
+            </div>
+          )}
+          {!busy && !error && !review?.output && (
+            <p className="rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+              No final review was returned.
+            </p>
           )}
         </div>
       )}
