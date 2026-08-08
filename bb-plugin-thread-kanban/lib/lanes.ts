@@ -340,13 +340,16 @@ export function buildBoard<T extends BoardThread>(
     inbox.push(item);
   }
 
-  // The sort that defines this board: newest thread on top, and nothing moves
-  // it afterwards. Status lives on the card, not in its position.
   const byCreatedDesc = (a: BoardItem<T>, b: BoardItem<T>) =>
     b.thread.createdAt - a.thread.createdAt ||
     a.thread.id.localeCompare(b.thread.id);
+  // Freshest work first, counting descendant activity. (This deliberately
+  // departs from t3code's never-reorder rule — the user chose recency.)
+  const byActivityDesc = (a: BoardItem<T>, b: BoardItem<T>) =>
+    b.latestActivityAt - a.latestActivityAt ||
+    a.thread.id.localeCompare(b.thread.id);
   pinned.sort(byCreatedDesc);
-  inbox.sort(byCreatedDesc);
+  inbox.sort(byActivityDesc);
   // Settled rows are history, so they order by when the work ended.
   settled.sort(
     (a, b) => b.settledAt - a.settledAt || a.thread.id.localeCompare(b.thread.id),

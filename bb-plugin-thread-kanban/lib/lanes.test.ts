@@ -529,7 +529,7 @@ describe("buildBoard pull requests", () => {
 });
 
 describe("buildBoard ordering", () => {
-  it("orders the inbox by creation time, not activity", () => {
+  it("orders the inbox by latest activity, counting descendants", () => {
     const board = buildBoard(
       [
         thread("older-but-loud", {
@@ -540,13 +540,22 @@ describe("buildBoard ordering", () => {
           createdAt: NOW - HOUR,
           latestAttentionAt: NOW - DAY,
         }),
+        thread("quiet-parent-busy-child", {
+          createdAt: NOW - 10 * DAY,
+          latestAttentionAt: NOW - 2 * DAY + HOUR,
+        }),
+        thread("busy-child", {
+          parentThreadId: "quiet-parent-busy-child",
+          latestAttentionAt: NOW - HOUR,
+        }),
       ],
       { now: NOW },
     );
 
     expect(board.inbox.map((item) => item.thread.id)).toEqual([
-      "newer-but-quiet",
       "older-but-loud",
+      "quiet-parent-busy-child",
+      "newer-but-quiet",
     ]);
   });
 
