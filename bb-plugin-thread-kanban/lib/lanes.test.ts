@@ -7,57 +7,8 @@ import {
   statusLabelForItem,
   TWO_DAYS_MS,
   type BoardThread,
-  type PrState,
-  type SettledOverride,
 } from "./lanes";
-
-const NOW = Date.UTC(2026, 7, 8, 12);
-const HOUR = 60 * 60 * 1_000;
-const DAY = 24 * HOUR;
-
-function thread(
-  id: string,
-  overrides: Partial<BoardThread> = {},
-): BoardThread {
-  return {
-    id,
-    projectId: "project-1",
-    title: id,
-    titleFallback: null,
-    parentThreadId: null,
-    providerId: "codex",
-    hasPendingInteraction: false,
-    activity: {
-      workflows: 0,
-      backgroundAgents: 0,
-      backgroundCommands: 0,
-      planMode: 0,
-      goals: 0,
-    },
-    indicator: "none",
-    indicatorLabel: null,
-    isUnread: false,
-    isPinned: false,
-    isArchived: false,
-    environment: null,
-    host: null,
-    createdAt: NOW - DAY,
-    latestAttentionAt: NOW,
-    ...overrides,
-  };
-}
-
-function overrideMap(
-  entries: Array<[string, SettledOverride["override"], number]>,
-): Map<string, SettledOverride> {
-  return new Map(entries.map(([id, override, at]) => [id, { override, at }]));
-}
-
-function prMap(
-  entries: Array<[string, PrState | null]>,
-): Map<string, PrState | null> {
-  return new Map(entries);
-}
+import { DAY, HOUR, NOW, overrideMap, prMap, thread } from "@/test/fixtures";
 
 describe("buildBoard rollups", () => {
   it("rolls a child needing input up to its idle parent", () => {
@@ -621,16 +572,8 @@ describe("buildBoard ordering", () => {
   });
 });
 
-describe("buildBoard filtering and scale", () => {
-  it("filters one project without losing that project's roots", () => {
-    const board = buildBoard(
-      [thread("project-1"), thread("project-2", { projectId: "project-2" })],
-      { now: NOW, projectId: "project-2" },
-    );
-
-    expect(board.inbox.map((item) => item.thread.id)).toEqual(["project-2"]);
-  });
-
+// Project scoping moved to filterBoardForDisplay — see display-filter.test.ts.
+describe("buildBoard scale", () => {
   it("projects thousands of mixed parent and child threads", () => {
     const threads: BoardThread[] = [];
     const rootCount = 1_500;

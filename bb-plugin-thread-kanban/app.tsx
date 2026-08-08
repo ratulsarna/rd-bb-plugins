@@ -5,6 +5,7 @@ import {
   useBbNavigate,
 } from "@bb/plugin-sdk/app";
 import { ThreadBoard } from "@/components/board";
+import { BoardSidebar } from "@/components/sidebar-list";
 
 function BoardPanel(_props: PluginNavPanelProps) {
   return <ThreadBoard />;
@@ -44,6 +45,14 @@ export default definePluginApp((app) => {
     icon: "Rows3",
     path: "board",
     component: BoardPanel,
+  });
+
+  app.slots.experimental_threadList({
+    id: "board",
+    title: "Thread Board",
+    description:
+      "Pinned, Inbox and Settled sections, newest thread first, with subagents nested under their parent.",
+    component: BoardSidebar,
   });
 
   app.slots.experimental_threadHeaderAction({

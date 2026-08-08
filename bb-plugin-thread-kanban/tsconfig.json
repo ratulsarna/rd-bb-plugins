@@ -15,5 +15,5 @@
     "noEmit": true,
     "skipLibCheck": false
   },
-  "include": ["server.ts", "app.tsx", "components", "lib", "types"]
+  "include": ["server.ts", "app.tsx", "components", "lib", "test", "types"]
 }

@@ -74,7 +74,6 @@ export interface BoardProjection<T extends BoardThread = BoardThread> {
 interface BuildBoardOptions {
   now?: number;
   idleCutoffMs?: number;
-  projectId?: string | null;
   /** User overrides from the plugin store. */
   overrides?: ReadonlyMap<string, SettledOverride>;
   /** Missing is unknown; null means the lookup found no pull request. */
@@ -137,6 +136,10 @@ export function laneForThread(thread: BoardThread): Lane {
   return "idle";
 }
 
+export function threadDisplayTitle(thread: BoardThread): string {
+  return thread.title ?? thread.titleFallback ?? "Untitled thread";
+}
+
 export function statusLabelForItem(
   item: Pick<BoardItem, "thread" | "lane">,
 ): string | undefined {
@@ -192,11 +195,9 @@ export function buildBoard<T extends BoardThread>(
   const idleCutoffMs = options.idleCutoffMs ?? TWO_DAYS_MS;
   const overrides = options.overrides ?? new Map<string, SettledOverride>();
   const prStates = options.prStates ?? new Map<string, PrState | null>();
-  const visible = threads.filter(
-    (thread) =>
-      !thread.isArchived &&
-      (!options.projectId || thread.projectId === options.projectId),
-  );
+  // Every non-archived thread, always. Search and project scoping are display
+  // concerns and must never reach classification — see filterBoardForDisplay.
+  const visible = threads.filter((thread) => !thread.isArchived);
   const byId = new Map(visible.map((thread) => [thread.id, thread] as const));
   const childrenByParent = new Map<string, string[]>();
 

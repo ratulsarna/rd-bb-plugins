@@ -1,19 +1,10 @@
 import type { PluginSidebarPullRequest } from "@bb/plugin-sdk/app";
-import { statusLabelForItem, type BoardItem, type PrState } from "@/lib/lanes";
-
-function titleOf(item: BoardItem): string {
-  return item.thread.title ?? item.thread.titleFallback ?? "Untitled thread";
-}
-
-function formatRelative(timestamp: number, now: number): string {
-  const elapsed = Math.max(0, now - timestamp);
-  if (elapsed < 60_000) return "now";
-  const minutes = Math.floor(elapsed / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
+import { PrBadge, StatusSlot } from "@/components/row-parts";
+import {
+  statusLabelForItem,
+  threadDisplayTitle,
+  type BoardItem,
+} from "@/lib/lanes";
 
 function MetadataTag({ label, value }: { label: string; value: string }) {
   return (
@@ -23,43 +14,6 @@ function MetadataTag({ label, value }: { label: string; value: string }) {
     >
       <span className="sr-only">{label}: </span>
       {value}
-    </span>
-  );
-}
-
-const PR_BADGE: Record<PrState, { text: string; label: string }> = {
-  draft: { text: "text-muted-foreground", label: "Draft PR" },
-  open: { text: "text-success", label: "Open PR" },
-  merged: { text: "text-primary", label: "Merged PR" },
-  closed: { text: "text-destructive", label: "Closed PR" },
-};
-
-/** The card's status: position never carries it, this slot does. */
-function StatusSlot({ item, now }: { item: BoardItem; now: number }) {
-  const label = statusLabelForItem(item);
-  if (item.lane === "needs-you") {
-    return (
-      <span
-        className="shrink-0 rounded-full bg-attention/15 px-2 py-0.5 text-[11px] font-medium text-attention"
-        title={label}
-      >
-        Needs you
-      </span>
-    );
-  }
-  if (item.lane === "running") {
-    return (
-      <span
-        className="shrink-0 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success"
-        title={label}
-      >
-        Running
-      </span>
-    );
-  }
-  return (
-    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-      {formatRelative(item.latestActivityAt, now)}
     </span>
   );
 }
@@ -90,7 +44,7 @@ export function ThreadRow({
   pullRequests,
   action,
 }: ThreadRowProps) {
-  const title = titleOf(item);
+  const title = threadDisplayTitle(item.thread);
   const expanded = expandedIds.has(item.thread.id);
   const branch = item.thread.environment?.branchName;
   const machine = item.thread.host?.name ?? "Machine unavailable";
@@ -129,14 +83,7 @@ export function ThreadRow({
             <MetadataTag label="Project" value={projectName} />
             <MetadataTag label="Machine" value={machine} />
             {branch && <span className="max-w-48 truncate">{branch}</span>}
-            {pullRequest && (
-              <span
-                className={`shrink-0 font-medium tabular-nums ${PR_BADGE[pullRequest.state].text}`}
-                title={`${PR_BADGE[pullRequest.state].label}: ${pullRequest.title}`}
-              >
-                #{pullRequest.number}
-              </span>
-            )}
+            <PrBadge pullRequest={pullRequest} />
           </span>
         </button>
         {action && (
