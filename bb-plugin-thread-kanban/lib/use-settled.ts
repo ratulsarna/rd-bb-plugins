@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   useRealtime,
   useRealtimeConnectionState,
@@ -11,6 +12,7 @@ import { shouldRefreshOnReconnect } from "@/lib/reconnect";
 export interface SettledApi {
   /** threadId → override, from the plugin's own store. */
   overrides: ReadonlyMap<string, SettledOverride>;
+  /** Reads only. A failed write toasts instead of blanking the board. */
   status: "loading" | "ready" | "error";
   refresh(): Promise<void>;
   settle(threadId: string): void;
@@ -72,14 +74,19 @@ export function useSettledOverrides(): SettledApi {
       overrides,
       status,
       refresh,
-      // A failed mutation must not die as an unhandled rejection with the
-      // button silently doing nothing — surface the board's error + retry.
+      // A failed write is about one thread, not the board: toast it and
+      // re-read, so the row snaps back to the truth. Flipping `status` here
+      // would replace the whole list with an error screen.
       settle: (threadId) =>
-        void rpc.call("settle", { threadId }).catch(() => setStatus("error")),
+        void rpc.call("settle", { threadId }).catch(() => {
+          toast.error("Could not settle thread");
+          void refresh();
+        }),
       unsettle: (threadId) =>
-        void rpc
-          .call("unsettle", { threadId })
-          .catch(() => setStatus("error")),
+        void rpc.call("unsettle", { threadId }).catch(() => {
+          toast.error("Could not unsettle thread");
+          void refresh();
+        }),
     }),
     [overrides, refresh, rpc, status],
   );

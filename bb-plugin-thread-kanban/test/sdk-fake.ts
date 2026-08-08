@@ -27,6 +27,11 @@ export interface FakeSdkConfig {
   failMovePinned: boolean;
   /** Makes `pinnedOrder` reject, leaving the order unknown. */
   failPinnedOrder: boolean;
+  /**
+   * RPC methods to hold open. Calls land in `pendingRpc` for the test to
+   * settle by hand — the only way to make two responses race on purpose.
+   */
+  deferRpc: string[];
 }
 
 const DEFAULTS: FakeSdkConfig = {
@@ -39,6 +44,7 @@ const DEFAULTS: FakeSdkConfig = {
   pinnedOrder: [],
   failMovePinned: false,
   failPinnedOrder: false,
+  deferRpc: [],
 };
 
 let config: FakeSdkConfig = DEFAULTS;
@@ -52,10 +58,38 @@ export interface SidebarActionCall {
 export const sidebarActionCalls: SidebarActionCall[] = [];
 export const rpcCalls: Array<{ method: string; input: unknown }> = [];
 
+export interface PendingRpc {
+  method: string;
+  input: unknown;
+  resolve(value: unknown): void;
+  reject(error: unknown): void;
+}
+
+/** Held-open calls for methods named in `deferRpc`, oldest first. */
+export const pendingRpc: PendingRpc[] = [];
+
+/**
+ * Settle a held call. `position` picks which one, because racing two
+ * responses is the whole point: "oldest" is the stale request, "newest" the
+ * one the user just triggered.
+ */
+export function resolvePendingRpc(
+  method: string,
+  position: "oldest" | "newest",
+  value: unknown,
+): void {
+  const matches = pendingRpc.filter((call) => call.method === method);
+  const call = position === "oldest" ? matches[0] : matches[matches.length - 1];
+  if (!call) throw new Error(`no pending ${method} call`);
+  pendingRpc.splice(pendingRpc.indexOf(call), 1);
+  call.resolve(value);
+}
+
 export function configureFakeSdk(next: Partial<FakeSdkConfig> = {}): void {
   config = { ...DEFAULTS, ...next };
   sidebarActionCalls.length = 0;
   rpcCalls.length = 0;
+  pendingRpc.length = 0;
 }
 
 /** Change what a later `pinnedOrder` read returns, mid-test. */
@@ -76,27 +110,20 @@ interface ThreadListRegistration {
 }
 
 export const registrations = {
-  navPanels: [] as Array<{ id: string }>,
   threadLists: [] as ThreadListRegistration[],
-  threadHeaderActions: [] as Array<{ id: string }>,
 };
 
 export function definePluginApp(
   setup: (app: {
     slots: {
-      navPanel(registration: { id: string }): void;
       experimental_threadList(registration: ThreadListRegistration): void;
-      experimental_threadHeaderAction(registration: { id: string }): void;
     };
   }) => void,
 ): typeof registrations {
   setup({
     slots: {
-      navPanel: (registration) => registrations.navPanels.push(registration),
       experimental_threadList: (registration) =>
         registrations.threadLists.push(registration),
-      experimental_threadHeaderAction: (registration) =>
-        registrations.threadHeaderActions.push(registration),
     },
   });
   return registrations;
@@ -107,14 +134,12 @@ export function definePluginApp(
 const actions = {
   open: (threadId: string, options?: unknown) =>
     sidebarActionCalls.push({ method: "open", threadId, options }),
-  openNewThread: () => {},
   setPinned: async (threadId: string, pinned: boolean) => {
     sidebarActionCalls.push({ method: "setPinned", threadId, options: pinned });
   },
   setRead: async (threadId: string, read: boolean) => {
     sidebarActionCalls.push({ method: "setRead", threadId, options: read });
   },
-  rename: async () => {},
   archive: (threadId: string) =>
     sidebarActionCalls.push({ method: "archive", threadId }),
   requestDelete: (threadId: string) =>
@@ -125,6 +150,11 @@ const rpc = {
   call: async (method: string, input: unknown) => {
     rpcCalls.push({ method, input });
     if (config.failRpc) throw new Error("rpc failed");
+    if (config.deferRpc.includes(method)) {
+      return new Promise((resolve, reject) => {
+        pendingRpc.push({ method, input, resolve, reject });
+      });
+    }
     if (method === "pinnedOrder") {
       if (config.failPinnedOrder) throw new Error("pinnedOrder failed");
       return { ids: config.pinnedOrder };
@@ -166,4 +196,3 @@ export const useRealtime = () => {};
 
 export const useRealtimeConnectionState = () => "connected" as const;
 
-export const useBbNavigate = () => ({ toPluginPanel: () => {} });

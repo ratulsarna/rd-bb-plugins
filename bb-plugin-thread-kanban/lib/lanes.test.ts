@@ -116,7 +116,6 @@ describe("buildBoard quiet auto-settle", () => {
 
     expect(board.inbox.map((item) => item.thread.id)).toEqual(["recent"]);
     expect(board.settled.map((item) => item.thread.id)).toEqual(["old"]);
-    expect(board.settled[0]?.isAuto).toBe(true);
     expect(board.settled[0]?.settledAt).toBe(NOW - 49 * HOUR);
   });
 
@@ -257,7 +256,6 @@ describe("buildBoard overrides", () => {
     );
 
     expect(board.settled[0]?.thread.id).toBe("done");
-    expect(board.settled[0]?.isAuto).toBe(false);
     expect(board.settled[0]?.settledAt).toBe(markAt);
   });
 
@@ -321,7 +319,6 @@ describe("buildBoard overrides", () => {
     );
 
     expect(board.settled[0]?.thread.id).toBe("revived");
-    expect(board.settled[0]?.isAuto).toBe(true);
     expect(board.settled[0]?.settledAt).toBe(NOW - 10 * DAY);
   });
 
@@ -349,7 +346,6 @@ describe("buildBoard overrides", () => {
     );
 
     expect(board.settled[0]?.thread.id).toBe("kept");
-    expect(board.settled[0]?.isAuto).toBe(true);
     expect(board.settled[0]?.settledAt).toBe(overrideAt);
   });
 });
@@ -401,7 +397,6 @@ describe("buildBoard pull requests", () => {
       "closed",
       "merged",
     ]);
-    expect(board.settled.every((item) => item.isAuto)).toBe(true);
     expect(board.inbox).toHaveLength(0);
   });
 
@@ -783,7 +778,7 @@ describe("selectPrProbeTargets", () => {
     );
 
     expect(
-      [...selectPrProbeTargets(board, new Set(), false)].sort(),
+      [...selectPrProbeTargets(board, new Set())].sort(),
     ).toEqual(
       [
         "idle",
@@ -797,11 +792,7 @@ describe("selectPrProbeTargets", () => {
 
     expect(
       [
-        ...selectPrProbeTargets(
-          board,
-          new Set(["pinned", "running"]),
-          false,
-        ),
+        ...selectPrProbeTargets(board, new Set(["pinned", "running"])),
       ].sort(),
     ).toEqual(
       [

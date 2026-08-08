@@ -28,8 +28,6 @@ export interface BoardState {
   now: number;
   settle(threadId: string): void;
   unsettle(threadId: string): void;
-  /** bb's pinned-root order, in board order. */
-  pinnedIds: readonly string[];
   /** False until the order is known; every move affordance waits on it. */
   pinnedOrderReady: boolean;
   movePinned(
@@ -219,7 +217,6 @@ export function useBoardState(): BoardState {
     now,
     settle: settledApi.settle,
     unsettle: settledApi.unsettle,
-    pinnedIds: pinnedApi.ids,
     pinnedOrderReady: pinnedApi.ready,
     movePinned: pinnedApi.move,
   };

@@ -95,7 +95,9 @@ export default function plugin(bb: BbPluginApi) {
     // Pin order is bb's, not ours: we read its list and write through its
     // reorder call. Nothing about it is stored in this plugin's database.
     async pinnedOrder() {
-      return { ids: pinnedRootIds(await bb.sdk.threads.list()) };
+      return {
+        ids: pinnedRootIds(await bb.sdk.threads.list({ archived: false })),
+      };
     },
     async movePinned({ threadId, previousThreadId, nextThreadId }) {
       // Same derivation as the read. The app itself never trusts the response

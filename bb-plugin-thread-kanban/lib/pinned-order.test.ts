@@ -12,7 +12,15 @@ function entry(
   id: string,
   overrides: Partial<PinnedThreadEntry> = {},
 ): PinnedThreadEntry {
-  return { id, pinnedAt: 100, pinSortKey: null, createdAt: 100, ...overrides };
+  return {
+    id,
+    parentThreadId: null,
+    archivedAt: null,
+    pinnedAt: 100,
+    pinSortKey: null,
+    createdAt: 100,
+    ...overrides,
+  };
 }
 
 const sorted = (entries: PinnedThreadEntry[]) =>
@@ -180,30 +188,46 @@ describe("pinnedMoveActions", () => {
 });
 
 describe("pinnedRootIds", () => {
-  const root = (
-    id: string,
-    overrides: Partial<PinnedThreadEntry & { parentThreadId: string | null }> = {},
-  ) => ({ ...entry(id), parentThreadId: null, ...overrides });
-
   // Both server handlers derive the order this way, including the one reading
   // reorderPinned's response — whose array order bb makes no promise about.
   it("sorts a shuffled list into bb's pinned order", () => {
     expect(
       pinnedRootIds([
-        root("c", { pinSortKey: "u" }),
-        root("a", { pinSortKey: "e" }),
-        root("b", { pinSortKey: "n" }),
+        entry("c", { pinSortKey: "u" }),
+        entry("a", { pinSortKey: "e" }),
+        entry("b", { pinSortKey: "n" }),
       ]),
     ).toEqual(["a", "b", "c"]);
   });
 
-  it("drops unpinned threads and pinned subagents", () => {
+  it("drops unpinned threads and archived pins", () => {
     expect(
       pinnedRootIds([
-        root("pinned", { pinSortKey: "a" }),
-        root("loose", { pinnedAt: null, pinSortKey: "b" }),
-        root("child", { pinSortKey: "c", parentThreadId: "pinned" }),
+        entry("pinned", { pinSortKey: "a" }),
+        entry("loose", { pinnedAt: null, pinSortKey: "b" }),
+        entry("gone", { pinSortKey: "c", archivedAt: 1 }),
       ]),
     ).toEqual(["pinned"]);
+  });
+
+  it("nests a pinned subagent under its pinned parent", () => {
+    expect(
+      pinnedRootIds([
+        entry("parent", { pinSortKey: "a" }),
+        entry("child", { pinSortKey: "b", parentThreadId: "parent" }),
+      ]),
+    ).toEqual(["parent"]);
+  });
+
+  // bb's own rule: root means "no pinned parent", not "no parent". A pinned
+  // subagent whose parent was archived heads its own pinned tree — dropping it
+  // would leave a row that ranks first and refuses to move.
+  it("promotes a pinned subagent whose parent is not itself pinned", () => {
+    expect(
+      pinnedRootIds([
+        entry("orphan", { pinSortKey: "b", parentThreadId: "archived-parent" }),
+        entry("plain", { pinSortKey: "a" }),
+      ]),
+    ).toEqual(["plain", "orphan"]);
   });
 });

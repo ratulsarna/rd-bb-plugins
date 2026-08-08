@@ -90,7 +90,6 @@ describe("filterBoardForDisplay", () => {
     const view = filterBoardForDisplay(board, { query: "kept" });
 
     expect(view.settled.map((item) => item.thread.id)).toEqual(["kept"]);
-    expect(view.settled[0]!.isAuto).toBe(true);
     expect(view.settled[0]!.settledAt).toBe(quietAt);
   });
 

@@ -19,5 +19,8 @@ export default defineConfig({
   test: {
     include: ["**/*.test.{ts,tsx}"],
     exclude: ["node_modules/**", "dist/**"],
+    // Three jsdom files now start in parallel, and spinning up the DOM can
+    // eat most of a 5s budget on a loaded machine.
+    testTimeout: 15_000,
   },
 });

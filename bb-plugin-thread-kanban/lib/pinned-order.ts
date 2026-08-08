@@ -8,6 +8,8 @@
 /** The fields of a bb thread-list entry that decide pin order. */
 export interface PinnedThreadEntry {
   id: string;
+  parentThreadId: string | null;
+  archivedAt: number | null;
   pinnedAt: number | null;
   pinSortKey: string | null;
   createdAt: number;
@@ -40,15 +42,29 @@ export function comparePinnedRoots(
 /**
  * The pinned roots of a bb thread list, in bb's order.
  *
+ * "Root" is bb's definition, not "has no parent": among the active pins, a root
+ * is one whose parent is not itself pinned. A pinned subagent whose parent is
+ * archived heads its own pinned tree, and requiring a null parent would drop it
+ * from the order — leaving a row that ranks first and refuses to move.
+ *
  * Both server handlers derive the order this way, including the one that reads
  * `reorderPinned`'s response: bb's own sidebar merges the sort keys out of that
  * response and re-sorts, so the array order it comes back in is not a promise.
  */
-export function pinnedRootIds<
-  T extends PinnedThreadEntry & { parentThreadId: string | null },
->(threads: readonly T[]): string[] {
-  return threads
-    .filter((thread) => thread.pinnedAt !== null && thread.parentThreadId === null)
+export function pinnedRootIds<T extends PinnedThreadEntry>(
+  threads: readonly T[],
+): string[] {
+  // Active pins only. Archived threads are off the board, and ranking one
+  // would shift every neighbour a move computes.
+  const pins = threads.filter(
+    (thread) => thread.pinnedAt !== null && thread.archivedAt === null,
+  );
+  const pinnedIds = new Set(pins.map((thread) => thread.id));
+  return pins
+    .filter(
+      (thread) =>
+        thread.parentThreadId === null || !pinnedIds.has(thread.parentThreadId),
+    )
     .sort(comparePinnedRoots)
     .map((thread) => thread.id);
 }

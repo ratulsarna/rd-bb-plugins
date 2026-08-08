@@ -235,11 +235,11 @@ export function BoardSidebar({
       (activeThreadId !== null &&
         view.settled.some((item) => treeContains(item, activeThreadId))));
 
-  // Probes read exactly what the rows render from. Selecting off the raw
+  // Probes read the same expanded set the rows do. Selecting off the raw
   // toggle state would leave a revealed row unprobed and badge-less.
   const probeTargetIds = useMemo(
-    () => [...selectPrProbeTargets(state.board, visibleExpandedIds, settledExpanded)],
-    [settledExpanded, state.board, visibleExpandedIds],
+    () => [...selectPrProbeTargets(state.board, visibleExpandedIds)],
+    [state.board, visibleExpandedIds],
   );
 
   if (state.threadStatus === "error" || state.overridesStatus === "error") {

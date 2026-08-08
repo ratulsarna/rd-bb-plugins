@@ -58,8 +58,6 @@ export interface BoardItem<T extends BoardThread = BoardThread> {
 export interface SettledBoardItem<T extends BoardThread = BoardThread>
   extends BoardItem<T> {
   settledAt: number;
-  /** True when the board settled it (quiet or PR done), not the user. */
-  isAuto: boolean;
 }
 
 export interface BoardProjection<T extends BoardThread = BoardThread> {
@@ -318,7 +316,7 @@ export function buildBoard<T extends BoardThread>(
       if (item.hasPinnedThread || item.treePr === "in-flight") {
         inbox.push(item);
       } else {
-        settled.push({ ...item, settledAt: settledMark.at, isAuto: false });
+        settled.push({ ...item, settledAt: settledMark.at });
       }
       continue;
     }
@@ -343,7 +341,6 @@ export function buildBoard<T extends BoardThread>(
           quietSince,
           prResolvedAt.get(item.thread.id) ?? 0,
         ),
-        isAuto: true,
       });
       continue;
     }
@@ -351,7 +348,7 @@ export function buildBoard<T extends BoardThread>(
     // review can take days, and settling would bury the work waiting on it.
     // Unknown PR state and a pinned descendant block auto-settle the same way.
     if (quiet && canSettle(item)) {
-      settled.push({ ...item, settledAt: quietSince, isAuto: true });
+      settled.push({ ...item, settledAt: quietSince });
       continue;
     }
     inbox.push(item);
@@ -391,11 +388,14 @@ export function buildBoard<T extends BoardThread>(
 /**
  * Probe every root. Hidden descendants are skipped only when their tree is
  * pinned or is unsettled and non-idle; expanded rows are always included.
+ *
+ * A settled tree probes all the way down whether or not the shelf is open: its
+ * PR state is what keeps it settled, so letting a collapsed shelf stop probing
+ * would let a reopened PR sit there unnoticed.
  */
 export function selectPrProbeTargets<T extends BoardThread>(
   board: BoardProjection<T>,
   expandedIds: ReadonlySet<string>,
-  showSettled: boolean,
 ): Set<string> {
   const targets = new Set<string>();
 
@@ -424,7 +424,7 @@ export function selectPrProbeTargets<T extends BoardThread>(
       true,
     );
   }
-  for (const root of board.settled) visitTree(root, true, showSettled);
+  for (const root of board.settled) visitTree(root, true, true);
 
   return targets;
 }
