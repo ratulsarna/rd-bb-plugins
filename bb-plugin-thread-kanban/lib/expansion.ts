@@ -3,8 +3,6 @@ import type { BoardItem, BoardProjection, BoardThread } from "@/lib/lanes";
 export interface ExpansionOptions {
   /** Rows the user opened by hand. Never written to. */
   expandedIds: ReadonlySet<string>;
-  /** The route's thread. Its ancestors open so the row it highlights exists. */
-  activeThreadId?: string | null;
   /**
    * Open every row that still has children. Set while a search is running:
    * the filter has already dropped everything that isn't a match or the path
@@ -14,29 +12,53 @@ export interface ExpansionOptions {
 }
 
 /**
+ * The ancestors of one thread, outermost first, or null when the board does
+ * not hold that thread at all — the caller needs to tell "it is a root" apart
+ * from "it has not loaded yet".
+ */
+export function ancestorIdsOf<T extends BoardThread>(
+  board: BoardProjection<T>,
+  threadId: string,
+): string[] | null {
+  const path: string[] = [];
+  let found: string[] | null = null;
+
+  const visit = (item: BoardItem<T>) => {
+    if (found) return;
+    if (item.thread.id === threadId) {
+      found = [...path];
+      return;
+    }
+    path.push(item.thread.id);
+    for (const child of item.children) visit(child);
+    path.pop();
+  };
+
+  for (const root of board.pinned) visit(root);
+  for (const root of board.inbox) visit(root);
+  for (const root of board.settled) visit(root);
+
+  return found;
+}
+
+/**
  * Which rows render expanded, derived per render from the filtered view.
  *
- * A collapsed parent otherwise swallows its children whole: reload onto a
- * subagent thread and the row bb asked us to highlight is not on screen, and
- * a search that only matches a child finds nothing to show. The user's own
- * toggles stay untouched — this only ever adds to them.
+ * Only search reveal is derived. Opening the active thread's ancestors is a
+ * one-off write into the user's own set instead (see the sidebar): deriving it
+ * every render would silently undo a collapse the moment it happened.
  */
 export function effectiveExpandedIds<T extends BoardThread>(
   board: BoardProjection<T>,
   options: ExpansionOptions,
 ): ReadonlySet<string> {
-  const { expandedIds, activeThreadId = null, revealNested = false } = options;
+  const { expandedIds, revealNested = false } = options;
   const revealed = new Set<string>();
-  const path: string[] = [];
+  if (!revealNested) return expandedIds;
 
   const visit = (item: BoardItem<T>) => {
-    if (revealNested && item.children.length > 0) revealed.add(item.thread.id);
-    if (item.thread.id === activeThreadId) {
-      for (const ancestorId of path) revealed.add(ancestorId);
-    }
-    path.push(item.thread.id);
+    if (item.children.length > 0) revealed.add(item.thread.id);
     for (const child of item.children) visit(child);
-    path.pop();
   };
 
   for (const root of board.pinned) visit(root);

@@ -4,6 +4,7 @@ import {
   pinnedDropTarget,
   pinnedMoveActions,
   pinnedMoveTarget,
+  pinnedRootIds,
   type PinnedThreadEntry,
 } from "./pinned-order";
 
@@ -58,6 +59,11 @@ describe("comparePinnedRoots", () => {
         entry("newer", { pinnedAt: 5, createdAt: 2 }),
       ]),
     ).toEqual(["newer", "older"]);
+  });
+
+  // Codepoint, not locale: ICU would put "apex" before "Zulu", bb would not.
+  it("breaks an id tie by codepoint", () => {
+    expect(sorted([entry("apex"), entry("Zulu")])).toEqual(["Zulu", "apex"]);
   });
 
   it("breaks a full tie with the id, including on equal sort keys", () => {
@@ -170,5 +176,34 @@ describe("pinnedMoveActions", () => {
     expect(actions.canMoveUp).toBe(false);
     actions.moveUp();
     expect(calls).toEqual([]);
+  });
+});
+
+describe("pinnedRootIds", () => {
+  const root = (
+    id: string,
+    overrides: Partial<PinnedThreadEntry & { parentThreadId: string | null }> = {},
+  ) => ({ ...entry(id), parentThreadId: null, ...overrides });
+
+  // Both server handlers derive the order this way, including the one reading
+  // reorderPinned's response — whose array order bb makes no promise about.
+  it("sorts a shuffled list into bb's pinned order", () => {
+    expect(
+      pinnedRootIds([
+        root("c", { pinSortKey: "u" }),
+        root("a", { pinSortKey: "e" }),
+        root("b", { pinSortKey: "n" }),
+      ]),
+    ).toEqual(["a", "b", "c"]);
+  });
+
+  it("drops unpinned threads and pinned subagents", () => {
+    expect(
+      pinnedRootIds([
+        root("pinned", { pinSortKey: "a" }),
+        root("loose", { pinnedAt: null, pinSortKey: "b" }),
+        root("child", { pinSortKey: "c", parentThreadId: "pinned" }),
+      ]),
+    ).toEqual(["pinned"]);
   });
 });

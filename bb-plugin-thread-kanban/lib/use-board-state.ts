@@ -8,7 +8,6 @@ import { useSettledOverrides } from "@/lib/use-settled";
 import { usePinnedOrder } from "@/lib/use-pinned-order";
 import {
   buildBoard,
-  selectPrProbeTargets,
   type BoardProjection,
   type BoardThread,
   type PrState,
@@ -21,7 +20,6 @@ export interface BoardState {
   projects: readonly PluginSidebarProject[];
   /** The full projection over every non-archived thread. Never filtered. */
   board: BoardProjection<BoardThread>;
-  probeTargetIds: string[];
   pullRequests: ReadonlyMap<string, PluginSidebarPullRequest | null>;
   reportPullRequest(
     threadId: string,
@@ -63,16 +61,16 @@ function samePullRequest(
  * It deliberately takes no search or project input. Whatever the surface hides
  * on screen, the classification underneath is computed over every thread.
  */
-export function useBoardState(
-  expandedIds: ReadonlySet<string>,
-  showSettled: boolean,
-): BoardState {
+export function useBoardState(): BoardState {
   const { status: threadStatus, threads, projects } = useSidebarThreads();
   const settledApi = useSettledOverrides();
   const pinnedApi = usePinnedOrder();
   const [pullRequests, setPullRequests] = useState<
     Map<string, PluginSidebarPullRequest | null>
   >(() => new Map());
+  const [prResolvedAt, setPrResolvedAt] = useState<ReadonlyMap<string, number>>(
+    () => new Map(),
+  );
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -80,8 +78,32 @@ export function useBoardState(
     return () => window.clearInterval(timer);
   }, []);
 
+  // The last PR state we accepted per thread. A snapshot map can only say what
+  // a PR is, never that it just changed, and "when did this merge" is exactly
+  // the moment we need to date a settle by.
+  const lastPrState = useRef(new Map<string, PrState | null>());
+
   const reportPullRequest = useCallback(
     (threadId: string, pullRequest: PluginSidebarPullRequest | null) => {
+      const incoming = pullRequest?.state ?? null;
+      const before = lastPrState.current.get(threadId);
+      const sticky =
+        pullRequest === null && (before === "open" || before === "draft");
+      if (!sticky) {
+        lastPrState.current.set(threadId, incoming);
+        const wasResolved = before === "merged" || before === "closed";
+        const isResolved = incoming === "merged" || incoming === "closed";
+        // Only a transition we actually watched counts. A cold load that finds
+        // a PR already merged says nothing about when it merged, so it falls
+        // back to dating the settle by the thread's own quiet clock.
+        if (before !== undefined && isResolved && !wasResolved) {
+          const at = Date.now();
+          setPrResolvedAt((current) => {
+            if (current.has(threadId)) return current;
+            return new Map(current).set(threadId, at);
+          });
+        }
+      }
       setPullRequests((current) => {
         const existing = current.get(threadId);
         if (
@@ -112,7 +134,7 @@ export function useBoardState(
   );
 
   useEffect(() => {
-    setPullRequests((current) => {
+    const prune = <V,>(current: ReadonlyMap<string, V>) => {
       let changed = false;
       const next = new Map(current);
       for (const threadId of next.keys()) {
@@ -122,7 +144,12 @@ export function useBoardState(
         }
       }
       return changed ? next : current;
-    });
+    };
+    setPullRequests((current) => prune(current) as typeof current);
+    setPrResolvedAt(prune);
+    for (const threadId of lastPrState.current.keys()) {
+      if (!liveThreadIds.has(threadId)) lastPrState.current.delete(threadId);
+    }
   }, [liveThreadIds]);
 
   // Pinning happens outside our RPC — our own context menu pins through the
@@ -168,13 +195,17 @@ export function useBoardState(
         now,
         overrides: settledApi.overrides,
         prStates,
+        prResolvedAt,
         pinnedOrder: pinnedApi.ids,
       }),
-    [now, pinnedApi.ids, prStates, settledApi.overrides, threads],
-  );
-  const probeTargetIds = useMemo(
-    () => [...selectPrProbeTargets(board, expandedIds, showSettled)],
-    [board, expandedIds, showSettled],
+    [
+      now,
+      pinnedApi.ids,
+      prResolvedAt,
+      prStates,
+      settledApi.overrides,
+      threads,
+    ],
   );
 
   return {
@@ -183,7 +214,6 @@ export function useBoardState(
     retryOverrides: () => void settledApi.refresh(),
     projects,
     board,
-    probeTargetIds,
     pullRequests,
     reportPullRequest,
     now,

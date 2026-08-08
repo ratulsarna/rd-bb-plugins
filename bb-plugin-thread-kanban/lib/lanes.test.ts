@@ -308,6 +308,23 @@ describe("buildBoard overrides", () => {
     expect(board.settled).toHaveLength(0);
   });
 
+  // A mark the thread has already talked over is spent. Without this, one
+  // settle would disable auto-settle on that thread forever.
+  it("auto-settles a thread whose stale settle mark was overtaken by activity", () => {
+    const board = buildBoard(
+      [thread("revived", { latestAttentionAt: NOW - 10 * DAY })],
+      {
+        now: NOW,
+        overrides: overrideMap([["revived", "settled", NOW - 40 * DAY]]),
+        prStates: prMap([["revived", null]]),
+      },
+    );
+
+    expect(board.settled[0]?.thread.id).toBe("revived");
+    expect(board.settled[0]?.isAuto).toBe(true);
+    expect(board.settled[0]?.settledAt).toBe(NOW - 10 * DAY);
+  });
+
   it("restarts the quiet clock from a fresh active override", () => {
     const board = buildBoard(
       [thread("kept", { latestAttentionAt: NOW - 30 * DAY })],
@@ -386,6 +403,54 @@ describe("buildBoard pull requests", () => {
     ]);
     expect(board.settled.every((item) => item.isAuto)).toBe(true);
     expect(board.inbox).toHaveLength(0);
+  });
+
+  // Settled sorts by when work finished. A month-old thread whose PR merged an
+  // hour ago finished an hour ago, so it has to outrank the newer quiet one.
+  it("dates a merged settle by when the PR resolved, not by last activity", () => {
+    const mergedAt = NOW - HOUR;
+    const options = {
+      now: NOW,
+      prStates: prMap([
+        ["merged", "merged" as const],
+        ["quiet", null],
+      ]),
+      prResolvedAt: new Map([["merged", mergedAt]]),
+    };
+    const threads = [
+      thread("merged", { latestAttentionAt: NOW - 30 * DAY }),
+      thread("quiet", { latestAttentionAt: NOW - 3 * DAY }),
+    ];
+
+    const board = buildBoard(threads, options);
+
+    expect(board.settled.map((item) => item.thread.id)).toEqual([
+      "merged",
+      "quiet",
+    ]);
+    expect(board.settled[0]?.settledAt).toBe(mergedAt);
+
+    // The stamp is a fact about the PR, not about this render: a minute later
+    // the row must not drift down the shelf.
+    const later = buildBoard(threads, { ...options, now: NOW + 60_000 });
+    expect(later.settled[0]?.settledAt).toBe(mergedAt);
+  });
+
+  // Settling must never be dated before the user's own last Unsettle: an
+  // active override restarts the quiet clock, and the stamp follows it.
+  it("never dates a merged settle earlier than an active override", () => {
+    const overrideAt = NOW - 3 * DAY;
+    const board = buildBoard(
+      [thread("shipped", { latestAttentionAt: NOW - 30 * DAY })],
+      {
+        now: NOW,
+        overrides: overrideMap([["shipped", "active", overrideAt]]),
+        prStates: prMap([["shipped", "merged"]]),
+      },
+    );
+
+    expect(board.settled[0]?.thread.id).toBe("shipped");
+    expect(board.settled[0]?.settledAt).toBe(overrideAt);
   });
 
   it("keeps a merged PR in the inbox while a fresh active override holds", () => {

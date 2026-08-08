@@ -30,7 +30,27 @@ export function comparePinnedRoots(
   if (pinned !== 0) return pinned;
   const created = b.createdAt - a.createdAt;
   if (created !== 0) return created;
-  return a.id.localeCompare(b.id);
+  // Codepoint, like the sort-key compare above: a locale compare would order
+  // ids differently from bb and drift the two lists apart.
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
+}
+
+/**
+ * The pinned roots of a bb thread list, in bb's order.
+ *
+ * Both server handlers derive the order this way, including the one that reads
+ * `reorderPinned`'s response: bb's own sidebar merges the sort keys out of that
+ * response and re-sorts, so the array order it comes back in is not a promise.
+ */
+export function pinnedRootIds<
+  T extends PinnedThreadEntry & { parentThreadId: string | null },
+>(threads: readonly T[]): string[] {
+  return threads
+    .filter((thread) => thread.pinnedAt !== null && thread.parentThreadId === null)
+    .sort(comparePinnedRoots)
+    .map((thread) => thread.id);
 }
 
 /** Where a moved thread lands: bb places it between these two. */

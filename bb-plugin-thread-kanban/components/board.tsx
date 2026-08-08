@@ -4,7 +4,11 @@ import { PrProbes } from "@/components/pr-probes";
 import { ProjectSelect, useProjectFilter } from "@/components/project-select";
 import { ThreadRow } from "@/components/thread-row";
 import { filterBoardForDisplay } from "@/lib/display-filter";
-import { canSettle, type BoardItem } from "@/lib/lanes";
+import {
+  canSettle,
+  selectPrProbeTargets,
+  type BoardItem,
+} from "@/lib/lanes";
 import { pinnedMoveActions } from "@/lib/pinned-order";
 import { useBoardState } from "@/lib/use-board-state";
 
@@ -43,7 +47,11 @@ export function ThreadBoard() {
   const actions = useSidebarThreadActions();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [showSettled, setShowSettled] = useState(false);
-  const state = useBoardState(expandedIds, showSettled);
+  const state = useBoardState();
+  const probeTargetIds = useMemo(
+    () => [...selectPrProbeTargets(state.board, expandedIds, showSettled)],
+    [expandedIds, showSettled, state.board],
+  );
   const [projectId, setProjectId] = useProjectFilter(state.projects);
 
   // The panel's select is a display filter like the sidebar's search: it hides
@@ -155,7 +163,7 @@ export function ThreadBoard() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
       <PrProbes
-        threadIds={state.probeTargetIds}
+        threadIds={probeTargetIds}
         report={state.reportPullRequest}
       />
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2.5">

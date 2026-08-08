@@ -213,6 +213,48 @@ describe("BoardSidebar sections", () => {
   });
 });
 
+// The settle stamp for a merged PR is a fact about when the PR resolved, and
+// we can only witness that by watching a report change.
+describe("BoardSidebar merged-PR settle stamp", () => {
+  it("dates a PR already merged at load by the thread's quiet clock", async () => {
+    configureFakeSdk({
+      threads: [
+        thread("thr_merged", {
+          title: "Shipped long ago",
+          latestAttentionAt: NOW - 30 * DAY,
+        }),
+        thread("thr_quiet", {
+          title: "Quiet last week",
+          latestAttentionAt: NOW - 3 * DAY,
+        }),
+      ],
+      pullRequests: {
+        thr_merged: {
+          number: 1,
+          title: "PR",
+          url: "https://example.test/1",
+          state: "merged",
+          attention: "none",
+        },
+      },
+    });
+    renderList();
+
+    const settled = await screen.findByRole("region", { name: "Settled" });
+    fireEvent.click(within(settled).getByRole("button"));
+
+    // Stamping the load itself would shove the month-old thread to the top,
+    // claiming it finished the moment the sidebar opened.
+    await waitFor(() =>
+      expect(
+        within(settled)
+          .getAllByRole("link")
+          .map((row) => row.getAttribute("aria-label")),
+      ).toEqual(["Quiet last week", "Shipped long ago"]),
+    );
+  });
+});
+
 // A row the board decided to show must not be swallowed by a collapsed
 // parent or a collapsed shelf — the user has no way to know it is there.
 describe("BoardSidebar reveals hidden rows", () => {
@@ -228,12 +270,40 @@ describe("BoardSidebar reveals hidden rows", () => {
     expect(await screen.findByText("Subagent")).toBeDefined();
   });
 
+  // Opening the path is a courtesy, not a lock. Deriving it every render would
+  // re-open the row the instant the user closed it.
+  it("lets the user collapse an active thread's ancestor again", async () => {
+    configureFakeSdk({ threads: tree() });
+    renderList({ activeThreadId: "child" });
+
+    await screen.findByText("Subagent");
+    fireEvent.click(screen.getByLabelText("Collapse 1 subagents"));
+
+    expect(screen.queryByText("Subagent")).toBeNull();
+  });
+
   it("opens the path to a match that only a subagent satisfies", async () => {
     configureFakeSdk({ threads: tree() });
     renderList({ searchQuery: "subagent" });
 
     expect(await screen.findByText("Parent")).toBeDefined();
     expect(screen.getByText("Subagent")).toBeDefined();
+  });
+
+  // Same for the shelf: it opens itself for the active thread, and one click
+  // still shuts it.
+  it("lets the user collapse the shelf while a settled thread is active", async () => {
+    configureFakeSdk({
+      threads: [thread("thr_done", { title: "Finished work" })],
+      overrides: [{ threadId: "thr_done", override: "settled", at: NOW + DAY }],
+    });
+    renderList({ activeThreadId: "thr_done" });
+
+    const settled = await screen.findByRole("region", { name: "Settled" });
+    expect(within(settled).getByText("Finished work")).toBeDefined();
+
+    fireEvent.click(within(settled).getByRole("button", { expanded: true }));
+    expect(within(settled).queryByText("Finished work")).toBeNull();
   });
 
   it("shows settled matches instead of a collapsed count while searching", async () => {

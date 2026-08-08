@@ -8,7 +8,7 @@ import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import { z } from "zod";
 // Relative on purpose: a path install loads server.ts directly, where the
 // bundler's "@/" alias does not exist.
-import { comparePinnedRoots } from "./lib/pinned-order";
+import { pinnedRootIds } from "./lib/pinned-order";
 
 const threadIdInput = z.object({ threadId: z.string().trim().min(1) });
 const pinnedOrderOutput = z.object({ ids: z.array(z.string()) });
@@ -71,13 +71,6 @@ export default function plugin(bb: BbPluginApi) {
     bb.realtime.publish(SETTLED_CHANNEL, { threadId });
   };
 
-  // Pin order is bb's, not ours: we read its list and write through its
-  // reorder call. Nothing about it is stored in this plugin's database.
-  const isPinnedRoot = (thread: {
-    pinnedAt: number | null;
-    parentThreadId: string | null;
-  }): boolean => thread.pinnedAt !== null && thread.parentThreadId === null;
-
   bb.rpc.register(boardRpcContract, {
     async listOverrides() {
       const rows = (
@@ -99,25 +92,22 @@ export default function plugin(bb: BbPluginApi) {
       write(threadId, "active");
       return { ok: true };
     },
+    // Pin order is bb's, not ours: we read its list and write through its
+    // reorder call. Nothing about it is stored in this plugin's database.
     async pinnedOrder() {
-      const threads = await bb.sdk.threads.list();
-      const ids = threads
-        .filter(isPinnedRoot)
-        .sort(comparePinnedRoots)
-        .map((thread) => thread.id);
-      return { ids };
+      return { ids: pinnedRootIds(await bb.sdk.threads.list()) };
     },
     async movePinned({ threadId, previousThreadId, nextThreadId }) {
-      // The response is the canonical list in canonical order — re-sorting it
-      // would just re-derive what bb already decided, and could disagree.
+      // Same derivation as the read. The app itself never trusts the response
+      // array's order — it merges the returned sort keys and re-sorts — so
+      // neither do we.
       const threads = await bb.sdk.threads.reorderPinned({
         threadId,
         previousThreadId,
         nextThreadId,
       });
-      const ids = threads.filter(isPinnedRoot).map((thread) => thread.id);
       bb.realtime.publish(PINNED_CHANNEL, { threadId });
-      return { ids };
+      return { ids: pinnedRootIds(threads) };
     },
   });
 

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
   type PluginThreadListProps,
@@ -7,8 +7,12 @@ import { PrProbes } from "@/components/pr-probes";
 import { ProjectSelect, useProjectFilter } from "@/components/project-select";
 import { SidebarRow } from "@/components/sidebar-row";
 import { filterBoardForDisplay } from "@/lib/display-filter";
-import { effectiveExpandedIds } from "@/lib/expansion";
-import { canSettle, type BoardItem } from "@/lib/lanes";
+import { ancestorIdsOf, effectiveExpandedIds } from "@/lib/expansion";
+import {
+  canSettle,
+  selectPrProbeTargets,
+  type BoardItem,
+} from "@/lib/lanes";
 import { pinnedDropTarget, pinnedMoveActions } from "@/lib/pinned-order";
 import { useBoardState } from "@/lib/use-board-state";
 
@@ -28,13 +32,15 @@ export function BoardSidebar({
 }: PluginThreadListProps) {
   const actions = useSidebarThreadActions();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
-  const [showSettled, setShowSettled] = useState(false);
+  // null means "no explicit choice yet", so the shelf can open itself for a
+  // search hit or the active thread — and one click still overrules that.
+  const [showSettled, setShowSettled] = useState<boolean | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropOn, setDropOn] = useState<{
     threadId: string;
     place: "before" | "after";
   } | null>(null);
-  const state = useBoardState(expandedIds, showSettled);
+  const state = useBoardState();
   const [projectId, setProjectId] = useProjectFilter(state.projects);
 
   const isSearching = searchQuery.trim().length > 0;
@@ -45,14 +51,32 @@ export function BoardSidebar({
     [projectId, searchQuery, state.board],
   );
   const visibleExpandedIds = useMemo(
-    () =>
-      effectiveExpandedIds(view, {
-        expandedIds,
-        activeThreadId,
-        revealNested: isSearching,
-      }),
-    [activeThreadId, expandedIds, isSearching, view],
+    () => effectiveExpandedIds(view, { expandedIds, revealNested: isSearching }),
+    [expandedIds, isSearching, view],
   );
+
+  // Open the active thread's ancestors once, into the user's own set, rather
+  // than deriving it every render — derived, it would re-open the row the
+  // instant the user collapsed it. Keyed on the thread we last opened for, so
+  // a board that arrives after the route still gets its one chance.
+  const openedForActive = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeThreadId) {
+      openedForActive.current = null;
+      return;
+    }
+    if (openedForActive.current === activeThreadId) return;
+    const ancestors = ancestorIdsOf(state.board, activeThreadId);
+    if (ancestors === null) return;
+    openedForActive.current = activeThreadId;
+    if (ancestors.length === 0) return;
+    setExpandedIds((current) => {
+      if (ancestors.every((id) => current.has(id))) return current;
+      const next = new Set(current);
+      for (const id of ancestors) next.add(id);
+      return next;
+    });
+  }, [activeThreadId, state.board]);
 
   const toggleExpanded = useCallback((threadId: string) => {
     setExpandedIds((current) => {
@@ -201,6 +225,23 @@ export function BoardSidebar({
     ],
   );
 
+  // A search that only matches settled work must not report nothing behind a
+  // collapsed header, and the thread the user is looking at must exist on
+  // screen even when it lives on the settled shelf. Both are defaults: one
+  // click on the header overrules them for as long as the list is mounted.
+  const settledExpanded =
+    showSettled ??
+    (isSearching ||
+      (activeThreadId !== null &&
+        view.settled.some((item) => treeContains(item, activeThreadId))));
+
+  // Probes read exactly what the rows render from. Selecting off the raw
+  // toggle state would leave a revealed row unprobed and badge-less.
+  const probeTargetIds = useMemo(
+    () => [...selectPrProbeTargets(state.board, visibleExpandedIds, settledExpanded)],
+    [settledExpanded, state.board, visibleExpandedIds],
+  );
+
   if (state.threadStatus === "error" || state.overridesStatus === "error") {
     return (
       <p role="status" className="px-3 py-6 text-center text-xs text-destructive">
@@ -224,21 +265,11 @@ export function BoardSidebar({
 
   const isEmpty =
     view.pinned.length + view.inbox.length + view.settled.length === 0;
-  const containsActive = (item: BoardItem): boolean =>
-    item.thread.id === activeThreadId || item.children.some(containsActive);
-  // A search that only matches settled work must not report nothing behind a
-  // collapsed header — while searching, the shelf shows its hits. The same
-  // goes for the thread the user is looking at: its highlighted row must
-  // exist on screen even when it lives on the settled shelf.
-  const settledExpanded =
-    showSettled ||
-    isSearching ||
-    (activeThreadId !== null && view.settled.some(containsActive));
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <PrProbes
-        threadIds={state.probeTargetIds}
+        threadIds={probeTargetIds}
         report={state.reportPullRequest}
       />
       <div className="flex shrink-0 items-center px-2 pb-1">
@@ -281,7 +312,7 @@ export function BoardSidebar({
               <section aria-label="Settled">
                 <button
                   type="button"
-                  onClick={() => setShowSettled((current) => !current)}
+                  onClick={() => setShowSettled(!settledExpanded)}
                   aria-expanded={settledExpanded}
                   className="mt-3 flex w-full items-center gap-2 px-2.5 pb-1 text-left"
                 >
@@ -311,6 +342,13 @@ export function BoardSidebar({
         )}
       </div>
     </div>
+  );
+}
+
+function treeContains(item: BoardItem, threadId: string): boolean {
+  return (
+    item.thread.id === threadId ||
+    item.children.some((child) => treeContains(child, threadId))
   );
 }
 

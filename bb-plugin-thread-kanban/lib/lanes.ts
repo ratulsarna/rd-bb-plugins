@@ -78,6 +78,8 @@ interface BuildBoardOptions {
   overrides?: ReadonlyMap<string, SettledOverride>;
   /** Missing is unknown; null means the lookup found no pull request. */
   prStates?: ReadonlyMap<string, PrState | null>;
+  /** When a thread's own PR was first seen merged or closed. */
+  prResolvedAt?: ReadonlyMap<string, number>;
   /** bb's pinned-root order. Ids it doesn't list sort first, newest first. */
   pinnedOrder?: readonly string[];
 }
@@ -197,6 +199,7 @@ export function buildBoard<T extends BoardThread>(
   const idleCutoffMs = options.idleCutoffMs ?? TWO_DAYS_MS;
   const overrides = options.overrides ?? new Map<string, SettledOverride>();
   const prStates = options.prStates ?? new Map<string, PrState | null>();
+  const prResolvedAt = options.prResolvedAt ?? new Map<string, number>();
   // Every non-archived thread, always. Search and project scoping are display
   // concerns and must never reach classification — see filterBoardForDisplay.
   const visible = threads.filter((thread) => !thread.isArchived);
@@ -300,19 +303,22 @@ export function buildBoard<T extends BoardThread>(
       continue;
     }
     const mark = overrides.get(item.thread.id);
-    if (mark?.override === "settled") {
-      // New attention since the settle un-settles it: the thread has more to
-      // say than it did when the user filed it away. Known unfinished work and
-      // pinned descendants also keep the tree visible; unknown PR state honors
-      // the user's mark until a probe reports otherwise.
-      if (
-        item.latestActivityAt > mark.at ||
-        item.hasPinnedThread ||
-        item.treePr === "in-flight"
-      ) {
+    // New attention since the settle voids the mark: the thread has more to
+    // say than it did when the user filed it away. A void mark falls through
+    // to the ordinary rules rather than pinning the thread to the Inbox —
+    // otherwise a thread settled once could never auto-settle again, however
+    // long it later stayed quiet.
+    const settledMark =
+      mark?.override === "settled" && item.latestActivityAt <= mark.at
+        ? mark
+        : null;
+    if (settledMark) {
+      // Known unfinished work and pinned descendants keep the tree visible;
+      // unknown PR state honors the mark until a probe reports otherwise.
+      if (item.hasPinnedThread || item.treePr === "in-flight") {
         inbox.push(item);
       } else {
-        settled.push({ ...item, settledAt: mark.at, isAuto: false });
+        settled.push({ ...item, settledAt: settledMark.at, isAuto: false });
       }
       continue;
     }
@@ -328,8 +334,17 @@ export function buildBoard<T extends BoardThread>(
       !item.hasPinnedThread &&
       (activeOverrideAt === null || quiet)
     ) {
-      // The PR resolving is the work resolving — settle right away.
-      settled.push({ ...item, settledAt: quietSince, isAuto: true });
+      // The PR resolving is the work resolving — settle right away, and date
+      // it by when the PR resolved. A thread quiet for a month whose PR merged
+      // today finished today, and belongs at the top of Settled.
+      settled.push({
+        ...item,
+        settledAt: Math.max(
+          quietSince,
+          prResolvedAt.get(item.thread.id) ?? 0,
+        ),
+        isAuto: true,
+      });
       continue;
     }
     // An in-flight PR is unfinished business no matter how quiet the thread:
