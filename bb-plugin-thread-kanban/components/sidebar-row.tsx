@@ -7,6 +7,18 @@ import {
   threadDisplayTitle,
   type BoardItem,
 } from "@/lib/lanes";
+import type { PinnedMove } from "@/lib/pinned-order";
+
+/** Desktop drag-to-reorder, wired by the list for pinned roots only. */
+export interface RowDrag {
+  /** Where the pending drop would land relative to this row. */
+  indicator: "before" | "after" | null;
+  onDragStart(event: React.DragEvent): void;
+  onDragEnd(event: React.DragEvent): void;
+  onDragOver(event: React.DragEvent): void;
+  onDragLeave(event: React.DragEvent): void;
+  onDrop(event: React.DragEvent): void;
+}
 
 interface SidebarRowProps {
   item: BoardItem;
@@ -19,6 +31,10 @@ interface SidebarRowProps {
   pullRequests: ReadonlyMap<string, PluginSidebarPullRequest | null>;
   /** Settle / Unsettle, provided by the list for root rows only. */
   action?: { label: string; run: () => void };
+  /** Pinned-root reordering, for the context menu and the drag handle. */
+  pinnedMove?: PinnedMove;
+  /** Absent on compact viewports and off the Pinned section — no handle. */
+  drag?: RowDrag;
 }
 
 /**
@@ -40,6 +56,8 @@ export function SidebarRow({
   onOpen,
   pullRequests,
   action,
+  pinnedMove,
+  drag,
 }: SidebarRowProps) {
   const title = threadDisplayTitle(item.thread);
   const expanded = expandedIds.has(item.thread.id);
@@ -54,20 +72,62 @@ export function SidebarRow({
 
   return (
     <li className="list-none">
-      <RowContextMenu thread={item.thread}>
+      <RowContextMenu thread={item.thread} pinnedMove={pinnedMove}>
         <div
           ref={rowRef}
           className={`group/row relative flex h-8 items-center gap-1.5 rounded-md pr-1.5 text-xs ${
             isActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60"
           }`}
           style={{ paddingLeft: `${10 + depth * 12}px` }}
+          onDragOver={drag?.onDragOver}
+          onDragLeave={drag?.onDragLeave}
+          onDrop={drag?.onDrop}
         >
+          {/* A line, not a border: a border would shift every row by 2px the
+              moment the pointer crossed one. */}
+          {drag?.indicator && (
+            <span
+              aria-hidden
+              className={`pointer-events-none absolute inset-x-0 z-10 h-0.5 bg-primary ${
+                drag.indicator === "before" ? "top-0" : "bottom-0"
+              }`}
+            />
+          )}
+          {/* Drag starts here, not on the row: the row is a full-bleed link,
+              and a draggable link drags its href instead of reordering. */}
+          {drag && pinnedMove && (
+            <button
+              type="button"
+              draggable
+              onDragStart={drag.onDragStart}
+              onDragEnd={drag.onDragEnd}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowUp" && pinnedMove.canMoveUp) {
+                  event.preventDefault();
+                  pinnedMove.moveUp();
+                } else if (event.key === "ArrowDown" && pinnedMove.canMoveDown) {
+                  event.preventDefault();
+                  pinnedMove.moveDown();
+                }
+              }}
+              aria-label={`Reorder ${title}`}
+              title="Drag to reorder, or use the arrow keys"
+              className="relative z-10 -ml-1 inline-flex size-4 shrink-0 cursor-grab items-center justify-center rounded text-muted-foreground/60 opacity-0 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/row:opacity-100"
+            >
+              <span aria-hidden>⠿</span>
+            </button>
+          )}
           <a
             data-sidebar-thread-shortcut-target=""
             data-sidebar-thread-id={item.thread.id}
             href="#"
             aria-label={title}
             title={statusLabelForItem(item)}
+            draggable={false}
             onClick={(event) => {
               event.preventDefault();
               onOpen(item.thread.id);

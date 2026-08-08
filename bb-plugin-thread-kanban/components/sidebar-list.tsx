@@ -9,6 +9,7 @@ import { SidebarRow } from "@/components/sidebar-row";
 import { filterBoardForDisplay } from "@/lib/display-filter";
 import { effectiveExpandedIds } from "@/lib/expansion";
 import { canSettle, type BoardItem } from "@/lib/lanes";
+import { pinnedDropTarget, pinnedMoveActions } from "@/lib/pinned-order";
 import { useBoardState } from "@/lib/use-board-state";
 
 /**
@@ -21,12 +22,18 @@ import { useBoardState } from "@/lib/use-board-state";
  */
 export function BoardSidebar({
   activeThreadId,
+  isCompactViewport,
   onNavigate,
   searchQuery,
 }: PluginThreadListProps) {
   const actions = useSidebarThreadActions();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [showSettled, setShowSettled] = useState(false);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dropOn, setDropOn] = useState<{
+    threadId: string;
+    place: "before" | "after";
+  } | null>(null);
   const state = useBoardState(expandedIds, showSettled);
   const [projectId, setProjectId] = useProjectFilter(state.projects);
 
@@ -90,6 +97,110 @@ export function BoardSidebar({
     ],
   );
 
+  // Neighbours always come from the full pinned list, never from `view`: a
+  // thread the search or the project filter hid is still the one bb will
+  // place this row beside.
+  const pinnedIds = useMemo(
+    () => state.board.pinned.map((item) => item.thread.id),
+    [state.board.pinned],
+  );
+
+  const movePinned = state.movePinned;
+  const dropSomewhere = useCallback(
+    (targetId: string, place: "before" | "after") => {
+      if (!dragging) return;
+      const target = pinnedDropTarget(pinnedIds, dragging, targetId, place);
+      if (target) {
+        movePinned(dragging, target.previousThreadId, target.nextThreadId);
+      }
+      setDragging(null);
+      setDropOn(null);
+    },
+    [dragging, movePinned, pinnedIds],
+  );
+
+  const renderPinnedRow = useCallback(
+    (item: BoardItem) => {
+      const threadId = item.thread.id;
+      // Both affordances wait on bb's order, not just the drag handle: moving
+      // against a stale rank would place the thread beside the wrong neighbour.
+      const pinnedMove = state.pinnedOrderReady
+        ? pinnedMoveActions(pinnedIds, threadId, movePinned)
+        : undefined;
+      return (
+        <SidebarRow
+          key={threadId}
+          item={item}
+          now={state.now}
+          activeThreadId={activeThreadId}
+          expandedIds={visibleExpandedIds}
+          onToggleExpanded={toggleExpanded}
+          onOpen={openThread}
+          pullRequests={state.pullRequests}
+          pinnedMove={pinnedMove}
+          drag={
+            // No handle until bb's order is known, and none on a phone: there
+            // is no drag there, which is why the context menu carries moves.
+            state.pinnedOrderReady && !isCompactViewport
+              ? {
+                  indicator:
+                    dropOn?.threadId === threadId ? dropOn.place : null,
+                  onDragStart: (event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", threadId);
+                    setDragging(threadId);
+                  },
+                  onDragEnd: () => {
+                    setDragging(null);
+                    setDropOn(null);
+                  },
+                  onDragOver: (event) => {
+                    if (!dragging || dragging === threadId) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    const box = event.currentTarget.getBoundingClientRect();
+                    const place =
+                      event.clientY < box.top + box.height / 2
+                        ? "before"
+                        : "after";
+                    setDropOn((current) =>
+                      current?.threadId === threadId && current.place === place
+                        ? current
+                        : { threadId, place },
+                    );
+                  },
+                  onDragLeave: () => {
+                    setDropOn((current) =>
+                      current?.threadId === threadId ? null : current,
+                    );
+                  },
+                  onDrop: (event) => {
+                    event.preventDefault();
+                    dropSomewhere(threadId, dropOn?.place ?? "before");
+                  },
+                }
+              : undefined
+          }
+        />
+      );
+    },
+    [
+      activeThreadId,
+      dragging,
+      dropOn,
+      dropSomewhere,
+      isCompactViewport,
+      movePinned,
+      openThread,
+      pinnedIds,
+      state.now,
+      state.pinnedOrderReady,
+      state.pullRequests,
+      toggleExpanded,
+      visibleExpandedIds,
+    ],
+  );
+
   if (state.threadStatus === "error" || state.overridesStatus === "error") {
     return (
       <p role="status" className="px-3 py-6 text-center text-xs text-destructive">
@@ -147,7 +258,7 @@ export function BoardSidebar({
           <>
             {view.pinned.length > 0 && (
               <Section label="Pinned">
-                {view.pinned.map((item) => renderRow(item))}
+                {view.pinned.map((item) => renderPinnedRow(item))}
               </Section>
             )}
             <Section label="Inbox">

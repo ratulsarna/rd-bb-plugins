@@ -6,8 +6,12 @@
 // timer (or a finished PR) would otherwise re-settle on the next render.
 import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import { z } from "zod";
+// Relative on purpose: a path install loads server.ts directly, where the
+// bundler's "@/" alias does not exist.
+import { comparePinnedRoots } from "./lib/pinned-order";
 
 const threadIdInput = z.object({ threadId: z.string().trim().min(1) });
+const pinnedOrderOutput = z.object({ ids: z.array(z.string()) });
 
 export const boardRpcContract = defineRpcContract({
   listOverrides: {
@@ -24,10 +28,22 @@ export const boardRpcContract = defineRpcContract({
   },
   settle: { input: threadIdInput, output: z.object({ ok: z.boolean() }) },
   unsettle: { input: threadIdInput, output: z.object({ ok: z.boolean() }) },
+  pinnedOrder: { input: z.object({}), output: pinnedOrderOutput },
+  movePinned: {
+    input: z.object({
+      threadId: z.string().trim().min(1),
+      previousThreadId: z.string().trim().min(1).nullable(),
+      nextThreadId: z.string().trim().min(1).nullable(),
+    }),
+    output: pinnedOrderOutput,
+  },
 });
 
 /** Realtime channel the board re-reads overrides on. */
 export const SETTLED_CHANNEL = "settled";
+
+/** Realtime channel the board re-reads the pinned order on. */
+export const PINNED_CHANNEL = "pinned-order";
 
 interface OverrideDbRow {
   thread_id: string;
@@ -55,6 +71,13 @@ export default function plugin(bb: BbPluginApi) {
     bb.realtime.publish(SETTLED_CHANNEL, { threadId });
   };
 
+  // Pin order is bb's, not ours: we read its list and write through its
+  // reorder call. Nothing about it is stored in this plugin's database.
+  const isPinnedRoot = (thread: {
+    pinnedAt: number | null;
+    parentThreadId: string | null;
+  }): boolean => thread.pinnedAt !== null && thread.parentThreadId === null;
+
   bb.rpc.register(boardRpcContract, {
     async listOverrides() {
       const rows = (
@@ -75,6 +98,26 @@ export default function plugin(bb: BbPluginApi) {
     async unsettle({ threadId }) {
       write(threadId, "active");
       return { ok: true };
+    },
+    async pinnedOrder() {
+      const threads = await bb.sdk.threads.list();
+      const ids = threads
+        .filter(isPinnedRoot)
+        .sort(comparePinnedRoots)
+        .map((thread) => thread.id);
+      return { ids };
+    },
+    async movePinned({ threadId, previousThreadId, nextThreadId }) {
+      // The response is the canonical list in canonical order — re-sorting it
+      // would just re-derive what bb already decided, and could disagree.
+      const threads = await bb.sdk.threads.reorderPinned({
+        threadId,
+        previousThreadId,
+        nextThreadId,
+      });
+      const ids = threads.filter(isPinnedRoot).map((thread) => thread.id);
+      bb.realtime.publish(PINNED_CHANNEL, { threadId });
+      return { ids };
     },
   });
 

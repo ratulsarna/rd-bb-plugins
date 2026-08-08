@@ -5,6 +5,7 @@ import { ProjectSelect, useProjectFilter } from "@/components/project-select";
 import { ThreadRow } from "@/components/thread-row";
 import { filterBoardForDisplay } from "@/lib/display-filter";
 import { canSettle, type BoardItem } from "@/lib/lanes";
+import { pinnedMoveActions } from "@/lib/pinned-order";
 import { useBoardState } from "@/lib/use-board-state";
 
 function Section({
@@ -69,11 +70,29 @@ export function ThreadBoard() {
     });
   }, []);
 
+  // Neighbours come from the full pinned list, never from the project-filtered
+  // view: a hidden neighbour is still the thread bb will place this one beside.
+  const pinnedIds = useMemo(
+    () => state.board.pinned.map((item) => item.thread.id),
+    [state.board.pinned],
+  );
+
   const renderRow = useCallback(
-    (item: BoardItem, action?: { label: string; run: () => void }) => (
+    (
+      item: BoardItem,
+      action?: { label: string; run: () => void },
+      isPinnedRoot = false,
+    ) => (
       <ThreadRow
         key={item.thread.id}
         item={item}
+        pinnedMove={
+          // The panel has no drag handle, so this menu is the only way to
+          // reorder here — and it waits for bb's order like the sidebar does.
+          isPinnedRoot && state.pinnedOrderReady
+            ? pinnedMoveActions(pinnedIds, item.thread.id, state.movePinned)
+            : undefined
+        }
         projectName={
           projectNames.get(item.thread.projectId) ?? "Unknown project"
         }
@@ -89,8 +108,11 @@ export function ThreadBoard() {
     [
       actions,
       expandedIds,
+      pinnedIds,
       projectNames,
+      state.movePinned,
       state.now,
+      state.pinnedOrderReady,
       state.pullRequests,
       toggleExpanded,
     ],
@@ -163,7 +185,7 @@ export function ThreadBoard() {
         <div className="mx-auto w-full max-w-5xl space-y-4">
           {view.pinned.length > 0 && (
             <Section id="priority" title="Pinned" count={view.pinned.length}>
-              {view.pinned.map((item) => renderRow(item))}
+              {view.pinned.map((item) => renderRow(item, undefined, true))}
             </Section>
           )}
           <Section id="inbox" title="Inbox" count={view.inbox.length}>

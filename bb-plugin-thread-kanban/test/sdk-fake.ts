@@ -21,6 +21,12 @@ export interface FakeSdkConfig {
   pullRequests: Record<string, PluginSidebarPullRequest | null>;
   overrides: Array<{ threadId: string } & SettledOverride>;
   failRpc: boolean;
+  /** What `pinnedOrder` returns; `setFakePinnedOrder` changes it mid-test. */
+  pinnedOrder: string[];
+  /** Makes `movePinned` reject, so the refetch path can be exercised. */
+  failMovePinned: boolean;
+  /** Makes `pinnedOrder` reject, leaving the order unknown. */
+  failPinnedOrder: boolean;
 }
 
 const DEFAULTS: FakeSdkConfig = {
@@ -30,6 +36,9 @@ const DEFAULTS: FakeSdkConfig = {
   pullRequests: {},
   overrides: [],
   failRpc: false,
+  pinnedOrder: [],
+  failMovePinned: false,
+  failPinnedOrder: false,
 };
 
 let config: FakeSdkConfig = DEFAULTS;
@@ -47,6 +56,16 @@ export function configureFakeSdk(next: Partial<FakeSdkConfig> = {}): void {
   config = { ...DEFAULTS, ...next };
   sidebarActionCalls.length = 0;
   rpcCalls.length = 0;
+}
+
+/** Change what a later `pinnedOrder` read returns, mid-test. */
+export function setFakePinnedOrder(ids: string[]): void {
+  config.pinnedOrder = ids;
+}
+
+/** Change the live thread list mid-test; re-render to pick it up. */
+export function setFakeThreads(threads: BoardThread[]): void {
+  config.threads = threads;
 }
 
 interface ThreadListRegistration {
@@ -106,6 +125,15 @@ const rpc = {
   call: async (method: string, input: unknown) => {
     rpcCalls.push({ method, input });
     if (config.failRpc) throw new Error("rpc failed");
+    if (method === "pinnedOrder") {
+      if (config.failPinnedOrder) throw new Error("pinnedOrder failed");
+      return { ids: config.pinnedOrder };
+    }
+    if (method === "movePinned") {
+      if (config.failMovePinned) throw new Error("movePinned failed");
+      // bb's answer is the canonical list; the fake just echoes what it has.
+      return { ids: config.pinnedOrder };
+    }
     if (method === "listOverrides") {
       return {
         rows: config.overrides.map((row) => ({

@@ -13,6 +13,8 @@ import {
   configureFakeSdk,
   registrations,
   rpcCalls,
+  setFakePinnedOrder,
+  setFakeThreads,
   sidebarActionCalls,
 } from "./sdk-fake";
 import { DAY, NOW, thread } from "./fixtures";
@@ -24,9 +26,9 @@ const list = registrations.threadLists[0]!;
 
 afterEach(cleanup);
 
-function renderList(props: Partial<PluginThreadListProps> = {}) {
+function listElement(props: Partial<PluginThreadListProps> = {}) {
   const List = list.component;
-  return render(
+  return (
     <List
       activeThreadId={null}
       activeProjectId={null}
@@ -34,8 +36,12 @@ function renderList(props: Partial<PluginThreadListProps> = {}) {
       onNavigate={() => {}}
       searchQuery=""
       {...props}
-    />,
+    />
   );
+}
+
+function renderList(props: Partial<PluginThreadListProps> = {}) {
+  return render(listElement(props));
 }
 
 describe("thread list registration", () => {
@@ -240,6 +246,163 @@ describe("BoardSidebar reveals hidden rows", () => {
     const settled = await screen.findByRole("region", { name: "Settled" });
     expect(within(settled).getByText("Finished work")).toBeDefined();
     expect(screen.queryByText("Settled (1)")).toBeNull();
+  });
+});
+
+describe("pinned reordering", () => {
+  const pins = () => [
+    thread("a", { title: "First", isPinned: true }),
+    thread("b", { title: "Second", isPinned: true }),
+    thread("c", { title: "Third", isPinned: true }),
+  ];
+
+  function pinnedSidebar(props: Partial<PluginThreadListProps> = {}) {
+    configureFakeSdk({ threads: pins(), pinnedOrder: ["a", "b", "c"] });
+    return renderList(props);
+  }
+
+  it("gives every pinned row a drag handle on desktop", async () => {
+    pinnedSidebar();
+
+    expect(await screen.findByLabelText("Reorder Second")).toBeDefined();
+  });
+
+  // No drag on a phone, which is exactly why the context menu carries moves.
+  it("ships no drag handle on a compact viewport", async () => {
+    pinnedSidebar({ isCompactViewport: true });
+
+    await screen.findByText("Second");
+    expect(screen.queryByLabelText("Reorder Second")).toBeNull();
+  });
+
+  // A draggable anchor drags its href, not the row — the handle owns dragging.
+  it("keeps the row's open anchor undraggable", async () => {
+    pinnedSidebar();
+
+    const row = await screen.findByRole("link", { name: "Second" });
+    expect(row.getAttribute("draggable")).toBe("false");
+  });
+
+  it("hides the handle until bb's order has loaded", async () => {
+    configureFakeSdk({ threads: pins(), failPinnedOrder: true });
+    renderList();
+
+    await screen.findByText("Second");
+    expect(screen.queryByLabelText("Reorder Second")).toBeNull();
+  });
+
+  // The menu waits on the order too. Moving against a stale rank would file
+  // the thread beside the wrong neighbour, silently.
+  it("offers no menu moves until bb's order has loaded", async () => {
+    configureFakeSdk({ threads: pins(), failPinnedOrder: true });
+    renderList();
+
+    fireEvent.contextMenu(await screen.findByText("Second"));
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    expect(within(menu).queryByText("Move up")).toBeNull();
+    expect(within(menu).queryByText("Move down")).toBeNull();
+  });
+
+  // Pinning goes through the host, not our RPC, so nothing publishes on the
+  // pinned-order channel. A newly pinned thread would otherwise sit at a rank
+  // bb never gave it until something unrelated refreshed the board.
+  it("re-reads the order when the set of pinned threads changes", async () => {
+    configureFakeSdk({ threads: pins(), pinnedOrder: ["a", "b", "c"] });
+    const rendered = renderList();
+    await screen.findByText("First");
+
+    setFakeThreads([...pins(), thread("d", { title: "Fourth", isPinned: true })]);
+    // bb slots the new pin second — not where the unknown-id fallback puts it.
+    setFakePinnedOrder(["a", "d", "b", "c"]);
+    rendered.rerender(listElement());
+
+    await waitFor(() =>
+      expect(
+        rpcCalls.filter((call) => call.method === "pinnedOrder"),
+      ).toHaveLength(2),
+    );
+    await waitFor(() => {
+      const pinned = screen.getByRole("region", { name: "Pinned" });
+      expect(
+        within(pinned)
+          .getAllByRole("link")
+          .map((row) => row.getAttribute("data-sidebar-thread-id")),
+      ).toEqual(["a", "d", "b", "c"]);
+    });
+  });
+
+  // The RPC boundary: whatever the menu computed must reach the server call
+  // unchanged, because bb places the thread strictly between those two ids.
+  it("sends the neighbouring ids through to movePinned", async () => {
+    pinnedSidebar();
+
+    fireEvent.contextMenu(await screen.findByText("Third"));
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    fireEvent.click(within(menu).getByText("Move up"));
+
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({
+        method: "movePinned",
+        input: { threadId: "c", previousThreadId: "a", nextThreadId: "b" },
+      }),
+    );
+  });
+
+  it("offers no move past either end of the list", async () => {
+    pinnedSidebar();
+
+    fireEvent.contextMenu(await screen.findByText("First"));
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    expect(within(menu).getByText("Move up").getAttribute("data-disabled")).not
+      .toBeNull();
+    expect(
+      within(menu).getByText("Move down").getAttribute("data-disabled"),
+    ).toBeNull();
+  });
+
+  // A rejected move must not leave a guessed order on screen: the board
+  // re-reads and shows whatever bb actually has.
+  it("re-reads the order when a move is rejected", async () => {
+    configureFakeSdk({
+      threads: pins(),
+      pinnedOrder: ["a", "b", "c"],
+      failMovePinned: true,
+    });
+    renderList();
+
+    fireEvent.contextMenu(await screen.findByText("Third"));
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    // bb's real order turns out to be something else entirely.
+    setFakePinnedOrder(["c", "b", "a"]);
+    fireEvent.click(within(menu).getByText("Move up"));
+
+    await waitFor(() =>
+      expect(
+        rpcCalls.filter((call) => call.method === "pinnedOrder"),
+      ).toHaveLength(2),
+    );
+    await waitFor(() => {
+      const pinned = screen.getByRole("region", { name: "Pinned" });
+      expect(
+        within(pinned)
+          .getAllByRole("link")
+          .map((row) => row.getAttribute("data-sidebar-thread-id")),
+      ).toEqual(["c", "b", "a"]);
+    });
+  });
+
+  it("renders pinned rows in bb's order", async () => {
+    configureFakeSdk({ threads: pins(), pinnedOrder: ["c", "a", "b"] });
+    renderList();
+
+    const pinned = await screen.findByRole("region", { name: "Pinned" });
+    await waitFor(() =>
+      expect(
+        within(pinned)
+          .getAllByRole("link")
+          .map((row) => row.getAttribute("data-sidebar-thread-id")),
+      ).toEqual(["c", "a", "b"]),
+    );
   });
 });
 

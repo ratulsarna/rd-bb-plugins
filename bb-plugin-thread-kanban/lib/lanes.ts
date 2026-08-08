@@ -78,6 +78,8 @@ interface BuildBoardOptions {
   overrides?: ReadonlyMap<string, SettledOverride>;
   /** Missing is unknown; null means the lookup found no pull request. */
   prStates?: ReadonlyMap<string, PrState | null>;
+  /** bb's pinned-root order. Ids it doesn't list sort first, newest first. */
+  pinnedOrder?: readonly string[];
 }
 
 const NEEDS_YOU_INDICATORS = new Set([
@@ -348,7 +350,20 @@ export function buildBoard<T extends BoardThread>(
   const byActivityDesc = (a: BoardItem<T>, b: BoardItem<T>) =>
     b.latestActivityAt - a.latestActivityAt ||
     a.thread.id.localeCompare(b.thread.id);
-  pinned.sort(byCreatedDesc);
+  // The user's own pin order, straight from bb. A thread pinned since the last
+  // fetch isn't in it yet — it goes on top rather than silently to the bottom,
+  // where a just-pinned thread would look like the pin failed.
+  const pinnedRank = new Map(
+    (options.pinnedOrder ?? []).map((id, index) => [id, index] as const),
+  );
+  pinned.sort((a, b) => {
+    const aRank = pinnedRank.get(a.thread.id);
+    const bRank = pinnedRank.get(b.thread.id);
+    if (aRank === undefined && bRank === undefined) return byCreatedDesc(a, b);
+    if (aRank === undefined) return -1;
+    if (bRank === undefined) return 1;
+    return aRank - bRank;
+  });
   inbox.sort(byActivityDesc);
   // Settled rows are history, so they order by when the work ended.
   settled.sort(

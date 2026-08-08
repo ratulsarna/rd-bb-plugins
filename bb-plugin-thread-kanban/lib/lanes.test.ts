@@ -582,6 +582,85 @@ describe("buildBoard ordering", () => {
 });
 
 // Project scoping moved to filterBoardForDisplay — see display-filter.test.ts.
+describe("buildBoard pinned order", () => {
+  const pins = () => [
+    thread("a", { isPinned: true, createdAt: NOW - 3 * DAY }),
+    thread("b", { isPinned: true, createdAt: NOW - 2 * DAY }),
+    thread("c", { isPinned: true, createdAt: NOW - DAY }),
+  ];
+
+  it("uses bb's order rather than the creation sort", () => {
+    const board = buildBoard(pins(), {
+      now: NOW,
+      pinnedOrder: ["b", "c", "a"],
+    });
+
+    expect(board.pinned.map((item) => item.thread.id)).toEqual([
+      "b",
+      "c",
+      "a",
+    ]);
+  });
+
+  it("keeps the newest-first fallback when no order is known", () => {
+    const board = buildBoard(pins(), { now: NOW });
+
+    expect(board.pinned.map((item) => item.thread.id)).toEqual([
+      "c",
+      "b",
+      "a",
+    ]);
+  });
+
+  // A thread pinned since the last read isn't in bb's list yet. Sorting it to
+  // the bottom would read as the pin having failed.
+  it("puts threads the order does not know on top, newest first", () => {
+    const board = buildBoard(pins(), { now: NOW, pinnedOrder: ["a"] });
+
+    expect(board.pinned.map((item) => item.thread.id)).toEqual([
+      "c",
+      "b",
+      "a",
+    ]);
+  });
+
+  it("ignores ids in the order that are not on the board", () => {
+    const board = buildBoard(pins(), {
+      now: NOW,
+      pinnedOrder: ["gone", "c", "b", "a"],
+    });
+
+    expect(board.pinned.map((item) => item.thread.id)).toEqual([
+      "c",
+      "b",
+      "a",
+    ]);
+  });
+
+  it("leaves the inbox and settled sorts alone", () => {
+    const quietAt = NOW - 10 * DAY;
+    const board = buildBoard(
+      [
+        thread("pin", { isPinned: true }),
+        thread("busy", { latestAttentionAt: NOW }),
+        thread("stale", { latestAttentionAt: NOW - HOUR }),
+        thread("done", { latestAttentionAt: quietAt }),
+      ],
+      {
+        now: NOW,
+        pinnedOrder: ["pin"],
+        prStates: prMap([["done", null]]),
+      },
+    );
+
+    expect(board.inbox.map((item) => item.thread.id)).toEqual([
+      "busy",
+      "stale",
+    ]);
+    expect(board.settled.map((item) => item.thread.id)).toEqual(["done"]);
+  });
+});
+
 describe("buildBoard scale", () => {
   it("projects thousands of mixed parent and child threads", () => {
     const threads: BoardThread[] = [];

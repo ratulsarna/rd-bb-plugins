@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   experimental_useSidebarThreads as useSidebarThreads,
   type PluginSidebarProject,
   type PluginSidebarPullRequest,
 } from "@bb/plugin-sdk/app";
 import { useSettledOverrides } from "@/lib/use-settled";
+import { usePinnedOrder } from "@/lib/use-pinned-order";
 import {
   buildBoard,
   selectPrProbeTargets,
@@ -29,6 +30,15 @@ export interface BoardState {
   now: number;
   settle(threadId: string): void;
   unsettle(threadId: string): void;
+  /** bb's pinned-root order, in board order. */
+  pinnedIds: readonly string[];
+  /** False until the order is known; every move affordance waits on it. */
+  pinnedOrderReady: boolean;
+  movePinned(
+    threadId: string,
+    previousThreadId: string | null,
+    nextThreadId: string | null,
+  ): void;
 }
 
 function samePullRequest(
@@ -59,6 +69,7 @@ export function useBoardState(
 ): BoardState {
   const { status: threadStatus, threads, projects } = useSidebarThreads();
   const settledApi = useSettledOverrides();
+  const pinnedApi = usePinnedOrder();
   const [pullRequests, setPullRequests] = useState<
     Map<string, PluginSidebarPullRequest | null>
   >(() => new Map());
@@ -114,6 +125,33 @@ export function useBoardState(
     });
   }, [liveThreadIds]);
 
+  // Pinning happens outside our RPC — our own context menu pins through the
+  // host — so nothing publishes on the pinned-order channel. Watch which
+  // threads are pinned instead, and re-read bb's order whenever that changes.
+  // Membership only: a same-set reorder made elsewhere is a known gap.
+  const pinnedMembership = useMemo(
+    () =>
+      threads
+        .filter(
+          (thread) =>
+            !thread.isArchived &&
+            thread.isPinned &&
+            thread.parentThreadId === null,
+        )
+        .map((thread) => thread.id)
+        .sort()
+        .join("\0"),
+    [threads],
+  );
+  const refreshPinnedOrder = pinnedApi.refresh;
+  // Seeded with the first value, so mount's own fetch isn't doubled.
+  const previousPinnedMembership = useRef(pinnedMembership);
+  useEffect(() => {
+    if (previousPinnedMembership.current === pinnedMembership) return;
+    previousPinnedMembership.current = pinnedMembership;
+    void refreshPinnedOrder();
+  }, [pinnedMembership, refreshPinnedOrder]);
+
   const prStates = useMemo(
     () =>
       new Map<string, PrState | null>(
@@ -130,8 +168,9 @@ export function useBoardState(
         now,
         overrides: settledApi.overrides,
         prStates,
+        pinnedOrder: pinnedApi.ids,
       }),
-    [now, prStates, settledApi.overrides, threads],
+    [now, pinnedApi.ids, prStates, settledApi.overrides, threads],
   );
   const probeTargetIds = useMemo(
     () => [...selectPrProbeTargets(board, expandedIds, showSettled)],
@@ -150,5 +189,8 @@ export function useBoardState(
     now,
     settle: settledApi.settle,
     unsettle: settledApi.unsettle,
+    pinnedIds: pinnedApi.ids,
+    pinnedOrderReady: pinnedApi.ready,
+    movePinned: pinnedApi.move,
   };
 }
