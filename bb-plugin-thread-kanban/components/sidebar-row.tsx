@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { PluginSidebarPullRequest } from "@bb/plugin-sdk/app";
 import { PrBadge, StatusSlot } from "@/components/row-parts";
 import { RowContextMenu } from "@/components/row-context-menu";
@@ -44,10 +45,18 @@ export function SidebarRow({
   const expanded = expandedIds.has(item.thread.id);
   const isActive = item.thread.id === activeThreadId;
 
+  // The active row must be on screen, however far down its section sits.
+  // Optional call: jsdom has no scrollIntoView.
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isActive) rowRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [isActive]);
+
   return (
     <li className="list-none">
       <RowContextMenu thread={item.thread}>
         <div
+          ref={rowRef}
           className={`group/row relative flex h-8 items-center gap-1.5 rounded-md pr-1.5 text-xs ${
             isActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60"
           }`}

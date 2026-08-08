@@ -113,9 +113,16 @@ export function BoardSidebar({
 
   const isEmpty =
     view.pinned.length + view.inbox.length + view.settled.length === 0;
+  const containsActive = (item: BoardItem): boolean =>
+    item.thread.id === activeThreadId || item.children.some(containsActive);
   // A search that only matches settled work must not report nothing behind a
-  // collapsed header — while searching, the shelf shows its hits.
-  const settledExpanded = showSettled || isSearching;
+  // collapsed header — while searching, the shelf shows its hits. The same
+  // goes for the thread the user is looking at: its highlighted row must
+  // exist on screen even when it lives on the settled shelf.
+  const settledExpanded =
+    showSettled ||
+    isSearching ||
+    (activeThreadId !== null && view.settled.some(containsActive));
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
