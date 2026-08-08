@@ -1,0 +1,34 @@
+{
+  "name": "bb-plugin-thread-kanban",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "bb plugin build"
+  },
+  "engines": {
+    "bb": ">=0.36",
+    "bbPluginSdk": "^0.4.1"
+  },
+  "bb": {
+    "name": "Thread Board",
+    "description": "See every recent bb thread grouped by what needs you, what is running, and what is idle.",
+    "branding": {
+      "icon": "Rows3"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": []
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.1.8",
+    "better-sqlite3": "^12.0.0",
+    "hono": "^4.11.9",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4",
+    "zod": "^4.3.6"
+  }
+}
