@@ -79,6 +79,9 @@ export function SidebarRow({
             isActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60"
           }`}
           style={{ paddingLeft: `${10 + depth * 12}px` }}
+          draggable={drag !== undefined}
+          onDragStart={drag?.onDragStart}
+          onDragEnd={drag?.onDragEnd}
           onDragOver={drag?.onDragOver}
           onDragLeave={drag?.onDragLeave}
           onDrop={drag?.onDrop}
@@ -93,34 +96,8 @@ export function SidebarRow({
               }`}
             />
           )}
-          {/* Drag starts here, not on the row: the row is a full-bleed link,
-              and a draggable link drags its href instead of reordering. */}
-          {drag && pinnedMove && (
-            <button
-              type="button"
-              draggable
-              onDragStart={drag.onDragStart}
-              onDragEnd={drag.onDragEnd}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "ArrowUp" && pinnedMove.canMoveUp) {
-                  event.preventDefault();
-                  pinnedMove.moveUp();
-                } else if (event.key === "ArrowDown" && pinnedMove.canMoveDown) {
-                  event.preventDefault();
-                  pinnedMove.moveDown();
-                }
-              }}
-              aria-label={`Reorder ${title}`}
-              title="Drag to reorder, or use the arrow keys"
-              className="relative z-10 -ml-1 inline-flex size-4 shrink-0 cursor-grab items-center justify-center rounded text-muted-foreground/60 opacity-0 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/row:opacity-100"
-            >
-              <span aria-hidden>⠿</span>
-            </button>
-          )}
+          {/* draggable={false}: a draggable link drags its href — opting out
+              here lets the drag bubble to the row div, which owns it. */}
           <a
             data-sidebar-thread-shortcut-target=""
             data-sidebar-thread-id={item.thread.id}

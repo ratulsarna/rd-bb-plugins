@@ -261,21 +261,23 @@ describe("pinned reordering", () => {
     return renderList(props);
   }
 
-  it("gives every pinned row a drag handle on desktop", async () => {
+  it("makes pinned rows draggable on desktop", async () => {
     pinnedSidebar();
 
-    expect(await screen.findByLabelText("Reorder Second")).toBeDefined();
+    const anchor = await screen.findByRole("link", { name: "Second" });
+    expect(anchor.parentElement?.getAttribute("draggable")).toBe("true");
   });
 
   // No drag on a phone, which is exactly why the context menu carries moves.
-  it("ships no drag handle on a compact viewport", async () => {
+  it("does not make rows draggable on a compact viewport", async () => {
     pinnedSidebar({ isCompactViewport: true });
 
-    await screen.findByText("Second");
-    expect(screen.queryByLabelText("Reorder Second")).toBeNull();
+    const anchor = await screen.findByRole("link", { name: "Second" });
+    expect(anchor.parentElement?.getAttribute("draggable")).not.toBe("true");
   });
 
-  // A draggable anchor drags its href, not the row — the handle owns dragging.
+  // A draggable anchor drags its href, not the row — the row div owns
+  // dragging, and the anchor must opt out so the drag bubbles up to it.
   it("keeps the row's open anchor undraggable", async () => {
     pinnedSidebar();
 
@@ -283,12 +285,12 @@ describe("pinned reordering", () => {
     expect(row.getAttribute("draggable")).toBe("false");
   });
 
-  it("hides the handle until bb's order has loaded", async () => {
+  it("keeps rows undraggable until bb's order has loaded", async () => {
     configureFakeSdk({ threads: pins(), failPinnedOrder: true });
     renderList();
 
-    await screen.findByText("Second");
-    expect(screen.queryByLabelText("Reorder Second")).toBeNull();
+    const anchor = await screen.findByRole("link", { name: "Second" });
+    expect(anchor.parentElement?.getAttribute("draggable")).not.toBe("true");
   });
 
   // The menu waits on the order too. Moving against a stale rank would file
