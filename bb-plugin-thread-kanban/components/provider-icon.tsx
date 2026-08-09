@@ -22,7 +22,7 @@ const PROVIDER_COLORS: Readonly<Record<string, string>> = {
 export function ProviderIcon({ providerId }: ProviderIconProps) {
   const label = PROVIDER_LABELS[providerId] ?? "Unknown provider";
   const color = PROVIDER_COLORS[providerId] ?? "text-muted-foreground/50";
-  const className = `size-3.5 shrink-0 ${color}`;
+  const className = `size-[11px] shrink-0 ${color}`;
 
   if (providerId === "codex") {
     return (

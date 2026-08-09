@@ -268,9 +268,9 @@ export function BoardSidebar({
                   type="button"
                   onClick={() => setShowSettled(!settledExpanded)}
                   aria-expanded={settledExpanded}
-                  className="mt-3 flex w-full items-center gap-2 px-2.5 pb-1 text-left"
+                  className="mt-5 flex w-full items-center gap-2 px-2.5 pb-2 text-left"
                 >
-                  <span className="text-[11px] font-medium text-muted-foreground/70">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
                     {settledExpanded
                       ? "Settled"
                       : `Settled (${view.settled.length})`}
@@ -281,7 +281,7 @@ export function BoardSidebar({
                   </span>
                 </button>
                 {settledExpanded && (
-                  <ul className="flex flex-col gap-px">
+                  <ul className="flex flex-col gap-1">
                     {view.settled.map((item) =>
                       renderRow(item, {
                         label: "Unsettle",
@@ -315,13 +315,13 @@ function Section({
 }) {
   return (
     <section aria-label={label}>
-      <h2 className="flex items-center gap-2 px-2.5 pb-1 pt-3">
-        <span className="text-[11px] font-medium text-muted-foreground/70">
+      <h2 className="flex items-center gap-2 px-2.5 pb-2 pt-5">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
           {label}
         </span>
         <span className="h-px flex-1 bg-sidebar-border" />
       </h2>
-      <ul className="flex flex-col gap-px">{children}</ul>
+      <ul className="flex flex-col gap-1">{children}</ul>
     </section>
   );
 }

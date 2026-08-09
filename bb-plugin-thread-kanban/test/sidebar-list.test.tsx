@@ -128,14 +128,14 @@ describe("BoardSidebar host contract", () => {
     const rowLink = await screen.findByRole("link", { name: title });
     const row = rowLink.parentElement!;
     const titleLabel = within(row).getByTitle(title);
-    const project = within(row).getByTitle(projectName);
-    const machine = within(row).getByTitle(machineName);
+    const project = within(row).getByTitle(`Project: ${projectName}`);
+    const machine = within(row).getByTitle(`Machine: ${machineName}`);
     for (const label of [titleLabel, project, machine]) {
       expect(label.className).toContain("pointer-events-auto");
       expect(label.className).not.toContain("pointer-events-none");
     }
     expect(titleLabel.className).toContain("truncate");
-    expect(project.className).toContain("max-w-[40%]");
+    expect(project.className).toContain("max-w-[45%]");
     expect(project.className).toContain("truncate");
     expect(machine.className).toContain("min-w-0");
     expect(machine.className).toContain("flex-1");
@@ -554,8 +554,8 @@ describe("pinned reordering", () => {
 
   it.each([
     ["title", "Second"],
-    ["project", "bb"],
-    ["machine", "Unknown machine"],
+    ["project", "Project: bb"],
+    ["machine", "Machine: Unknown machine"],
   ])(
     "starts pointer reorder from the %s label and keeps split attached",
     async (_kind, labelTitle) => {

@@ -55,6 +55,10 @@ interface SidebarRowProps {
  * One compact two-line sidebar row. The title line owns provider and PR; the
  * metadata line keeps project, machine and status in a single clipped line.
  *
+ * Three weights carry the hierarchy, because at this width nothing else can:
+ * the title is bright and semibold, the project sits in a tinted chip, and the
+ * machine is the faintest text on the row.
+ *
  * The open target is a full-bleed anchor under the buttons, because a
  * `<button>` inside an `<a>` is invalid interactive nesting. It carries the
  * host's shortcut attributes: drop them and nine bb shortcuts stop working.
@@ -107,7 +111,7 @@ export function SidebarRow({
       <RowContextMenu thread={item.thread} pinnedMove={pinnedMove}>
         <div
           ref={setInteractionRef}
-          className={`group/row relative flex h-12 flex-col justify-center gap-0.5 rounded-md pr-1.5 text-xs ${
+          className={`group/row relative flex h-[54px] flex-col justify-center gap-0.5 rounded-md pr-1.5 text-xs ${
             isActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60"
           } ${reorder ? "select-none touch-manipulation" : ""}`}
           style={{ paddingLeft: `${10 + depth * 12}px` }}
@@ -134,8 +138,8 @@ export function SidebarRow({
               <ProviderIcon providerId={item.thread.providerId} />
             </span>
             <span
-              className={`pointer-events-auto min-w-0 flex-1 cursor-pointer truncate font-medium ${
-                isActive ? "text-foreground" : "text-muted-foreground/80"
+              className={`pointer-events-auto min-w-0 flex-1 cursor-pointer truncate text-[13px] font-semibold tracking-tight ${
+                isActive ? "text-foreground" : "text-foreground/90"
               } group-hover/row:text-foreground`}
               title={title}
               onClick={openThread}
@@ -165,23 +169,17 @@ export function SidebarRow({
               column would push the status off every other row's, and at this
               width there is nothing to spare. Rendered, not hidden, so it
               stays on the tab order. */}
-          <div className="pointer-events-none relative flex h-4 w-full min-w-0 items-center gap-1 whitespace-nowrap text-[11px] text-muted-foreground">
+          <div className="pointer-events-none relative flex h-[18px] w-full min-w-0 items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
             <span
-              className="pointer-events-auto max-w-[40%] min-w-0 shrink cursor-pointer truncate"
-              title={projectName}
+              className="pointer-events-auto max-w-[45%] min-w-0 shrink cursor-pointer truncate rounded bg-foreground/[0.07] px-1.5 py-px font-medium text-muted-foreground"
+              title={`Project: ${projectName}`}
               onClick={openThread}
             >
               {projectName}
             </span>
             <span
-              aria-hidden
-              className="pointer-events-none shrink-0 text-muted-foreground/50"
-            >
-              ·
-            </span>
-            <span
-              className="pointer-events-auto min-w-0 flex-1 cursor-pointer truncate"
-              title={machineName}
+              className="pointer-events-auto min-w-0 flex-1 cursor-pointer truncate text-muted-foreground/70"
+              title={`Machine: ${machineName}`}
               onClick={openThread}
             >
               {machineName}
@@ -214,7 +212,7 @@ export function SidebarRow({
         </div>
       </RowContextMenu>
       {expanded && item.children.length > 0 && (
-        <ul className="flex flex-col gap-px">
+        <ul className="flex flex-col gap-1">
           {item.children.map((child) => (
             <SidebarRow
               key={child.thread.id}
