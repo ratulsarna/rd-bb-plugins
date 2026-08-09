@@ -1,6 +1,20 @@
-import { useEffect, useRef } from "react";
-import type { PluginSidebarPullRequest } from "@bb/plugin-sdk/app";
-import { PrBadge, StatusSlot } from "@/components/row-parts";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  type CSSProperties,
+} from "react";
+import type {
+  DraggableAttributes,
+  DraggableSyntheticListeners,
+} from "@dnd-kit/core";
+import {
+  experimental_useSidebarThreadSplit,
+  type PluginSidebarPullRequest,
+} from "@bb/plugin-sdk/app";
+import { ProviderIcon } from "@/components/provider-icon";
+import { isolatedRowGestureProps } from "@/components/row-gesture";
+import { OpenPrLink, StatusSlot } from "@/components/row-parts";
 import { RowContextMenu } from "@/components/row-context-menu";
 import {
   statusLabelForItem,
@@ -9,19 +23,19 @@ import {
 } from "@/lib/lanes";
 import type { PinnedMove } from "@/lib/pinned-order";
 
-/** Desktop drag-to-reorder, wired by the list for pinned roots only. */
-export interface RowDrag {
-  /** Where the pending drop would land relative to this row. */
-  indicator: "before" | "after" | null;
-  onDragStart(event: React.DragEvent): void;
-  onDragEnd(event: React.DragEvent): void;
-  onDragOver(event: React.DragEvent): void;
-  onDragLeave(event: React.DragEvent): void;
-  onDrop(event: React.DragEvent): void;
+/** dnd-kit's sortable bindings for a pinned root. */
+export interface RowReorder {
+  attributes: DraggableAttributes;
+  listeners: DraggableSyntheticListeners;
+  setNodeRef(node: HTMLElement | null): void;
+  setActivatorNodeRef(node: HTMLElement | null): void;
+  isDragging: boolean;
+  style: CSSProperties;
 }
 
 interface SidebarRowProps {
   item: BoardItem;
+  projectNames: ReadonlyMap<string, string>;
   depth?: number;
   now: number;
   activeThreadId: string | null;
@@ -31,16 +45,15 @@ interface SidebarRowProps {
   pullRequests: ReadonlyMap<string, PluginSidebarPullRequest | null>;
   /** Settle / Unsettle, provided by the list for root rows only. */
   action?: { label: string; run: () => void };
-  /** Pinned-root reordering, for the context menu and the drag handle. */
+  /** Pinned-root reordering, for the context menu and pointer gesture. */
   pinnedMove?: PinnedMove;
-  /** Absent on compact viewports and off the Pinned section — no handle. */
-  drag?: RowDrag;
+  /** Absent on compact viewports and off the Pinned section. */
+  reorder?: RowReorder;
 }
 
 /**
- * One sidebar line: title, unread dot, PR badge, status or age. No project,
- * machine or branch tags — there is no room for them at this width, and the
- * wide panel already carries that detail.
+ * One compact two-line sidebar row. The title line owns provider and PR; the
+ * metadata line keeps project, machine and status in a single clipped line.
  *
  * The open target is a full-bleed anchor under the buttons, because a
  * `<button>` inside an `<a>` is invalid interactive nesting. It carries the
@@ -48,6 +61,7 @@ interface SidebarRowProps {
  */
 export function SidebarRow({
   item,
+  projectNames,
   depth = 0,
   now,
   activeThreadId,
@@ -57,47 +71,51 @@ export function SidebarRow({
   pullRequests,
   action,
   pinnedMove,
-  drag,
+  reorder,
 }: SidebarRowProps) {
   const title = threadDisplayTitle(item.thread);
   const expanded = expandedIds.has(item.thread.id);
   const isActive = item.thread.id === activeThreadId;
+  const projectName =
+    projectNames.get(item.thread.projectId) ?? "Unknown project";
+  const machineName = item.thread.host?.name ?? "Unknown machine";
+  const openThread = () => onOpen(item.thread.id);
+  const { splitProps } = experimental_useSidebarThreadSplit(item.thread.id);
 
   // The active row must be on screen, however far down its section sits.
   // Optional call: jsdom has no scrollIntoView.
   const rowRef = useRef<HTMLDivElement>(null);
+  const setActivatorNodeRef = reorder?.setActivatorNodeRef;
+  const setInteractionRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      rowRef.current = node;
+      setActivatorNodeRef?.(node);
+    },
+    [setActivatorNodeRef],
+  );
   useEffect(() => {
     if (isActive) rowRef.current?.scrollIntoView?.({ block: "nearest" });
   }, [isActive]);
 
   return (
-    <li className="list-none">
+    <li
+      ref={reorder?.setNodeRef}
+      className="list-none"
+      data-pinned-reordering={reorder?.isDragging || undefined}
+      style={reorder?.style}
+    >
       <RowContextMenu thread={item.thread} pinnedMove={pinnedMove}>
         <div
-          ref={rowRef}
-          className={`group/row relative flex h-8 items-center gap-1.5 rounded-md pr-1.5 text-xs ${
+          ref={setInteractionRef}
+          className={`group/row relative flex h-12 flex-col justify-center gap-0.5 rounded-md pr-1.5 text-xs ${
             isActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60"
-          }`}
+          } ${reorder ? "select-none touch-manipulation" : ""}`}
           style={{ paddingLeft: `${10 + depth * 12}px` }}
-          draggable={drag !== undefined}
-          onDragStart={drag?.onDragStart}
-          onDragEnd={drag?.onDragEnd}
-          onDragOver={drag?.onDragOver}
-          onDragLeave={drag?.onDragLeave}
-          onDrop={drag?.onDrop}
+          {...(reorder?.attributes ?? {})}
+          {...(reorder?.listeners ?? {})}
+          {...splitProps}
         >
-          {/* A line, not a border: a border would shift every row by 2px the
-              moment the pointer crossed one. */}
-          {drag?.indicator && (
-            <span
-              aria-hidden
-              className={`pointer-events-none absolute inset-x-0 z-10 h-0.5 bg-primary ${
-                drag.indicator === "before" ? "top-0" : "bottom-0"
-              }`}
-            />
-          )}
-          {/* draggable={false}: a draggable link drags its href — opting out
-              here lets the drag bubble to the row div, which owns it. */}
+          {/* Prevent the browser's href drag from stealing the row gesture. */}
           <a
             data-sidebar-thread-shortcut-target=""
             data-sidebar-thread-id={item.thread.id}
@@ -107,61 +125,92 @@ export function SidebarRow({
             draggable={false}
             onClick={(event) => {
               event.preventDefault();
-              onOpen(item.thread.id);
+              openThread();
             }}
             className="absolute inset-0 cursor-pointer rounded-md"
           />
-          <span
-            className={`pointer-events-none relative min-w-0 flex-1 truncate ${
-              isActive ? "text-foreground" : "text-muted-foreground/80"
-            } group-hover/row:text-foreground`}
-          >
-            {title}
-          </span>
-          {item.thread.isUnread && (
+          <div className="pointer-events-none relative flex h-5 w-full min-w-0 items-center gap-1.5">
+            <span className="inline-flex shrink-0">
+              <ProviderIcon providerId={item.thread.providerId} />
+            </span>
             <span
-              aria-label="Unread"
-              className="pointer-events-none relative size-1.5 shrink-0 rounded-full bg-primary"
-            />
-          )}
-          <span className="pointer-events-none relative">
-            <PrBadge pullRequest={pullRequests.get(item.thread.id) ?? null} />
-          </span>
-          {item.children.length > 0 && (
-            <button
-              type="button"
-              className="relative inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={(event) => {
-                event.preventDefault();
-                onToggleExpanded(item.thread.id);
-              }}
-              aria-expanded={expanded}
-              aria-label={`${expanded ? "Collapse" : "Expand"} ${item.children.length} subagents`}
+              className={`pointer-events-auto min-w-0 flex-1 cursor-pointer truncate font-medium ${
+                isActive ? "text-foreground" : "text-muted-foreground/80"
+              } group-hover/row:text-foreground`}
+              title={title}
+              onClick={openThread}
             >
-              <span aria-hidden>{expanded ? "▾" : "▸"}</span>
-            </button>
-          )}
+              {title}
+            </span>
+            <OpenPrLink
+              pullRequest={pullRequests.get(item.thread.id) ?? null}
+            />
+            {item.children.length > 0 && (
+              <button
+                type="button"
+                className="pointer-events-auto relative inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                {...isolatedRowGestureProps}
+                onClick={(event) => {
+                  event.preventDefault();
+                  onToggleExpanded(item.thread.id);
+                }}
+                aria-expanded={expanded}
+                aria-label={`${expanded ? "Collapse" : "Expand"} ${item.children.length} subagents`}
+              >
+                <span aria-hidden>{expanded ? "▾" : "▸"}</span>
+              </button>
+            )}
+          </div>
           {/* Settle shares the status cell instead of following it. Its own
               column would push the status off every other row's, and at this
               width there is nothing to spare. Rendered, not hidden, so it
               stays on the tab order. */}
-          <span className="pointer-events-none relative flex shrink-0 items-center">
-            <span className={action ? "group-hover/row:opacity-0" : undefined}>
-              <StatusSlot item={item} now={now} />
+          <div className="pointer-events-none relative flex h-4 w-full min-w-0 items-center gap-1 whitespace-nowrap text-[11px] text-muted-foreground">
+            <span
+              className="pointer-events-auto max-w-[40%] min-w-0 shrink cursor-pointer truncate"
+              title={projectName}
+              onClick={openThread}
+            >
+              {projectName}
             </span>
-            {action && (
-              <button
-                type="button"
-                className="pointer-events-auto absolute right-0 top-1/2 -translate-y-1/2 whitespace-nowrap rounded bg-sidebar-accent px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/row:opacity-100"
-                onClick={(event) => {
-                  event.preventDefault();
-                  action.run();
-                }}
-              >
-                {action.label}
-              </button>
-            )}
-          </span>
+            <span
+              aria-hidden
+              className="pointer-events-none shrink-0 text-muted-foreground/50"
+            >
+              ·
+            </span>
+            <span
+              className="pointer-events-auto min-w-0 flex-1 cursor-pointer truncate"
+              title={machineName}
+              onClick={openThread}
+            >
+              {machineName}
+            </span>
+            <span className="pointer-events-none relative flex shrink-0 items-center gap-1.5">
+              {item.thread.isUnread && (
+                <span
+                  aria-label="Unread"
+                  className="size-1.5 shrink-0 rounded-full bg-primary"
+                />
+              )}
+              <span className={action ? "group-hover/row:opacity-0" : undefined}>
+                <StatusSlot item={item} now={now} />
+              </span>
+              {action && (
+                <button
+                  type="button"
+                  className="pointer-events-auto absolute right-0 top-1/2 -translate-y-1/2 whitespace-nowrap rounded bg-sidebar-accent px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/row:opacity-100"
+                  {...isolatedRowGestureProps}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    action.run();
+                  }}
+                >
+                  {action.label}
+                </button>
+              )}
+            </span>
+          </div>
         </div>
       </RowContextMenu>
       {expanded && item.children.length > 0 && (
@@ -170,6 +219,7 @@ export function SidebarRow({
             <SidebarRow
               key={child.thread.id}
               item={child}
+              projectNames={projectNames}
               depth={depth + 1}
               now={now}
               activeThreadId={activeThreadId}

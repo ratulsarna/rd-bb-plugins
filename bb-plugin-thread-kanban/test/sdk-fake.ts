@@ -1,4 +1,4 @@
-import type { ComponentType } from "react";
+import type { ComponentType, PointerEvent as ReactPointerEvent } from "react";
 import type {
   PluginSidebarProject,
   PluginSidebarPullRequest,
@@ -57,6 +57,11 @@ export interface SidebarActionCall {
 
 export const sidebarActionCalls: SidebarActionCall[] = [];
 export const rpcCalls: Array<{ method: string; input: unknown }> = [];
+export const splitPointerDownCalls: Array<{
+  threadId: string;
+  targetTitle: string | null;
+  currentThreadId: string | null;
+}> = [];
 
 export interface PendingRpc {
   method: string;
@@ -85,10 +90,24 @@ export function resolvePendingRpc(
   call.resolve(value);
 }
 
+export function rejectPendingRpc(
+  method: string,
+  position: "oldest" | "newest",
+  error: unknown,
+): void {
+  const matches = pendingRpc.filter((call) => call.method === method);
+  const call =
+    position === "oldest" ? matches[0] : matches[matches.length - 1];
+  if (!call) throw new Error(`no pending ${method} call`);
+  pendingRpc.splice(pendingRpc.indexOf(call), 1);
+  call.reject(error);
+}
+
 export function configureFakeSdk(next: Partial<FakeSdkConfig> = {}): void {
   config = { ...DEFAULTS, ...next };
   sidebarActionCalls.length = 0;
   rpcCalls.length = 0;
+  splitPointerDownCalls.length = 0;
   pendingRpc.length = 0;
 }
 
@@ -190,9 +209,24 @@ export const experimental_useSidebarThreadPullRequest = (threadId: string) => ({
   pullRequest: config.pullRequests[threadId] ?? null,
 });
 
+export const experimental_useSidebarThreadSplit = (threadId: string) => ({
+  splitProps: {
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      splitPointerDownCalls.push({
+        threadId,
+        targetTitle: target?.closest<HTMLElement>("[title]")?.title ?? null,
+        currentThreadId:
+          event.currentTarget
+            .querySelector<HTMLElement>("[data-sidebar-thread-id]")
+            ?.getAttribute("data-sidebar-thread-id") ?? null,
+      });
+    },
+  },
+});
+
 export const useRpc = () => rpc;
 
 export const useRealtime = () => {};
 
 export const useRealtimeConnectionState = () => "connected" as const;
-

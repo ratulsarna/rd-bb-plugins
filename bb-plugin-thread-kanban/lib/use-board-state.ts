@@ -30,6 +30,8 @@ export interface BoardState {
   unsettle(threadId: string): void;
   /** False until the order is known; every move affordance waits on it. */
   pinnedOrderReady: boolean;
+  /** Serializes pin moves until BB returns a canonical order. */
+  pinnedOrderMoving: boolean;
   movePinned(
     threadId: string,
     previousThreadId: string | null,
@@ -218,6 +220,7 @@ export function useBoardState(): BoardState {
     settle: settledApi.settle,
     unsettle: settledApi.unsettle,
     pinnedOrderReady: pinnedApi.ready,
+    pinnedOrderMoving: pinnedApi.moving,
     movePinned: pinnedApi.move,
   };
 }

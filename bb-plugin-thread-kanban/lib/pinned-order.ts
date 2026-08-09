@@ -100,24 +100,32 @@ export function pinnedMoveTarget(
   };
 }
 
+export interface PinnedReorderProjection extends PinnedMoveTarget {
+  ids: string[];
+}
+
 /**
- * Where a drop lands. The dragged thread is removed from the list first —
- * dropping below your own old position would otherwise be off by one.
+ * Project dnd-kit's active row into the row currently under the pointer.
+ * Neighbours come from the full order, including rows hidden by a filter.
  */
-export function pinnedDropTarget(
+export function projectPinnedReorder(
   ids: readonly string[],
-  draggedId: string,
-  targetId: string,
-  place: "before" | "after",
-): PinnedMoveTarget | null {
-  if (draggedId === targetId) return null;
-  if (!ids.includes(draggedId)) return null;
-  const remaining = ids.filter((id) => id !== draggedId);
-  const index = remaining.indexOf(targetId);
-  if (index === -1) return null;
-  return place === "before"
-    ? { previousThreadId: remaining[index - 1] ?? null, nextThreadId: targetId }
-    : { previousThreadId: targetId, nextThreadId: remaining[index + 1] ?? null };
+  activeId: string,
+  overId: string,
+): PinnedReorderProjection | null {
+  const from = ids.indexOf(activeId);
+  const to = ids.indexOf(overId);
+  if (from === -1 || to === -1 || from === to) return null;
+
+  const projected = [...ids];
+  projected.splice(from, 1);
+  projected.splice(to, 0, activeId);
+  const index = projected.indexOf(activeId);
+  return {
+    ids: projected,
+    previousThreadId: projected[index - 1] ?? null,
+    nextThreadId: projected[index + 1] ?? null,
+  };
 }
 
 export interface PinnedMove {

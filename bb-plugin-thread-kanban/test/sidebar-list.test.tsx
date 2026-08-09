@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -12,10 +13,12 @@ import type { PluginThreadListProps } from "@bb/plugin-sdk/app";
 import {
   configureFakeSdk,
   registrations,
+  resolvePendingRpc,
   rpcCalls,
   setFakePinnedOrder,
   setFakeThreads,
   sidebarActionCalls,
+  splitPointerDownCalls,
 } from "./sdk-fake";
 import { DAY, NOW, thread } from "./fixtures";
 // Importing the plugin entry is what registers the slots, exactly as bb loads
@@ -65,8 +68,181 @@ describe("BoardSidebar host contract", () => {
     expect(row.getAttribute("data-sidebar-thread-id")).toBe("thr_x");
   });
 
-  // No split from the sidebar: opening a thread must not re-split the panes,
-  // which is the entire reason this surface exists.
+  it("maps every supported BB provider and reserves fallback for unknown ids", async () => {
+    configureFakeSdk({
+      threads: [
+        thread("codex", { title: "Codex row", providerId: "codex" }),
+        thread("claude", {
+          title: "Claude row",
+          providerId: "claude-code",
+        }),
+        thread("pi", { title: "Pi row", providerId: "pi" }),
+        thread("cursor", { title: "Cursor row", providerId: "acp-cursor" }),
+        thread("grok", { title: "Grok row", providerId: "acp-grok" }),
+        thread("other", { title: "Other row", providerId: "acp-custom" }),
+      ],
+    });
+    renderList();
+
+    for (const label of ["Codex", "Claude Code", "Pi", "Cursor", "Grok"]) {
+      expect(await screen.findByRole("img", { name: label })).toBeDefined();
+    }
+    const fallbacks = screen.getAllByRole("img", {
+      name: "Unknown provider",
+    });
+    expect(fallbacks).toHaveLength(1);
+    const fallback = fallbacks[0]!;
+    expect(fallback.querySelector("title")?.textContent).toBe("acp-custom");
+    expect(fallback.getAttribute("class")).toContain(
+      "text-muted-foreground/50",
+    );
+  });
+
+  it("keeps clipped labels hoverable and row-opening without weakening PR isolation", async () => {
+    const title = "A thread title long enough to need clipping";
+    const projectName = "A project name long enough to need clipping";
+    const machineName = "A machine name long enough to use the flexible space";
+    configureFakeSdk({
+      projects: [{ id: "project-long", name: projectName, isPersonal: false }],
+      threads: [
+        thread("metadata", {
+          title,
+          projectId: "project-long",
+          host: { id: "host-1", name: machineName },
+          indicator: "runtime",
+        }),
+      ],
+      pullRequests: {
+        metadata: {
+          number: 41,
+          title: "Hover target fix",
+          url: "https://example.test/pulls/41",
+          state: "open",
+          attention: "ready_to_merge",
+        },
+      },
+    });
+    let navigated = 0;
+    renderList({ onNavigate: () => (navigated += 1) });
+
+    const rowLink = await screen.findByRole("link", { name: title });
+    const row = rowLink.parentElement!;
+    const titleLabel = within(row).getByTitle(title);
+    const project = within(row).getByTitle(projectName);
+    const machine = within(row).getByTitle(machineName);
+    for (const label of [titleLabel, project, machine]) {
+      expect(label.className).toContain("pointer-events-auto");
+      expect(label.className).not.toContain("pointer-events-none");
+    }
+    expect(titleLabel.className).toContain("truncate");
+    expect(project.className).toContain("max-w-[40%]");
+    expect(project.className).toContain("truncate");
+    expect(machine.className).toContain("min-w-0");
+    expect(machine.className).toContain("flex-1");
+    expect(machine.className).toContain("truncate");
+    expect(project.parentElement?.className).toContain("whitespace-nowrap");
+    expect(within(row).getByText("Running").className).toContain("shrink-0");
+
+    fireEvent.click(rowLink);
+    fireEvent.click(titleLabel);
+    fireEvent.click(project);
+    fireEvent.click(machine);
+    const opensBeforePr = sidebarActionCalls.filter(
+      (call) => call.method === "open",
+    );
+    expect(opensBeforePr).toHaveLength(4);
+    expect(opensBeforePr.every((call) => call.threadId === "metadata")).toBe(
+      true,
+    );
+    expect(navigated).toBe(4);
+
+    const prLink = within(row).getByRole("link", {
+      name: "Open pull request #41: Hover target fix",
+    });
+    expect(prLink.getAttribute("href")).toBe(
+      "https://example.test/pulls/41",
+    );
+    fireEvent.click(prLink);
+    expect(
+      sidebarActionCalls.filter((call) => call.method === "open"),
+    ).toHaveLength(4);
+    expect(navigated).toBe(4);
+  });
+
+  it("links only open and draft PRs without opening the thread row", async () => {
+    configureFakeSdk({
+      threads: [
+        thread("open", { title: "Open PR row" }),
+        thread("draft", { title: "Draft PR row" }),
+        thread("merged", { title: "Merged PR row" }),
+        thread("closed", { title: "Closed PR row" }),
+      ],
+      pullRequests: {
+        open: {
+          number: 42,
+          title: "Ready change",
+          url: "https://example.test/pulls/42",
+          state: "open",
+          attention: "ready_to_merge",
+        },
+        draft: {
+          number: 43,
+          title: "Work in progress",
+          url: "https://example.test/pulls/43",
+          state: "draft",
+          attention: "draft",
+        },
+        merged: {
+          number: 44,
+          title: "Merged change",
+          url: "https://example.test/pulls/44",
+          state: "merged",
+          attention: "merged",
+        },
+        closed: {
+          number: 45,
+          title: "Closed change",
+          url: "https://example.test/pulls/45",
+          state: "closed",
+          attention: "closed",
+        },
+      },
+    });
+    let navigated = 0;
+    renderList({
+      searchQuery: "PR row",
+      onNavigate: () => (navigated += 1),
+    });
+
+    const openPr = await screen.findByRole("link", {
+      name: "Open pull request #42: Ready change",
+    });
+    const draftPr = screen.getByRole("link", {
+      name: "Draft pull request #43: Work in progress",
+    });
+    expect(openPr.getAttribute("href")).toBe("https://example.test/pulls/42");
+    expect(draftPr.getAttribute("href")).toBe("https://example.test/pulls/43");
+    expect(openPr.getAttribute("target")).toBe("_blank");
+    expect(openPr.className).toContain("pointer-events-auto");
+
+    const mergedRow = screen.getByRole("link", { name: "Merged PR row" })
+      .parentElement!;
+    const closedRow = screen.getByRole("link", { name: "Closed PR row" })
+      .parentElement!;
+    expect(
+      within(mergedRow).queryByRole("link", { name: /pull request/i }),
+    ).toBeNull();
+    expect(
+      within(closedRow).queryByRole("link", { name: /pull request/i }),
+    ).toBeNull();
+
+    fireEvent.click(openPr);
+    expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
+      false,
+    );
+    expect(navigated).toBe(0);
+  });
+
   it("opens a thread plainly and closes the mobile drawer", async () => {
     configureFakeSdk({ threads: [thread("thr_open", { title: "Open me" })] });
     let navigated = 0;
@@ -194,6 +370,9 @@ describe("BoardSidebar sections", () => {
         input: { threadId: "quiet" },
       }),
     );
+    expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
+      false,
+    );
   });
 
   it("nests subagents under their thread behind the expand control", async () => {
@@ -210,6 +389,9 @@ describe("BoardSidebar sections", () => {
 
     fireEvent.click(screen.getByLabelText("Expand 1 subagents"));
     expect(screen.getByText("Subagent")).toBeDefined();
+    expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
+      false,
+    );
   });
 });
 
@@ -331,23 +513,364 @@ describe("pinned reordering", () => {
     return renderList(props);
   }
 
-  it("makes pinned rows draggable on desktop", async () => {
+  function setPinnedRowRects() {
+    const links = within(screen.getByRole("region", { name: "Pinned" }))
+      .getAllByRole("link")
+      .filter((link) => link.hasAttribute("data-sidebar-thread-id"));
+    links.forEach((link, index) => {
+      const row = link.closest("li")!;
+      const top = index * 48;
+      row.getBoundingClientRect = () =>
+        ({
+          x: 0,
+          y: top,
+          top,
+          left: 0,
+          right: 240,
+          bottom: top + 48,
+          width: 240,
+          height: 48,
+          toJSON: () => ({}),
+        }) as DOMRect;
+    });
+  }
+
+  async function dragToThird(label: HTMLElement) {
+    setPinnedRowRects();
+    const source = label.closest("li")!;
+    fireEvent.mouseDown(label, {
+      button: 0,
+      buttons: 1,
+      clientX: 20,
+      clientY: 72,
+    });
+    fireEvent.mouseMove(document, { buttons: 1, clientX: 20, clientY: 78 });
+    await waitFor(() =>
+      expect(source.getAttribute("data-pinned-reordering")).toBe("true"),
+    );
+    fireEvent.mouseMove(document, { buttons: 1, clientX: 20, clientY: 132 });
+    fireEvent.mouseUp(document, { button: 0, clientX: 20, clientY: 132 });
+  }
+
+  it.each([
+    ["title", "Second"],
+    ["project", "bb"],
+    ["machine", "Unknown machine"],
+  ])(
+    "starts pointer reorder from the %s label and keeps split attached",
+    async (_kind, labelTitle) => {
+      configureFakeSdk({
+        threads: pins(),
+        pinnedOrder: ["a", "b", "c"],
+      });
+      renderList();
+
+      const anchor = await screen.findByRole("link", { name: "Second" });
+      const row = anchor.parentElement!;
+      await waitFor(() => expect(row.getAttribute("role")).toBe("button"));
+      const label = within(row).getByTitle(labelTitle);
+
+      fireEvent.pointerDown(label, { button: 0, clientX: 20, clientY: 72 });
+      expect(splitPointerDownCalls).toContainEqual({
+        threadId: "b",
+        targetTitle: labelTitle,
+        currentThreadId: "b",
+      });
+
+      await dragToThird(label);
+      await waitFor(() =>
+        expect(rpcCalls).toContainEqual({
+          method: "movePinned",
+          input: { threadId: "b", previousThreadId: "c", nextThreadId: null },
+        }),
+      );
+    },
+  );
+
+  it("blocks a second reorder until BB returns the first canonical order", async () => {
+    configureFakeSdk({
+      threads: pins(),
+      pinnedOrder: ["a", "b", "c"],
+      deferRpc: ["movePinned"],
+      pullRequests: {
+        c: {
+          number: 43,
+          title: "Third change",
+          url: "https://example.test/pulls/43",
+          state: "open",
+          attention: "ready_to_merge",
+        },
+      },
+    });
+    renderList();
+
+    const second = await screen.findByRole("link", { name: "Second" });
+    await waitFor(() =>
+      expect(second.parentElement?.getAttribute("role")).toBe("button"),
+    );
+    await dragToThird(within(second.parentElement!).getByTitle("Second"));
+    await waitFor(() =>
+      expect(rpcCalls.filter((call) => call.method === "movePinned")).toHaveLength(
+        1,
+      ),
+    );
+
+    const third = screen.getByRole("link", { name: "Third" });
+    const thirdLabel = within(third.parentElement!).getByTitle("Third");
+    await waitFor(() =>
+      expect(third.parentElement?.getAttribute("role")).toBeNull(),
+    );
+    expect(
+      within(screen.getByRole("region", { name: "Pinned" }))
+        .getAllByRole("link")
+        .map((row) => row.getAttribute("data-sidebar-thread-id"))
+        .filter((threadId) => threadId !== null),
+    ).toEqual(["a", "c", "b"]);
+
+    // The projected list is visible, but it must not feed a second move until
+    // BB has made that order canonical.
+    setPinnedRowRects();
+    fireEvent.mouseDown(thirdLabel, {
+      button: 0,
+      buttons: 1,
+      clientX: 20,
+      clientY: 72,
+    });
+    fireEvent.mouseMove(document, { buttons: 1, clientX: 20, clientY: 78 });
+    fireEvent.mouseMove(document, { buttons: 1, clientX: 20, clientY: 132 });
+    fireEvent.mouseUp(document, { button: 0, clientX: 20, clientY: 132 });
+    expect(rpcCalls.filter((call) => call.method === "movePinned")).toHaveLength(
+      1,
+    );
+
+    fireEvent.pointerDown(thirdLabel, { button: 0, clientX: 20, clientY: 72 });
+    expect(splitPointerDownCalls).toContainEqual({
+      threadId: "c",
+      targetTitle: "Third",
+      currentThreadId: "c",
+    });
+
+    fireEvent.contextMenu(thirdLabel);
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    expect(within(menu).getByText("Mark unread")).toBeDefined();
+    expect(within(menu).queryByText("Move up")).toBeNull();
+    fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("menu", { name: "Thread actions" })).toBeNull(),
+    );
+
+    // Reorder click suppression is intentionally brief; the RPC gate itself
+    // must leave ordinary row and PR clicks alone.
+    await new Promise((resolve) => window.setTimeout(resolve, 400));
+    fireEvent.click(thirdLabel);
+    const prLink = within(third.parentElement!).getByRole("link", {
+      name: "Open pull request #43: Third change",
+    });
+    fireEvent.click(prLink);
+    expect(
+      sidebarActionCalls.filter((call) => call.method === "open"),
+    ).toEqual([{ method: "open", threadId: "c", options: undefined }]);
+
+    await act(async () =>
+      resolvePendingRpc("movePinned", "oldest", { ids: ["a", "c", "b"] }),
+    );
+    await waitFor(() =>
+      expect(third.parentElement?.getAttribute("role")).toBe("button"),
+    );
+
+    await dragToThird(thirdLabel);
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({
+        method: "movePinned",
+        input: { threadId: "c", previousThreadId: "b", nextThreadId: null },
+      }),
+    );
+    await act(async () =>
+      resolvePendingRpc("movePinned", "oldest", { ids: ["a", "b", "c"] }),
+    );
+  });
+
+  it("cancels an active reorder on Escape without moving", async () => {
     pinnedSidebar();
 
     const anchor = await screen.findByRole("link", { name: "Second" });
-    expect(anchor.parentElement?.getAttribute("draggable")).toBe("true");
+    const label = within(anchor.parentElement!).getByTitle("Second");
+    setPinnedRowRects();
+    const source = label.closest("li")!;
+
+    fireEvent.mouseDown(label, {
+      button: 0,
+      buttons: 1,
+      clientX: 20,
+      clientY: 72,
+    });
+    fireEvent.mouseMove(document, { buttons: 1, clientX: 20, clientY: 78 });
+    await waitFor(() =>
+      expect(source.getAttribute("data-pinned-reordering")).toBe("true"),
+    );
+    fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+    await waitFor(() =>
+      expect(source.getAttribute("data-pinned-reordering")).toBeNull(),
+    );
+    fireEvent.mouseUp(document, { button: 0, clientX: 20, clientY: 132 });
+    fireEvent.click(label);
+
+    expect(rpcCalls.some((call) => call.method === "movePinned")).toBe(false);
+    expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
+      false,
+    );
   });
 
-  // No drag on a phone, which is exactly why the context menu carries moves.
-  it("does not make rows draggable on a compact viewport", async () => {
+  it("cancels a pending reorder on Escape before activation", async () => {
+    pinnedSidebar();
+
+    const anchor = await screen.findByRole("link", { name: "Second" });
+    const label = within(anchor.parentElement!).getByTitle("Second");
+    setPinnedRowRects();
+
+    fireEvent.mouseDown(label, {
+      button: 0,
+      buttons: 1,
+      clientX: 20,
+      clientY: 72,
+    });
+    fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+    fireEvent.mouseMove(document, { buttons: 1, clientX: 20, clientY: 132 });
+    fireEvent.mouseUp(document, { button: 0, clientX: 20, clientY: 132 });
+
+    expect(
+      anchor.closest("li")?.getAttribute("data-pinned-reordering"),
+    ).toBeNull();
+    expect(rpcCalls.some((call) => call.method === "movePinned")).toBe(false);
+  });
+
+  it("keeps PR, expand, and settle controls out of both gestures", async () => {
+    configureFakeSdk({
+      threads: [
+        ...pins(),
+        thread("child", { title: "Child", parentThreadId: "b" }),
+        thread("quiet", { title: "Quiet" }),
+      ],
+      pinnedOrder: ["a", "b", "c"],
+      pullRequests: {
+        b: {
+          number: 42,
+          title: "Pinned change",
+          url: "https://example.test/pulls/42",
+          state: "open",
+          attention: "ready_to_merge",
+        },
+      },
+    });
+    renderList();
+
+    const anchor = await screen.findByRole("link", { name: "Second" });
+    const row = anchor.parentElement!;
+    await waitFor(() => expect(row.getAttribute("role")).toBe("button"));
+    setPinnedRowRects();
+    const controls = [
+      within(row).getByRole("link", {
+        name: "Open pull request #42: Pinned change",
+      }),
+      within(row).getByRole("button", { name: "Expand 1 subagents" }),
+      screen.getByRole("button", { name: "Settle" }),
+    ];
+
+    for (const control of controls) {
+      fireEvent.pointerDown(control, { button: 0, clientX: 20, clientY: 72 });
+      fireEvent.mouseDown(control, {
+        button: 0,
+        buttons: 1,
+        clientX: 20,
+        clientY: 72,
+      });
+      fireEvent.mouseMove(document, { buttons: 1, clientX: 20, clientY: 90 });
+      fireEvent.mouseUp(document, { button: 0, clientX: 20, clientY: 90 });
+    }
+
+    expect(splitPointerDownCalls).toEqual([]);
+    expect(
+      anchor.closest("li")?.getAttribute("data-pinned-reordering"),
+    ).toBeNull();
+    expect(rpcCalls.some((call) => call.method === "movePinned")).toBe(false);
+  });
+
+  it("keeps normal row opens and PR clicks independent", async () => {
+    configureFakeSdk({
+      threads: pins(),
+      pinnedOrder: ["a", "b", "c"],
+      pullRequests: {
+        b: {
+          number: 42,
+          title: "Pinned change",
+          url: "https://example.test/pulls/42",
+          state: "open",
+          attention: "ready_to_merge",
+        },
+      },
+    });
+    let navigated = 0;
+    renderList({ onNavigate: () => (navigated += 1) });
+
+    const anchor = await screen.findByRole("link", { name: "Second" });
+    const row = anchor.parentElement!;
+    const titleLabel = within(row).getByTitle("Second");
+
+    fireEvent.click(titleLabel);
+    expect(sidebarActionCalls).toContainEqual({
+      method: "open",
+      threadId: "b",
+      options: undefined,
+    });
+    expect(navigated).toBe(1);
+
+    const prLink = within(row).getByRole("link", {
+      name: "Open pull request #42: Pinned change",
+    });
+    fireEvent.click(prLink);
+    expect(
+      sidebarActionCalls.filter((call) => call.method === "open"),
+    ).toHaveLength(1);
+    expect(navigated).toBe(1);
+  });
+
+  it("consumes only the drag-release click and allows the next real click immediately", async () => {
+    pinnedSidebar();
+
+    const anchor = await screen.findByRole("link", { name: "Second" });
+    const label = within(anchor.parentElement!).getByTitle("Second");
+    await dragToThird(label);
+    await waitFor(() =>
+      expect(rpcCalls.some((call) => call.method === "movePinned")).toBe(true),
+    );
+    const movedAnchor = screen.getByRole("link", { name: "Second" });
+    await waitFor(() =>
+      expect(
+        movedAnchor.closest("li")?.getAttribute("data-pinned-reordering"),
+      ).toBeNull(),
+    );
+    const movedLabel = within(movedAnchor.parentElement!).getByTitle("Second");
+
+    expect(fireEvent.click(movedLabel)).toBe(false);
+    expect(
+      sidebarActionCalls.some((call) => call.method === "open"),
+    ).toBe(false);
+
+    expect(fireEvent.click(movedLabel)).toBe(true);
+    expect(
+      sidebarActionCalls.filter((call) => call.method === "open"),
+    ).toEqual([{ method: "open", threadId: "b", options: undefined }]);
+  });
+
+  // No reorder sensor on a phone, which is why the context menu carries moves.
+  it("does not attach reorder activators on a compact viewport", async () => {
     pinnedSidebar({ isCompactViewport: true });
 
     const anchor = await screen.findByRole("link", { name: "Second" });
-    expect(anchor.parentElement?.getAttribute("draggable")).not.toBe("true");
+    expect(anchor.parentElement?.getAttribute("role")).toBeNull();
   });
 
-  // A draggable anchor drags its href, not the row — the row div owns
-  // dragging, and the anchor must opt out so the drag bubbles up to it.
+  // Browser href dragging must not steal either pointer gesture.
   it("keeps the row's open anchor undraggable", async () => {
     pinnedSidebar();
 
@@ -355,12 +878,12 @@ describe("pinned reordering", () => {
     expect(row.getAttribute("draggable")).toBe("false");
   });
 
-  it("keeps rows undraggable until bb's order has loaded", async () => {
+  it("keeps reorder activators off until bb's order has loaded", async () => {
     configureFakeSdk({ threads: pins(), failPinnedOrder: true });
     renderList();
 
     const anchor = await screen.findByRole("link", { name: "Second" });
-    expect(anchor.parentElement?.getAttribute("draggable")).not.toBe("true");
+    expect(anchor.parentElement?.getAttribute("role")).toBeNull();
   });
 
   // The menu waits on the order too. Moving against a stale rank would file
@@ -508,6 +1031,9 @@ describe("row context menu", () => {
         method: "requestDelete",
         threadId: "thr_del",
       }),
+    );
+    expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
+      false,
     );
   });
 });

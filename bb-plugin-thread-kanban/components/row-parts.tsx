@@ -1,4 +1,5 @@
 import type { PluginSidebarPullRequest } from "@bb/plugin-sdk/app";
+import { isolatedRowGestureProps } from "@/components/row-gesture";
 import { statusLabelForItem, type BoardItem, type PrState } from "@/lib/lanes";
 
 export function formatRelative(timestamp: number, now: number): string {
@@ -11,27 +12,48 @@ export function formatRelative(timestamp: number, now: number): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
-const PR_BADGE: Record<PrState, { text: string; label: string }> = {
-  draft: { text: "text-muted-foreground", label: "Draft PR" },
-  open: { text: "text-success", label: "Open PR" },
-  merged: { text: "text-primary", label: "Merged PR" },
-  closed: { text: "text-destructive", label: "Closed PR" },
+const PR_LINK: Partial<Record<PrState, { text: string; label: string }>> = {
+  draft: { text: "text-muted-foreground", label: "Draft pull request" },
+  open: { text: "text-success", label: "Open pull request" },
 };
 
-export function PrBadge({
+export function OpenPrLink({
   pullRequest,
 }: {
   pullRequest: PluginSidebarPullRequest | null;
 }) {
   if (!pullRequest) return null;
-  const badge = PR_BADGE[pullRequest.state];
+  const link = PR_LINK[pullRequest.state];
+  if (!link) return null;
+
   return (
-    <span
-      className={`shrink-0 text-xs font-medium tabular-nums ${badge.text}`}
-      title={`${badge.label}: ${pullRequest.title}`}
+    <a
+      href={pullRequest.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={`${link.label} #${pullRequest.number}: ${pullRequest.title}`}
+      title={`${link.label} #${pullRequest.number}: ${pullRequest.title}`}
+      className={`pointer-events-auto relative inline-flex h-5 shrink-0 items-center gap-0.5 rounded border border-sidebar-border px-1 text-[11px] font-medium tabular-nums no-underline hover:border-current hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${link.text}`}
+      {...isolatedRowGestureProps}
+      onClick={(event) => event.stopPropagation()}
     >
+      <svg
+        aria-hidden
+        className="size-3"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+        viewBox="0 0 24 24"
+      >
+        <circle cx="6" cy="18" r="2" />
+        <circle cx="6" cy="6" r="2" />
+        <circle cx="18" cy="18" r="2" />
+        <path d="M6 8v8M16 6h-5M16 6l-3-3M16 6l-3 3M18 16v-5a5 5 0 0 0-5-5" />
+      </svg>
       #{pullRequest.number}
-    </span>
+    </a>
   );
 }
 
@@ -41,9 +63,10 @@ export function StatusSlot({ item, now }: { item: BoardItem; now: number }) {
   if (item.lane === "needs-you") {
     return (
       <span
-        className="shrink-0 rounded-full bg-attention/15 px-2 py-0.5 text-[11px] font-medium text-attention"
+        className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-attention"
         title={label}
       >
+        <span aria-hidden className="size-1.5 rounded-full bg-current" />
         Needs you
       </span>
     );
@@ -51,9 +74,10 @@ export function StatusSlot({ item, now }: { item: BoardItem; now: number }) {
   if (item.lane === "running") {
     return (
       <span
-        className="shrink-0 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success"
+        className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-success"
         title={label}
       >
+        <span aria-hidden className="size-1.5 rounded-full bg-current" />
         Running
       </span>
     );

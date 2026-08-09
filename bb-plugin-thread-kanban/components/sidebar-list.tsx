@@ -4,8 +4,9 @@ import {
   type PluginThreadListProps,
 } from "@bb/plugin-sdk/app";
 import { PrProbes } from "@/components/pr-probes";
+import { PinnedReorder } from "@/components/pinned-reorder";
 import { ProjectSelect, useProjectFilter } from "@/components/project-select";
-import { SidebarRow } from "@/components/sidebar-row";
+import { SidebarRow, type RowReorder } from "@/components/sidebar-row";
 import { filterBoardForDisplay } from "@/lib/display-filter";
 import { ancestorIdsOf, effectiveExpandedIds } from "@/lib/expansion";
 import {
@@ -13,7 +14,7 @@ import {
   selectPrProbeTargets,
   type BoardItem,
 } from "@/lib/lanes";
-import { pinnedDropTarget, pinnedMoveActions } from "@/lib/pinned-order";
+import { pinnedMoveActions } from "@/lib/pinned-order";
 import { useBoardState } from "@/lib/use-board-state";
 
 /**
@@ -35,13 +36,12 @@ export function BoardSidebar({
   // null means "no explicit choice yet", so the shelf can open itself for a
   // search hit or the active thread — and one click still overrules that.
   const [showSettled, setShowSettled] = useState<boolean | null>(null);
-  const [dragging, setDragging] = useState<string | null>(null);
-  const [dropOn, setDropOn] = useState<{
-    threadId: string;
-    place: "before" | "after";
-  } | null>(null);
   const state = useBoardState();
   const [projectId, setProjectId] = useProjectFilter(state.projects);
+  const projectNames = useMemo(
+    () => new Map(state.projects.map((project) => [project.id, project.name])),
+    [state.projects],
+  );
 
   const isSearching = searchQuery.trim().length > 0;
 
@@ -89,8 +89,7 @@ export function BoardSidebar({
 
   const openThread = useCallback(
     (threadId: string) => {
-      // Plain open, never a split: the sidebar's whole point is that a thread
-      // lands in the main area instead of re-splitting the panes.
+      // Clicks open plainly. The host split hook owns only the drag gesture.
       actions.open(threadId);
       onNavigate();
     },
@@ -102,6 +101,7 @@ export function BoardSidebar({
       <SidebarRow
         key={item.thread.id}
         item={item}
+        projectNames={projectNames}
         now={state.now}
         activeThreadId={activeThreadId}
         expandedIds={visibleExpandedIds}
@@ -115,6 +115,7 @@ export function BoardSidebar({
       activeThreadId,
       visibleExpandedIds,
       openThread,
+      projectNames,
       state.now,
       state.pullRequests,
       toggleExpanded,
@@ -130,31 +131,20 @@ export function BoardSidebar({
   );
 
   const movePinned = state.movePinned;
-  const dropSomewhere = useCallback(
-    (targetId: string, place: "before" | "after") => {
-      if (!dragging) return;
-      const target = pinnedDropTarget(pinnedIds, dragging, targetId, place);
-      if (target) {
-        movePinned(dragging, target.previousThreadId, target.nextThreadId);
-      }
-      setDragging(null);
-      setDropOn(null);
-    },
-    [dragging, movePinned, pinnedIds],
-  );
-
   const renderPinnedRow = useCallback(
-    (item: BoardItem) => {
+    (item: BoardItem, reorder?: RowReorder) => {
       const threadId = item.thread.id;
-      // Both affordances wait on bb's order, not just the drag handle: moving
-      // against a stale rank would place the thread beside the wrong neighbour.
-      const pinnedMove = state.pinnedOrderReady
-        ? pinnedMoveActions(pinnedIds, threadId, movePinned)
-        : undefined;
+      // Both affordances wait on bb's order, not just the pointer gesture:
+      // moving against a stale rank would place it beside the wrong neighbour.
+      const pinnedMove =
+        state.pinnedOrderReady && !state.pinnedOrderMoving
+          ? pinnedMoveActions(pinnedIds, threadId, movePinned)
+          : undefined;
       return (
         <SidebarRow
           key={threadId}
           item={item}
+          projectNames={projectNames}
           now={state.now}
           activeThreadId={activeThreadId}
           expandedIds={visibleExpandedIds}
@@ -162,62 +152,18 @@ export function BoardSidebar({
           onOpen={openThread}
           pullRequests={state.pullRequests}
           pinnedMove={pinnedMove}
-          drag={
-            // No handle until bb's order is known, and none on a phone: there
-            // is no drag there, which is why the context menu carries moves.
-            state.pinnedOrderReady && !isCompactViewport
-              ? {
-                  indicator:
-                    dropOn?.threadId === threadId ? dropOn.place : null,
-                  onDragStart: (event) => {
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("text/plain", threadId);
-                    setDragging(threadId);
-                  },
-                  onDragEnd: () => {
-                    setDragging(null);
-                    setDropOn(null);
-                  },
-                  onDragOver: (event) => {
-                    if (!dragging || dragging === threadId) return;
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                    const box = event.currentTarget.getBoundingClientRect();
-                    const place =
-                      event.clientY < box.top + box.height / 2
-                        ? "before"
-                        : "after";
-                    setDropOn((current) =>
-                      current?.threadId === threadId && current.place === place
-                        ? current
-                        : { threadId, place },
-                    );
-                  },
-                  onDragLeave: () => {
-                    setDropOn((current) =>
-                      current?.threadId === threadId ? null : current,
-                    );
-                  },
-                  onDrop: (event) => {
-                    event.preventDefault();
-                    dropSomewhere(threadId, dropOn?.place ?? "before");
-                  },
-                }
-              : undefined
-          }
+          reorder={reorder}
         />
       );
     },
     [
       activeThreadId,
-      dragging,
-      dropOn,
-      dropSomewhere,
-      isCompactViewport,
       movePinned,
       openThread,
       pinnedIds,
+      projectNames,
       state.now,
+      state.pinnedOrderMoving,
       state.pinnedOrderReady,
       state.pullRequests,
       toggleExpanded,
@@ -289,7 +235,15 @@ export function BoardSidebar({
           <>
             {view.pinned.length > 0 && (
               <Section label="Pinned">
-                {view.pinned.map((item) => renderPinnedRow(item))}
+                <PinnedReorder
+                  items={view.pinned}
+                  fullOrder={pinnedIds}
+                  enabled={state.pinnedOrderReady && !isCompactViewport}
+                  movePending={state.pinnedOrderMoving}
+                  onMove={movePinned}
+                >
+                  {renderPinnedRow}
+                </PinnedReorder>
               </Section>
             )}
             <Section label="Inbox">

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   comparePinnedRoots,
-  pinnedDropTarget,
   pinnedMoveActions,
   pinnedMoveTarget,
   pinnedRootIds,
+  projectPinnedReorder,
   type PinnedThreadEntry,
 } from "./pinned-order";
 
@@ -122,38 +122,35 @@ describe("pinnedMoveTarget", () => {
   });
 });
 
-describe("pinnedDropTarget", () => {
-  it("drops above a row", () => {
-    expect(pinnedDropTarget(ORDER, "d", "b", "before")).toEqual({
+describe("projectPinnedReorder", () => {
+  it("projects a row upward and names its new neighbours", () => {
+    expect(projectPinnedReorder(ORDER, "d", "b")).toEqual({
+      ids: ["a", "d", "b", "c"],
       previousThreadId: "a",
       nextThreadId: "b",
     });
   });
 
-  it("drops below a row", () => {
-    expect(pinnedDropTarget(ORDER, "a", "c", "after")).toEqual({
+  it("projects a row downward and names its new neighbours", () => {
+    expect(projectPinnedReorder(ORDER, "a", "c")).toEqual({
+      ids: ["b", "c", "a", "d"],
       previousThreadId: "c",
       nextThreadId: "d",
     });
   });
 
-  // The dragged row leaves its old slot first. Reading neighbours from the
-  // unmodified list would name the dragged thread as its own neighbour.
-  it("ignores the dragged row's old position", () => {
-    expect(pinnedDropTarget(ORDER, "b", "a", "after")).toEqual({
-      previousThreadId: "a",
-      nextThreadId: "c",
-    });
-    expect(pinnedDropTarget(ORDER, "b", "c", "before")).toEqual({
-      previousThreadId: "a",
-      nextThreadId: "c",
+  it("keeps filtered-out rows in the projected full order", () => {
+    expect(projectPinnedReorder(["a", "hidden", "c"], "c", "a")).toEqual({
+      ids: ["c", "a", "hidden"],
+      previousThreadId: null,
+      nextThreadId: "a",
     });
   });
 
-  it("has no target for a drop on itself or an unknown row", () => {
-    expect(pinnedDropTarget(ORDER, "a", "a", "before")).toBeNull();
-    expect(pinnedDropTarget(ORDER, "a", "gone", "before")).toBeNull();
-    expect(pinnedDropTarget(ORDER, "gone", "a", "before")).toBeNull();
+  it("has no projection for itself or an unknown row", () => {
+    expect(projectPinnedReorder(ORDER, "a", "a")).toBeNull();
+    expect(projectPinnedReorder(ORDER, "a", "gone")).toBeNull();
+    expect(projectPinnedReorder(ORDER, "gone", "a")).toBeNull();
   });
 });
 

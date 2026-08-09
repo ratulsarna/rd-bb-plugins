@@ -12,7 +12,9 @@ export interface PinnedOrderApi {
   ids: readonly string[];
   /** False until the first read lands. Move controls stay disabled until it. */
   ready: boolean;
-  /** Re-read bb's order. Safe to call at any time; the seq guard applies. */
+  /** True until BB answers the current move and any queued refresh finishes. */
+  moving: boolean;
+  /** Re-read bb's order; requests during a move coalesce behind it. */
   refresh(): Promise<void>;
   move(
     threadId: string,
@@ -34,11 +36,14 @@ export function usePinnedOrder(): PinnedOrderApi {
   const connectionState = useRealtimeConnectionState();
   const [ids, setIds] = useState<readonly string[]>(() => []);
   const [ready, setReady] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const movingRef = useRef(false);
+  const refreshPendingRef = useRef(false);
 
   // One counter across reads and writes: a list read that was already in
   // flight when the user moved a thread must not land on top of the move.
   const requestSeq = useRef(0);
-  const refresh = useCallback(async () => {
+  const readOrder = useCallback(async () => {
     const seq = ++requestSeq.current;
     try {
       const result = await rpc.call("pinnedOrder", {});
@@ -50,6 +55,23 @@ export function usePinnedOrder(): PinnedOrderApi {
       // board itself still renders with its fallback pin sort.
     }
   }, [rpc]);
+
+  const finishMove = useCallback(async () => {
+    while (refreshPendingRef.current) {
+      refreshPendingRef.current = false;
+      await readOrder();
+    }
+    movingRef.current = false;
+    setMoving(false);
+  }, [readOrder]);
+
+  const refresh = useCallback(async () => {
+    if (movingRef.current) {
+      refreshPendingRef.current = true;
+      return;
+    }
+    await readOrder();
+  }, [readOrder]);
 
   useEffect(() => {
     void refresh();
@@ -68,20 +90,30 @@ export function usePinnedOrder(): PinnedOrderApi {
 
   const move = useCallback<PinnedOrderApi["move"]>(
     (threadId, previousThreadId, nextThreadId) => {
+      if (movingRef.current) return;
+      movingRef.current = true;
+      setMoving(true);
       const seq = ++requestSeq.current;
-      void rpc
-        .call("movePinned", { threadId, previousThreadId, nextThreadId })
-        .then((result) => {
-          if (seq !== requestSeq.current) return;
-          setIds(result.ids);
-        })
-        .catch(() => void refresh());
+      void (async () => {
+        try {
+          const result = await rpc.call("movePinned", {
+            threadId,
+            previousThreadId,
+            nextThreadId,
+          });
+          if (seq === requestSeq.current) setIds(result.ids);
+        } catch {
+          await readOrder();
+        } finally {
+          await finishMove();
+        }
+      })();
     },
-    [refresh, rpc],
+    [finishMove, readOrder, rpc],
   );
 
   return useMemo(
-    () => ({ ids, ready, refresh, move }),
-    [ids, move, ready, refresh],
+    () => ({ ids, ready, moving, refresh, move }),
+    [ids, move, moving, ready, refresh],
   );
 }
