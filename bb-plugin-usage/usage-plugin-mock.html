@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>bb Usage Plugin Mock</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111318;
+      --sidebar: #0d0f13;
+      --surface: #151820;
+      --line: #292d36;
+      --line-soft: #20242c;
+      --text: #f2f3f5;
+      --muted: #9299a6;
+      --muted-2: #69717e;
+      --fill: #8094ff;
+      --track: #272c36;
+      --reserve: #49bf83;
+      --reserve-bg: rgba(73, 191, 131, .11);
+      --deficit: #ff6b75;
+      --deficit-bg: rgba(255, 107, 117, .11);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+
+    button { font: inherit; }
+    .app { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
+    .sidebar {
+      background: var(--sidebar);
+      border-right: 1px solid var(--line-soft);
+      padding: 12px 10px;
+      display: flex;
+      flex-direction: column;
+    }
+    .brand { display: flex; align-items: center; gap: 9px; height: 38px; padding: 0 8px 10px; font-weight: 650; }
+    .brand-mark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: #edf0f4; color: #111318; font-size: 12px; font-weight: 800; }
+    .nav { display: grid; gap: 3px; }
+    .nav-item { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 7px; color: var(--muted); }
+    .nav-item.selected { color: var(--text); background: #1b1f27; }
+    .nav-icon { width: 16px; text-align: center; color: #aab1bd; }
+    .nav-divider { height: 1px; background: var(--line-soft); margin: 10px 8px; }
+    .sidebar-spacer { flex: 1; }
+    .machine { padding: 10px 9px 4px; color: var(--muted-2); font-size: 11px; }
+
+    .main { min-width: 0; display: grid; grid-template-rows: 55px 1fr; }
+    .topbar {
+      border-bottom: 1px solid var(--line-soft);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 22px;
+      background: rgba(17, 19, 24, .94);
+    }
+    .title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 650; }
+    .title-icon { color: #aeb6c4; }
+    .header-actions { display: flex; align-items: center; gap: 13px; }
+    .updated { color: var(--muted-2); font-size: 12px; }
+    .refresh {
+      border: 1px solid var(--line);
+      background: #181b22;
+      color: var(--text);
+      border-radius: 7px;
+      height: 30px;
+      padding: 0 11px;
+      cursor: pointer;
+    }
+    .refresh:hover { background: #20242c; }
+
+    .content { overflow: auto; padding: 42px 38px 60px; }
+    .usage-grid {
+      width: min(1060px, 100%);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+      gap: 42px;
+    }
+    .vline { background: var(--line-soft); }
+    .provider { min-width: 0; }
+    .provider-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 30px; }
+    .provider-name { display: flex; align-items: center; gap: 11px; }
+    .provider-logo { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: #d8dce4; font-weight: 750; font-size: 11px; letter-spacing: -.02em; }
+    .provider-title { font-size: 16px; font-weight: 680; line-height: 1.1; }
+    .account { margin-top: 5px; color: var(--muted); font-size: 12px; }
+    .plan { color: #c7ccd5; }
+    .connected { width: 7px; height: 7px; margin-top: 7px; border-radius: 50%; background: var(--reserve); box-shadow: 0 0 0 3px rgba(73, 191, 131, .09); }
+
+    .limits { display: grid; gap: 28px; }
+    .limit-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    .limit-name { font-weight: 600; }
+    .limit-reset { margin-left: 7px; color: var(--muted-2); font-size: 11px; font-weight: 450; }
+    .limit-value { font-variant-numeric: tabular-nums; font-size: 13px; color: #d9dde4; }
+    .bar { position: relative; height: 8px; margin-top: 10px; overflow: hidden; border-radius: 999px; background: var(--track); }
+    .bar-fill { height: 100%; width: var(--left); border-radius: inherit; background: var(--fill); }
+    .pace-marker {
+      position: absolute;
+      left: var(--expected);
+      top: -3px;
+      bottom: -3px;
+      width: 2px;
+      transform: translateX(-1px);
+      border-radius: 2px;
+      background: var(--pace);
+      box-shadow: 0 0 0 2px var(--track);
+    }
+    .limit-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; min-height: 20px; }
+    .pace { display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 7px; font-size: 11px; font-weight: 600; }
+    .pace.reserve { color: var(--reserve); background: var(--reserve-bg); }
+    .pace.deficit { color: var(--deficit); background: var(--deficit-bg); }
+    .reset-at { color: var(--muted-2); font-size: 11px; padding-top: 3px; }
+    .legend { width: min(1060px, 100%); margin: 36px auto 0; padding-top: 15px; border-top: 1px solid var(--line-soft); color: var(--muted-2); font-size: 11px; }
+    .legend-marker { display: inline-block; width: 2px; height: 10px; background: var(--reserve); margin: 0 6px 0 1px; vertical-align: -1px; }
+
+    @media (max-width: 820px) {
+      .app { grid-template-columns: 64px 1fr; }
+      .brand span:last-child, .nav-item span:last-child, .machine { display: none; }
+      .brand, .nav-item { justify-content: center; padding-inline: 0; }
+      .content { padding: 30px 24px 50px; }
+      .usage-grid { grid-template-columns: 1fr; gap: 38px; }
+      .vline { height: 1px; }
+      .updated { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">bb</span><span>bb</span></div>
+      <nav class="nav">
+        <div class="nav-item"><span class="nav-icon">＋</span><span>New thread</span></div>
+        <div class="nav-item"><span class="nav-icon">⌕</span><span>Search</span></div>
+        <div class="nav-divider"></div>
+        <div class="nav-item"><span class="nav-icon">▤</span><span>Thread board</span></div>
+        <div class="nav-item selected"><span class="nav-icon">◔</span><span>Usage</span></div>
+      </nav>
+      <div class="sidebar-spacer"></div>
+      <div class="machine">bb server account</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="title"><span class="title-icon">◔</span><span>Usage</span></div>
+        <div class="header-actions">
+          <span class="updated">Updated just now</span>
+          <button class="refresh" onclick="this.textContent='Refreshed'; setTimeout(() => this.textContent='↻ Refresh', 900)">↻ Refresh</button>
+        </div>
+      </header>
+
+      <section class="content">
+        <div class="usage-grid">
+          <article class="provider">
+            <div class="provider-head">
+              <div class="provider-name">
+                <div class="provider-logo">CX</div>
+                <div>
+                  <div class="provider-title">Codex</div>
+                  <div class="account">ratul@example.com <span aria-hidden="true">·</span> <span class="plan">Pro</span></div>
+                </div>
+              </div>
+              <span class="connected" title="Connected"></span>
+            </div>
+
+            <div class="limits">
+              <div class="limit">
+                <div class="limit-head">
+                  <div><span class="limit-name">5-hour</span><span class="limit-reset">resets in 2h 08m</span></div>
+                  <span class="limit-value">54% left</span>
+                </div>
+                <div class="bar" style="--left:54%; --expected:62%; --pace:var(--deficit)">
+                  <div class="bar-fill"></div><span class="pace-marker"></span>
+                </div>
+                <div class="limit-foot"><span class="pace deficit">8% in deficit</span><span class="reset-at">11:10 PM</span></div>
+              </div>
+
+              <div class="limit">
+                <div class="limit-head">
+                  <div><span class="limit-name">Weekly</span><span class="limit-reset">resets in 3d 17h</span></div>
+                  <span class="limit-value">69% left</span>
+                </div>
+                <div class="bar" style="--left:69%; --expected:63%; --pace:var(--reserve)">
+                  <div class="bar-fill"></div><span class="pace-marker"></span>
+                </div>
+                <div class="limit-foot"><span class="pace reserve">6% in reserve</span><span class="reset-at">Wed, 1:00 PM</span></div>
+              </div>
+            </div>
+          </article>
+
+          <div class="vline"></div>
+
+          <article class="provider">
+            <div class="provider-head">
+              <div class="provider-name">
+                <div class="provider-logo">CL</div>
+                <div>
+                  <div class="provider-title">Claude Code</div>
+                  <div class="account">ratul@example.com <span aria-hidden="true">·</span> <span class="plan">Max</span></div>
+                </div>
+              </div>
+              <span class="connected" title="Connected"></span>
+            </div>
+
+            <div class="limits">
+              <div class="limit">
+                <div class="limit-head">
+                  <div><span class="limit-name">5-hour</span><span class="limit-reset">resets in 2h 42m</span></div>
+                  <span class="limit-value">84% left</span>
+                </div>
+                <div class="bar" style="--left:84%; --expected:65%; --pace:var(--reserve)">
+                  <div class="bar-fill"></div><span class="pace-marker"></span>
+                </div>
+                <div class="limit-foot"><span class="pace reserve">19% in reserve</span><span class="reset-at">11:10 PM</span></div>
+              </div>
+
+              <div class="limit">
+                <div class="limit-head">
+                  <div><span class="limit-name">7-day</span><span class="limit-reset">resets in 3d 17h</span></div>
+                  <span class="limit-value">65% left</span>
+                </div>
+                <div class="bar" style="--left:65%; --expected:57%; --pace:var(--reserve)">
+                  <div class="bar-fill"></div><span class="pace-marker"></span>
+                </div>
+                <div class="limit-foot"><span class="pace reserve">8% in reserve</span><span class="reset-at">Wed, 1:00 PM</span></div>
+              </div>
+
+              <div class="limit">
+                <div class="limit-head">
+                  <div><span class="limit-name">Fable weekly</span><span class="limit-reset">resets in 3d 17h</span></div>
+                  <span class="limit-value">64% left</span>
+                </div>
+                <div class="bar" style="--left:64%; --expected:57%; --pace:var(--reserve)">
+                  <div class="bar-fill"></div><span class="pace-marker"></span>
+                </div>
+                <div class="limit-foot"><span class="pace reserve">7% in reserve</span><span class="reset-at">Wed, 1:00 PM</span></div>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div class="legend"><span class="legend-marker"></span>The bar is how much usage is left. Before the marker means deficit; past it means reserve.</div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
