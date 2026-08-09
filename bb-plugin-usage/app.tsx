@@ -6,7 +6,7 @@ export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "usage",
     title: "Usage",
-    icon: "Gauge",
+    icon: "Zap",
     path: "usage",
     component: UsagePanel,
     headerContent: UsageHeader,

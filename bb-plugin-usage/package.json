@@ -15,7 +15,7 @@
     "name": "Usage",
     "description": "See Codex and Claude Code subscription usage at a glance.",
     "branding": {
-      "icon": "Gauge"
+      "icon": "Zap"
     },
     "server": "./server.ts",
     "app": "./app.tsx",

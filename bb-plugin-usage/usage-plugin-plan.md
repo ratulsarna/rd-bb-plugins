@@ -17,7 +17,7 @@ Each provider has `id`, `name`, `status`, `accountEmail`, `planLabel`, and `wind
 Pace = actual used % - expected used %. Expected = elapsed/window * 100. Positive is deficit, negative is reserve. On pace within +/-2. Hide pace before expected reaches 3%, matching CodexBar's noise guard. Use per-window known duration (5h, 7d, or response value). Do not implement Codex historical learned pace in v1; it is a separate history feature and conflicts with the tiny scope.
 
 bb shape:
-- One `navPanel`: Usage, icon Gauge.
+- One `navPanel`: Usage, icon Zap.
 - Shared header owns title; `headerContent` has Updated time + Refresh.
 - No sidebar value or provider setting in v1. BB has no safe nav-row accessory API yet; track that separately in issue #1202.
 - Body is two plain provider columns on wide screens, stacked on narrow. No dashboard card grid.
