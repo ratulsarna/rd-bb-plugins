@@ -3,5 +3,6 @@ node_modules/
 dist/
 .playwright-cli/
 output/
+/.private/
 bb-plugin-*/types/bb-plugin-sdk.d.ts
 bb-plugin-*/types/bb-plugin-sdk-app.d.ts
