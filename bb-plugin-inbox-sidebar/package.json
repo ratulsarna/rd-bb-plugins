@@ -1,5 +1,5 @@
 {
-  "name": "bb-plugin-thread-kanban",
+  "name": "bb-plugin-inbox-sidebar",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
     "bbPluginSdk": "^0.4.1"
   },
   "bb": {
-    "name": "Thread Board",
+    "name": "Inbox Sidebar",
     "description": "An inbox for bb threads: pinned priorities on top, active work in a steady list, settled work out of the way.",
     "branding": {
       "icon": "Rows3"
