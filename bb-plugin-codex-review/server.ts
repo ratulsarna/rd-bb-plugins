@@ -904,6 +904,8 @@ function reviewCommand(
   const argsBase64 = Buffer.from(
     JSON.stringify([
       "exec",
+      "--disable",
+      "memories",
       "--output-last-message",
       outputPath,
       ...reviewArgs(request),
