@@ -1,0 +1,15 @@
+{
+  "name": "rd-bb-plugins",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "update-bb-types": "node ./scripts/update-bb-types.mjs"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.1.8",
+    "hono": "^4.11.9",
+    "zod": "^4.3.6"
+  }
+}

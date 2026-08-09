@@ -8,12 +8,25 @@
     "lib": ["ES2022", "DOM", "ESNext.Disposable"],
     "types": ["node"],
     "paths": {
-      "@bb/plugin-sdk": ["./types/bb-plugin-sdk.d.ts"],
-      "@bb/plugin-sdk/app": ["./types/bb-plugin-sdk-app.d.ts"],
+      "@bb/plugin-sdk": [
+        "../types/bb-plugin-sdk.d.ts",
+        "./types/bb-plugin-sdk.d.ts"
+      ],
+      "@bb/plugin-sdk/app": [
+        "../types/bb-plugin-sdk-app.d.ts",
+        "./types/bb-plugin-sdk-app.d.ts"
+      ],
       "@/*": ["./*"]
     },
     "noEmit": true,
     "skipLibCheck": false
   },
-  "include": ["server.ts", "app.tsx", "components", "lib", "test", "types"]
+  "include": [
+    "server.ts",
+    "app.tsx",
+    "components",
+    "lib",
+    "test",
+    "types/dnd-kit-react-jsx.d.ts"
+  ]
 }

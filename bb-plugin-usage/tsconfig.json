@@ -5,13 +5,8 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
-    "lib": [
-      "ES2022",
-      "DOM"
-    ],
-    "types": [
-      "node"
-    ],
+    "lib": ["ES2022", "DOM", "ESNext.Disposable"],
+    "types": ["node"],
     "paths": {
       "@bb/plugin-sdk": [
         "../types/bb-plugin-sdk.d.ts",
@@ -21,9 +16,7 @@
         "../types/bb-plugin-sdk-app.d.ts",
         "./types/bb-plugin-sdk-app.d.ts"
       ],
-      "@/*": [
-        "./*"
-      ]
+      "@/*": ["./*"]
     },
     "noEmit": true,
     "skipLibCheck": false
@@ -33,6 +26,7 @@
     "app.tsx",
     "components",
     "lib",
-    "hooks"
+    "test",
+    "vitest.config.ts"
   ]
 }
