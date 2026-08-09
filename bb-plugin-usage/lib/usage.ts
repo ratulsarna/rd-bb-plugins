@@ -161,6 +161,7 @@ export function fetchUsageLimits(
 
 export function createUsageService(options: {
   fetchUsage: () => Promise<RawUsageResponse>;
+  recoverClaudeCredentials?: () => Promise<void>;
   publishUsageUpdated: (payload: { fetchedAt: string }) => void;
   clock?: Clock;
 }) {
@@ -168,14 +169,14 @@ export function createUsageService(options: {
   let cached: { value: UsageResponse; cachedAtMs: number } | null = null;
   let inFlight: {
     promise: Promise<UsageResponse>;
-    publishOnSuccess: boolean;
+    refreshRequested: boolean;
   } | null = null;
 
   function getUsage(input: { refresh?: boolean }): Promise<UsageResponse> {
     const refresh = input.refresh === true;
 
     if (inFlight) {
-      if (refresh) inFlight.publishOnSuccess = true;
+      if (refresh) inFlight.refreshRequested = true;
       return inFlight.promise;
     }
 
@@ -190,12 +191,38 @@ export function createUsageService(options: {
 
     const request = {
       promise: Promise.resolve(null as never) as Promise<UsageResponse>,
-      publishOnSuccess: refresh,
+      refreshRequested: refresh,
     };
-    request.promise = options.fetchUsage().then((raw) => {
+    request.promise = options.fetchUsage().then(async (firstRaw) => {
+      let raw = firstRaw;
+      const shouldRecover =
+        request.refreshRequested && firstRaw.claudeCode.status === "expired";
+
+      if (shouldRecover) {
+        try {
+          await options.recoverClaudeCredentials?.();
+        } catch {
+          // Claude owns its credentials. A failed probe must not hide Codex.
+        }
+
+        try {
+          raw = await options.fetchUsage();
+        } catch {
+          raw = firstRaw;
+        }
+      }
+
       const value = normalizeUsage(raw, clock);
+      if (
+        shouldRecover &&
+        value.providers.claudeCode.status === "expired" &&
+        cached?.value.providers.claudeCode.status === "ok"
+      ) {
+        throw new Error("Claude Code usage refresh failed");
+      }
+
       cached = { value, cachedAtMs: Date.parse(value.fetchedAt) };
-      if (request.publishOnSuccess) {
+      if (request.refreshRequested) {
         options.publishUsageUpdated({ fetchedAt: value.fetchedAt });
       }
       return value;

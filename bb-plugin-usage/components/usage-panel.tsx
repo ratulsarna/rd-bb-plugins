@@ -143,7 +143,10 @@ const STATUS_COPY: Record<
 > = {
   not_installed: (name) => `${name} isn’t installed. Install it to see usage.`,
   unauthenticated: (name) => `Sign in to ${name} to see usage.`,
-  expired: (name) => `${name} sign-in expired. Sign in again.`,
+  expired: (name) =>
+    name === "Claude Code"
+      ? "Claude Code usage session expired. Click Refresh. If that still fails, open Claude Code on this server."
+      : `${name} sign-in expired. Sign in again.`,
   error: (name) => `Couldn’t read ${name} usage right now. Try refresh.`,
 };
 

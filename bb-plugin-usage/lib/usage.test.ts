@@ -34,6 +34,11 @@ const rawUsage = (): RawUsageResponse => ({
   },
 });
 
+const expiredClaudeUsage = (): RawUsageResponse => ({
+  ...rawUsage(),
+  claudeCode: { status: "expired" },
+});
+
 describe("remainingPercent", () => {
   it("reverses used values, rounds, and clamps every non-finite boundary", () => {
     expect(remainingPercent(23.6)).toBe(76);
@@ -180,6 +185,140 @@ describe("createUsageService", () => {
     nowMs += 60_000;
     await service.getUsage({});
     expect(fetchUsage).toHaveBeenCalledTimes(3);
+  });
+
+  it("recovers an expired Claude session once, then returns the retry", async () => {
+    const fetchUsage = vi
+      .fn<() => Promise<RawUsageResponse>>()
+      .mockResolvedValueOnce(expiredClaudeUsage())
+      .mockResolvedValueOnce(rawUsage());
+    const recoverClaudeCredentials = vi.fn(async () => undefined);
+    const publishUsageUpdated = vi.fn();
+    const service = createUsageService({
+      fetchUsage,
+      recoverClaudeCredentials,
+      publishUsageUpdated,
+    });
+
+    const result = await service.getUsage({ refresh: true });
+
+    expect(fetchUsage).toHaveBeenCalledTimes(2);
+    expect(recoverClaudeCredentials).toHaveBeenCalledTimes(1);
+    expect(result.providers.claudeCode.status).toBe("ok");
+    expect(publishUsageUpdated).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not recover healthy Claude usage", async () => {
+    const fetchUsage = vi.fn(async () => rawUsage());
+    const recoverClaudeCredentials = vi.fn(async () => undefined);
+    const service = createUsageService({
+      fetchUsage,
+      recoverClaudeCredentials,
+      publishUsageUpdated: vi.fn(),
+    });
+
+    await service.getUsage({ refresh: true });
+
+    expect(fetchUsage).toHaveBeenCalledTimes(1);
+    expect(recoverClaudeCredentials).not.toHaveBeenCalled();
+  });
+
+  it("does not recover expired Claude usage on an ordinary read", async () => {
+    const fetchUsage = vi.fn(async () => expiredClaudeUsage());
+    const recoverClaudeCredentials = vi.fn(async () => undefined);
+    const service = createUsageService({
+      fetchUsage,
+      recoverClaudeCredentials,
+      publishUsageUpdated: vi.fn(),
+    });
+
+    const result = await service.getUsage({});
+
+    expect(result.providers.claudeCode.status).toBe("expired");
+    expect(fetchUsage).toHaveBeenCalledTimes(1);
+    expect(recoverClaudeCredentials).not.toHaveBeenCalled();
+  });
+
+  it("upgrades an ordinary in-flight read to one recovery and one retry", async () => {
+    let resolveFirstFetch!: (value: RawUsageResponse) => void;
+    const fetchUsage = vi
+      .fn<() => Promise<RawUsageResponse>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstFetch = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(rawUsage());
+    const recoverClaudeCredentials = vi.fn(async () => undefined);
+    const service = createUsageService({
+      fetchUsage,
+      recoverClaudeCredentials,
+      publishUsageUpdated: vi.fn(),
+    });
+
+    const ordinary = service.getUsage({});
+    const firstRefresh = service.getUsage({ refresh: true });
+    const secondRefresh = service.getUsage({ refresh: true });
+    expect(firstRefresh).toBe(ordinary);
+    expect(secondRefresh).toBe(ordinary);
+
+    resolveFirstFetch(expiredClaudeUsage());
+    const result = await ordinary;
+
+    expect(result.providers.claudeCode.status).toBe("ok");
+    expect(fetchUsage).toHaveBeenCalledTimes(2);
+    expect(recoverClaudeCredentials).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a healthy cache when recovery and retry leave Claude expired", async () => {
+    const fetchUsage = vi
+      .fn<() => Promise<RawUsageResponse>>()
+      .mockResolvedValueOnce(rawUsage())
+      .mockResolvedValueOnce(expiredClaudeUsage())
+      .mockResolvedValueOnce(expiredClaudeUsage())
+      .mockResolvedValueOnce(rawUsage());
+    const recoverClaudeCredentials = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("probe failed"));
+    const publishUsageUpdated = vi.fn();
+    const service = createUsageService({
+      fetchUsage,
+      recoverClaudeCredentials,
+      publishUsageUpdated,
+    });
+
+    const healthy = await service.getUsage({});
+    await expect(service.getUsage({ refresh: true })).rejects.toThrow(
+      "Claude Code usage refresh failed",
+    );
+    expect(await service.getUsage({})).toBe(healthy);
+    expect(publishUsageUpdated).not.toHaveBeenCalled();
+
+    await expect(service.getUsage({ refresh: true })).resolves.toMatchObject({
+      providers: { claudeCode: { status: "ok" } },
+    });
+  });
+
+  it("returns Codex data when recovery cannot restore Claude and no cache exists", async () => {
+    const retry = expiredClaudeUsage();
+    retry.codex.windows![0]!.usedPercent = 12;
+    const fetchUsage = vi
+      .fn<() => Promise<RawUsageResponse>>()
+      .mockResolvedValueOnce(expiredClaudeUsage())
+      .mockResolvedValueOnce(retry);
+    const service = createUsageService({
+      fetchUsage,
+      recoverClaudeCredentials: vi.fn(async () => {
+        throw new Error("unavailable");
+      }),
+      publishUsageUpdated: vi.fn(),
+    });
+
+    const result = await service.getUsage({ refresh: true });
+
+    expect(result.providers.codex.windows[0]?.remainingPercent).toBe(88);
+    expect(result.providers.claudeCode.status).toBe("expired");
   });
 
   it("does not cache or publish a rejected request", async () => {

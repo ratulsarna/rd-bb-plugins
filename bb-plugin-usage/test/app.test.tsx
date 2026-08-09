@@ -179,6 +179,19 @@ describe("usage panel", () => {
     ).toBe("72");
   });
 
+  it("gives an honest server-local fallback for expired Claude usage", async () => {
+    configureFakeSdk({
+      getUsage: () => usage({ claudeStatus: "expired" }),
+    });
+    renderPanel();
+
+    expect(
+      await screen.findByText(
+        "Claude Code usage session expired. Click Refresh. If that still fails, open Claude Code on this server.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("ignores a stale response after a realtime refetch finishes", async () => {
     const oldest = deferred<ReturnType<typeof usage>>();
     const newest = deferred<ReturnType<typeof usage>>();

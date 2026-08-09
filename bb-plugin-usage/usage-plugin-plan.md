@@ -5,7 +5,7 @@ Scope: Codex + Claude Code quota windows only. Show account email, account plan,
 Data:
 - Use BB 0.36's public `bb.sdk.system.usageLimits()` API. BB already handles Codex and Claude Code authentication and isolates provider failures.
 - Keep only Codex and Claude Code. Strip Cursor, cost, credits, and raw provider error messages from the plugin response.
-- Do not read credentials, spawn provider CLIs, store usage, or log account data.
+- Do not read credentials, store usage, or log account data. The only provider CLI call is a manual-refresh recovery for expired Claude credentials: run Claude's local `/status` command in a short-lived PTY on BB's primary host, then retry BB's usage API once.
 
 Normalized RPC shape:
 `{ fetchedAt, providers: { codex, claudeCode } }`

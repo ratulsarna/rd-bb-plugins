@@ -19,7 +19,7 @@ Requires BB 0.36 or newer.
 bb plugin install . --yes
 ```
 
-The panel refreshes every 180 seconds while it is open. Refreshing it does not run a model or use subscription quota.
+The panel refreshes every 180 seconds while it is open. Refreshing it does not run a model or use subscription quota. If a manual refresh finds an expired Claude Code sign-in, the plugin runs Claude's local `/status` command in a short-lived PTY on BB's primary server so Claude can refresh its own credentials.
 
 ## Develop
 
@@ -30,6 +30,6 @@ npm run typecheck
 npm run build
 ```
 
-The plugin uses BB's public usage API. It does not read or store provider credentials.
+The plugin uses BB's public usage API. It does not read, copy, log, or store provider credentials.
 
 BB 0.36 does not yet return Codex model-only limits such as Spark. The plugin will show them automatically when BB adds them to its usage API.

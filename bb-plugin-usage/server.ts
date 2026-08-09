@@ -1,5 +1,6 @@
 import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import { z } from "zod";
+import { createClaudeCredentialRecovery } from "./lib/claude-recovery";
 import { createUsageService, fetchUsageLimits } from "./lib/usage";
 
 const paceSchema = z
@@ -63,12 +64,16 @@ export const rpcContract = defineRpcContract({
 });
 
 export default function plugin(bb: BbPluginApi) {
+  const claudeRecovery = createClaudeCredentialRecovery();
   const usage = createUsageService({
     fetchUsage: () => fetchUsageLimits((args) => bb.sdk.system.usageLimits(args)),
+    recoverClaudeCredentials: claudeRecovery.recover,
     publishUsageUpdated: ({ fetchedAt }) => {
       bb.realtime.publish("usage-updated", { fetchedAt });
     },
   });
+
+  bb.onDispose(claudeRecovery.dispose);
 
   bb.rpc.register(rpcContract, {
     getUsage: (input) => usage.getUsage(input),
