@@ -29,9 +29,9 @@ export function UsageHeader() {
         : "Updating…";
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-2.5">
       <span
-        className="whitespace-nowrap text-xs text-muted-foreground"
+        className={`whitespace-nowrap text-xs ${manualFailed ? "text-rose-400" : "text-muted-foreground"}`}
         aria-live="polite"
       >
         {manualFailed ? `Update failed · ${updated}` : updated}
@@ -40,7 +40,7 @@ export function UsageHeader() {
         type="button"
         onClick={() => void refresh()}
         disabled={manualPending}
-        className="inline-flex h-8 items-center rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+        className="inline-flex h-7 items-center rounded-md border border-border bg-transparent px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
       >
         {manualPending ? "Refreshing…" : "Refresh"}
       </button>

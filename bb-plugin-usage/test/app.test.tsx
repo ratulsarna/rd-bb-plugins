@@ -101,6 +101,13 @@ function renderPanel() {
   return render(<Panel subPath="" />);
 }
 
+/** The percentage is split across styled spans, so read the accessible value. */
+function remaining(provider: "Codex" | "Claude Code" = "Codex") {
+  return screen
+    .getByRole("progressbar", { name: `${provider} Weekly usage remaining` })
+    .getAttribute("aria-valuenow");
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -165,7 +172,11 @@ describe("usage panel", () => {
       .getByRole("heading", { name: "Claude Code" })
       .closest("article");
     expect(claude).not.toBeNull();
-    expect(within(claude as HTMLElement).getByText("72% left")).toBeTruthy();
+    expect(
+      within(claude as HTMLElement)
+        .getByRole("progressbar")
+        .getAttribute("aria-valuenow"),
+    ).toBe("72");
   });
 
   it("ignores a stale response after a realtime refetch finishes", async () => {
@@ -182,11 +193,10 @@ describe("usage panel", () => {
     await waitFor(() => expect(rpcCalls).toHaveLength(2));
 
     await act(async () => newest.resolve(usage({ codexRemaining: 91 })));
-    expect(await screen.findByText("91% left")).toBeTruthy();
+    await waitFor(() => expect(remaining()).toBe("91"));
 
     await act(async () => oldest.resolve(usage({ codexRemaining: 8 })));
-    expect(screen.queryByText("8% left")).toBeNull();
-    expect(screen.getByText("91% left")).toBeTruthy();
+    expect(remaining()).toBe("91");
   });
 
   it("refreshes automatically every 180 seconds while mounted", async () => {
@@ -251,10 +261,10 @@ describe("usage panel", () => {
     if (!Header) throw new Error("Usage header was not registered");
     render(<Header subPath="" />);
 
-    expect(await screen.findByText("25% left")).toBeTruthy();
+    await waitFor(() => expect(remaining()).toBe("25"));
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 
-    expect(await screen.findByText("99% left")).toBeTruthy();
+    await waitFor(() => expect(remaining()).toBe("99"));
   });
 
   it("rejects an old manual response after the panel gets newer data", async () => {
@@ -277,13 +287,13 @@ describe("usage panel", () => {
     if (!Header) throw new Error("Usage header was not registered");
     render(<Header subPath="" />);
 
-    expect(await screen.findByText("25% left")).toBeTruthy();
+    await waitFor(() => expect(remaining()).toBe("25"));
     await waitFor(() => expect(rpcCalls).toHaveLength(2));
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(rpcCalls).toHaveLength(3));
 
     act(() => emitRealtime("usage-updated"));
-    expect(await screen.findByText("91% left")).toBeTruthy();
+    await waitFor(() => expect(remaining()).toBe("91"));
 
     await act(async () =>
       manual.resolve(
@@ -293,8 +303,7 @@ describe("usage panel", () => {
         }),
       ),
     );
-    expect(screen.queryByText("50% left")).toBeNull();
-    expect(screen.getByText("91% left")).toBeTruthy();
+    expect(remaining()).toBe("91");
   });
 
   it("clears a manual failure after the next automatic update", async () => {
