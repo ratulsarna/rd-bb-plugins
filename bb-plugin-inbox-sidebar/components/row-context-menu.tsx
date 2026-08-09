@@ -14,11 +14,13 @@ import type { PinnedMove } from "@/lib/pinned-order";
 export function RowContextMenu({
   thread,
   pinnedMove,
+  onRename,
   children,
 }: {
   thread: BoardThread;
   /** Present only on pinned roots, and only once bb's order is known. */
   pinnedMove?: PinnedMove;
+  onRename: () => void;
   children: ReactNode;
 }) {
   const actions = useSidebarThreadActions();
@@ -57,6 +59,14 @@ export function RowContextMenu({
             onSelect={() => void actions.setPinned(thread.id, !thread.isPinned)}
           >
             {thread.isPinned ? "Unpin" : "Pin"}
+          </Item>
+          <Item
+            onSelect={() => {
+              // Let Radix close the menu before the editor takes focus.
+              window.setTimeout(onRename, 0);
+            }}
+          >
+            Rename
           </Item>
           <ContextMenu.Separator className="my-1 h-px bg-border" />
           <Item onSelect={() => actions.archive(thread.id)}>Archive</Item>

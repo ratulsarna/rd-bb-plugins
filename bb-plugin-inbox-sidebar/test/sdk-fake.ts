@@ -159,6 +159,9 @@ const actions = {
   setRead: async (threadId: string, read: boolean) => {
     sidebarActionCalls.push({ method: "setRead", threadId, options: read });
   },
+  rename: async (threadId: string, title: string) => {
+    sidebarActionCalls.push({ method: "rename", threadId, options: title });
+  },
   archive: (threadId: string) =>
     sidebarActionCalls.push({ method: "archive", threadId }),
   requestDelete: (threadId: string) =>

@@ -33,6 +33,7 @@ export function BoardSidebar({
 }: PluginThreadListProps) {
   const actions = useSidebarThreadActions();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+  const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
   // null means "no explicit choice yet", so the shelf can open itself for a
   // search hit or the active thread — and one click still overrules that.
   const [showSettled, setShowSettled] = useState<boolean | null>(null);
@@ -96,6 +97,15 @@ export function BoardSidebar({
     [actions, onNavigate],
   );
 
+  const renameThread = useCallback(
+    (threadId: string, title: string) => actions.rename(threadId, title),
+    [actions],
+  );
+  const startRename = useCallback((threadId: string) => {
+    setRenamingThreadId(threadId);
+  }, []);
+  const cancelRename = useCallback(() => setRenamingThreadId(null), []);
+
   const renderRow = useCallback(
     (item: BoardItem, action?: { label: string; run: () => void }) => (
       <SidebarRow
@@ -104,18 +114,26 @@ export function BoardSidebar({
         projectNames={projectNames}
         now={state.now}
         activeThreadId={activeThreadId}
+        renamingThreadId={renamingThreadId}
         expandedIds={visibleExpandedIds}
         onToggleExpanded={toggleExpanded}
         onOpen={openThread}
+        onStartRename={startRename}
+        onCancelRename={cancelRename}
+        onRename={renameThread}
         pullRequests={state.pullRequests}
         action={action}
       />
     ),
     [
       activeThreadId,
+      cancelRename,
+      renamingThreadId,
       visibleExpandedIds,
       openThread,
       projectNames,
+      renameThread,
+      startRename,
       state.now,
       state.pullRequests,
       toggleExpanded,
@@ -147,9 +165,13 @@ export function BoardSidebar({
           projectNames={projectNames}
           now={state.now}
           activeThreadId={activeThreadId}
+          renamingThreadId={renamingThreadId}
           expandedIds={visibleExpandedIds}
           onToggleExpanded={toggleExpanded}
           onOpen={openThread}
+          onStartRename={startRename}
+          onCancelRename={cancelRename}
+          onRename={renameThread}
           pullRequests={state.pullRequests}
           pinnedMove={pinnedMove}
           reorder={reorder}
@@ -158,10 +180,14 @@ export function BoardSidebar({
     },
     [
       activeThreadId,
+      cancelRename,
       movePinned,
       openThread,
       pinnedIds,
       projectNames,
+      renamingThreadId,
+      renameThread,
+      startRename,
       state.now,
       state.pinnedOrderMoving,
       state.pinnedOrderReady,

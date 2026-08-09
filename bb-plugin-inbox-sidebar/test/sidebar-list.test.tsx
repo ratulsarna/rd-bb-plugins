@@ -47,6 +47,12 @@ function renderList(props: Partial<PluginThreadListProps> = {}) {
   return render(listElement(props));
 }
 
+async function passDoubleClickWindow() {
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 320));
+  });
+}
+
 describe("thread list registration", () => {
   it("registers one sidebar list the Appearance picker can name", () => {
     expect(registrations.threadLists).toHaveLength(1);
@@ -147,6 +153,7 @@ describe("BoardSidebar host contract", () => {
     fireEvent.click(titleLabel);
     fireEvent.click(project);
     fireEvent.click(machine);
+    await passDoubleClickWindow();
     const opensBeforePr = sidebarActionCalls.filter(
       (call) => call.method === "open",
     );
@@ -256,6 +263,145 @@ describe("BoardSidebar host contract", () => {
       options: undefined,
     });
     expect(navigated).toBe(1);
+  });
+
+  it("renames a thread inline after a desktop double-click", async () => {
+    configureFakeSdk({
+      threads: [thread("thr_rename", { title: "Old title" })],
+    });
+    let navigated = 0;
+    renderList({ onNavigate: () => (navigated += 1) });
+
+    const title = await screen.findByText("Old title");
+    fireEvent.click(title);
+    expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
+      false,
+    );
+    fireEvent.click(title);
+    const input = screen.getByRole("textbox", { name: "Rename Old title" });
+    expect(document.activeElement).toBe(input);
+    expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
+      false,
+    );
+    expect(navigated).toBe(0);
+
+    fireEvent.change(input, { target: { value: "  Better title  " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(sidebarActionCalls).toContainEqual({
+      method: "rename",
+      threadId: "thr_rename",
+      options: "Better title",
+    });
+  });
+
+  it("does not navigate away from a searched nested row before rename starts", async () => {
+    configureFakeSdk({
+      threads: [
+        thread("parent", { title: "Parent" }),
+        thread("nested", {
+          title: "Nested search match",
+          parentThreadId: "parent",
+        }),
+      ],
+    });
+    let navigated = 0;
+    renderList({
+      searchQuery: "search match",
+      onNavigate: () => (navigated += 1),
+    });
+
+    const title = await screen.findByText("Nested search match");
+    fireEvent.click(title);
+    fireEvent.click(title);
+
+    expect(
+      screen.getByRole("textbox", { name: "Rename Nested search match" }),
+    ).toBeDefined();
+    expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
+      false,
+    );
+    expect(navigated).toBe(0);
+  });
+
+  it("opens a compact-view thread after one title tap", async () => {
+    configureFakeSdk({
+      threads: [thread("thr_mobile_open", { title: "Tap title" })],
+    });
+    let navigated = 0;
+    renderList({
+      isCompactViewport: true,
+      onNavigate: () => (navigated += 1),
+    });
+
+    fireEvent.click(await screen.findByText("Tap title"));
+
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
+      false,
+    );
+    await passDoubleClickWindow();
+    expect(sidebarActionCalls).toContainEqual({
+      method: "open",
+      threadId: "thr_mobile_open",
+      options: undefined,
+    });
+    expect(navigated).toBe(1);
+  });
+
+  it("requires two compact-view title taps to rename", async () => {
+    configureFakeSdk({
+      threads: [thread("thr_mobile_rename", { title: "Double tap title" })],
+    });
+    let navigated = 0;
+    renderList({
+      isCompactViewport: true,
+      onNavigate: () => (navigated += 1),
+    });
+
+    const title = await screen.findByText("Double tap title");
+    fireEvent.click(title);
+    fireEvent.click(title);
+
+    expect(
+      screen.getByRole("textbox", { name: "Rename Double tap title" }),
+    ).toBeDefined();
+    await passDoubleClickWindow();
+    expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
+      false,
+    );
+    expect(navigated).toBe(0);
+  });
+
+  it("cancels an empty or escaped rename", async () => {
+    configureFakeSdk({
+      threads: [thread("thr_cancel_rename", { title: "Keep title" })],
+    });
+    renderList();
+
+    const title = await screen.findByText("Keep title");
+    fireEvent.click(title);
+    fireEvent.click(title);
+    const input = screen.getByRole("textbox", { name: "Rename Keep title" });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.blur(input);
+
+    expect(sidebarActionCalls.some((call) => call.method === "rename")).toBe(
+      false,
+    );
+    expect(await screen.findByText("Keep title")).toBeDefined();
+
+    const keptTitle = screen.getByText("Keep title");
+    fireEvent.click(keptTitle);
+    fireEvent.click(keptTitle);
+    const escapedInput = screen.getByRole("textbox", {
+      name: "Rename Keep title",
+    });
+    fireEvent.change(escapedInput, { target: { value: "Discard me" } });
+    fireEvent.keyDown(escapedInput, { key: "Escape" });
+    expect(sidebarActionCalls.some((call) => call.method === "rename")).toBe(
+      false,
+    );
   });
 
   it("marks the route's thread as the active row", async () => {
@@ -667,6 +813,7 @@ describe("pinned reordering", () => {
       name: "Open pull request #43: Third change",
     });
     fireEvent.click(prLink);
+    await passDoubleClickWindow();
     expect(
       sidebarActionCalls.filter((call) => call.method === "open"),
     ).toEqual([{ method: "open", threadId: "c", options: undefined }]);
@@ -817,6 +964,7 @@ describe("pinned reordering", () => {
     const titleLabel = within(row).getByTitle("Second");
 
     fireEvent.click(titleLabel);
+    await passDoubleClickWindow();
     expect(sidebarActionCalls).toContainEqual({
       method: "open",
       threadId: "b",
@@ -834,7 +982,7 @@ describe("pinned reordering", () => {
     expect(navigated).toBe(1);
   });
 
-  it("consumes only the drag-release click and allows the next real click immediately", async () => {
+  it("consumes only the drag-release click and allows the next real click", async () => {
     pinnedSidebar();
 
     const anchor = await screen.findByRole("link", { name: "Second" });
@@ -857,6 +1005,7 @@ describe("pinned reordering", () => {
     ).toBe(false);
 
     expect(fireEvent.click(movedLabel)).toBe(true);
+    await passDoubleClickWindow();
     expect(
       sidebarActionCalls.filter((call) => call.method === "open"),
     ).toEqual([{ method: "open", threadId: "b", options: undefined }]);
@@ -1013,7 +1162,22 @@ describe("row context menu", () => {
       within(menu)
         .getAllByRole("menuitem")
         .map((item) => item.textContent),
-    ).toEqual(["Mark unread", "Pin", "Archive", "Delete"]);
+    ).toEqual(["Mark unread", "Pin", "Rename", "Archive", "Delete"]);
+  });
+
+  it("starts inline rename from the thread menu", async () => {
+    configureFakeSdk({
+      threads: [thread("thr_menu_rename", { title: "Menu rename" })],
+    });
+    renderList();
+
+    fireEvent.contextMenu(await screen.findByText("Menu rename"));
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    fireEvent.click(within(menu).getByText("Rename"));
+
+    expect(
+      await screen.findByRole("textbox", { name: "Rename Menu rename" }),
+    ).toBeDefined();
   });
 
   // Deletion is recursive, so it must go through bb's own confirmation rather
