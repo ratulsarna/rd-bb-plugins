@@ -146,6 +146,8 @@ describe("usage panel", () => {
     ).toBe("65%");
     expect(screen.getByText("+10% deficit")).toBeTruthy();
     expect(screen.getByText("15% reserve")).toBeTruthy();
+    expect(screen.getAllByText("resets in 3d 1h")).toHaveLength(2);
+    expect(document.querySelector("time")).toBeNull();
   });
 
   it("keeps a healthy provider usable when the other provider fails", async () => {

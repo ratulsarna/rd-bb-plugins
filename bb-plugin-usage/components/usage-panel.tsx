@@ -47,15 +47,6 @@ function relativeReset(resetsAt: string, now: number): string {
   return `resets in ${days}d${restHours ? ` ${restHours}h` : ""}`;
 }
 
-function absoluteReset(resetsAt: string): string {
-  const date = new Date(resetsAt);
-  if (!Number.isFinite(date.getTime())) return "Local time unavailable";
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(date);
-}
-
 function paceText(pace: NonNullable<UsageWindow["pace"]>): string {
   if (pace.kind === "deficit") {
     return `+${formatPercent(pace.percentage)}% deficit`;
@@ -128,20 +119,9 @@ function UsageRow({
       <div className="mt-2 flex flex-wrap items-start justify-between gap-x-4 gap-y-1 text-xs">
         <div>
           {window.resetsAt ? (
-            <>
-              <span className="text-muted-foreground">
-                {relativeReset(window.resetsAt, now)}
-              </span>
-              <span className="mx-1.5 text-border" aria-hidden="true">
-                ·
-              </span>
-              <time
-                dateTime={window.resetsAt}
-                className="text-muted-foreground"
-              >
-                {absoluteReset(window.resetsAt)}
-              </time>
-            </>
+            <span className="text-muted-foreground">
+              {relativeReset(window.resetsAt, now)}
+            </span>
           ) : (
             <span className="text-muted-foreground">Reset time unavailable</span>
           )}
