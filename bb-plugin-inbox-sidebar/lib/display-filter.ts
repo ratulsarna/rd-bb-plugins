@@ -17,9 +17,8 @@ export interface DisplayFilter {
  * Hide rows the user isn't looking for — and nothing else.
  *
  * The projection is built once over every thread, so lanes, rollups, settle
- * eligibility and PR probe targets are already decided when this runs. Pruning
- * here can only remove rows from the screen: a tree kept alive by a child with
- * an open PR stays in the Inbox even when the search hides that child.
+ * eligibility, and PR probe targets are already decided when this runs.
+ * Pruning here can only remove rows from the screen.
  */
 export function filterBoardForDisplay<T extends BoardThread>(
   board: BoardProjection<T>,

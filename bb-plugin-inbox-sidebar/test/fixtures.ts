@@ -1,6 +1,6 @@
-import type { BoardThread, PrState, SettledOverride } from "@/lib/lanes";
+import type { BoardThread, SettledOverride } from "@/lib/lanes";
 
-export const NOW = Date.UTC(2026, 7, 8, 12);
+export const NOW = Date.now();
 export const HOUR = 60 * 60 * 1_000;
 export const DAY = 24 * HOUR;
 
@@ -40,10 +40,4 @@ export function overrideMap(
   entries: Array<[string, SettledOverride["override"], number]>,
 ): Map<string, SettledOverride> {
   return new Map(entries.map(([id, override, at]) => [id, { override, at }]));
-}
-
-export function prMap(
-  entries: Array<[string, PrState | null]>,
-): Map<string, PrState | null> {
-  return new Map(entries);
 }

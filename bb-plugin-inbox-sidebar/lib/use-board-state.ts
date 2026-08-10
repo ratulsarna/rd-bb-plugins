@@ -10,7 +10,6 @@ import {
   buildBoard,
   type BoardProjection,
   type BoardThread,
-  type PrState,
 } from "@/lib/lanes";
 
 export interface BoardState {
@@ -56,7 +55,7 @@ function samePullRequest(
 
 /**
  * Everything both board surfaces share: threads, the user's settle marks, the
- * PR snapshot the probes fill in, and the projection built from all three.
+ * display-only PR snapshot the probes fill in, and the board projection.
  *
  * It deliberately takes no search or project input. Whatever the surface hides
  * on screen, the classification underneath is computed over every thread.
@@ -68,9 +67,6 @@ export function useBoardState(): BoardState {
   const [pullRequests, setPullRequests] = useState<
     Map<string, PluginSidebarPullRequest | null>
   >(() => new Map());
-  const [prResolvedAt, setPrResolvedAt] = useState<ReadonlyMap<string, number>>(
-    () => new Map(),
-  );
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -78,32 +74,8 @@ export function useBoardState(): BoardState {
     return () => window.clearInterval(timer);
   }, []);
 
-  // The last PR state we accepted per thread. A snapshot map can only say what
-  // a PR is, never that it just changed, and "when did this merge" is exactly
-  // the moment we need to date a settle by.
-  const lastPrState = useRef(new Map<string, PrState | null>());
-
   const reportPullRequest = useCallback(
     (threadId: string, pullRequest: PluginSidebarPullRequest | null) => {
-      const incoming = pullRequest?.state ?? null;
-      const before = lastPrState.current.get(threadId);
-      const sticky =
-        pullRequest === null && (before === "open" || before === "draft");
-      if (!sticky) {
-        lastPrState.current.set(threadId, incoming);
-        const wasResolved = before === "merged" || before === "closed";
-        const isResolved = incoming === "merged" || incoming === "closed";
-        // Only a transition we actually watched counts. A cold load that finds
-        // a PR already merged says nothing about when it merged, so it falls
-        // back to dating the settle by the thread's own quiet clock.
-        if (before !== undefined && isResolved && !wasResolved) {
-          const at = Date.now();
-          setPrResolvedAt((current) => {
-            if (current.has(threadId)) return current;
-            return new Map(current).set(threadId, at);
-          });
-        }
-      }
       setPullRequests((current) => {
         const existing = current.get(threadId);
         if (
@@ -146,10 +118,6 @@ export function useBoardState(): BoardState {
       return changed ? next : current;
     };
     setPullRequests((current) => prune(current) as typeof current);
-    setPrResolvedAt(prune);
-    for (const threadId of lastPrState.current.keys()) {
-      if (!liveThreadIds.has(threadId)) lastPrState.current.delete(threadId);
-    }
   }, [liveThreadIds]);
 
   // Pinning happens outside our RPC — our own context menu pins through the
@@ -179,33 +147,14 @@ export function useBoardState(): BoardState {
     void refreshPinnedOrder();
   }, [pinnedMembership, refreshPinnedOrder]);
 
-  const prStates = useMemo(
-    () =>
-      new Map<string, PrState | null>(
-        [...pullRequests].map(([threadId, pullRequest]) => [
-          threadId,
-          pullRequest?.state ?? null,
-        ]),
-      ),
-    [pullRequests],
-  );
   const board = useMemo<BoardProjection<BoardThread>>(
     () =>
       buildBoard(threads, {
         now,
         overrides: settledApi.overrides,
-        prStates,
-        prResolvedAt,
         pinnedOrder: pinnedApi.ids,
       }),
-    [
-      now,
-      pinnedApi.ids,
-      prResolvedAt,
-      prStates,
-      settledApi.overrides,
-      threads,
-    ],
+    [now, pinnedApi.ids, settledApi.overrides, threads],
   );
 
   return {

@@ -8,10 +8,6 @@ export const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1_000;
 /** Per-thread urgency, shown as the card's status slot — never as position. */
 export type Lane = "needs-you" | "running" | "idle";
 
-export type PrState = "draft" | "open" | "merged" | "closed";
-
-export type TreePr = "in-flight" | "unknown" | "clear";
-
 /**
  * A user override from the plugin store. "settled" parks a thread the timer
  * would have kept; "active" un-parks one auto-settle would otherwise take
@@ -51,7 +47,6 @@ export interface BoardItem<T extends BoardThread = BoardThread> {
   lane: Lane;
   latestActivityAt: number;
   hasPinnedThread: boolean;
-  treePr: TreePr;
   children: BoardItem<T>[];
 }
 
@@ -74,10 +69,6 @@ interface BuildBoardOptions {
   idleCutoffMs?: number;
   /** User overrides from the plugin store. */
   overrides?: ReadonlyMap<string, SettledOverride>;
-  /** Missing is unknown; null means the lookup found no pull request. */
-  prStates?: ReadonlyMap<string, PrState | null>;
-  /** When a thread's own PR was first seen merged or closed. */
-  prResolvedAt?: ReadonlyMap<string, number>;
   /** bb's pinned-root order. Ids it doesn't list sort first, newest first. */
   pinnedOrder?: readonly string[];
 }
@@ -163,30 +154,13 @@ export function statusLabelForItem(
  * afford. Pinned threads are the priority shelf, so they don't settle either.
  */
 export function canSettle(
-  item: Pick<BoardItem, "lane" | "hasPinnedThread" | "treePr">,
+  item: Pick<BoardItem, "lane" | "hasPinnedThread">,
 ): boolean {
-  return (
-    item.lane === "idle" && !item.hasPinnedThread && item.treePr === "clear"
-  );
+  return item.lane === "idle" && !item.hasPinnedThread;
 }
 
 function moreUrgent(a: Lane, b: Lane): Lane {
   return LANE_URGENCY[a] >= LANE_URGENCY[b] ? a : b;
-}
-
-function prForThread(
-  threadId: string,
-  prStates: ReadonlyMap<string, PrState | null>,
-): TreePr {
-  if (!prStates.has(threadId)) return "unknown";
-  const state = prStates.get(threadId);
-  return state === "open" || state === "draft" ? "in-flight" : "clear";
-}
-
-function moreBlockingPr(a: TreePr, b: TreePr): TreePr {
-  if (a === "in-flight" || b === "in-flight") return "in-flight";
-  if (a === "unknown" || b === "unknown") return "unknown";
-  return "clear";
 }
 
 export function buildBoard<T extends BoardThread>(
@@ -196,8 +170,6 @@ export function buildBoard<T extends BoardThread>(
   const now = options.now ?? Date.now();
   const idleCutoffMs = options.idleCutoffMs ?? TWO_DAYS_MS;
   const overrides = options.overrides ?? new Map<string, SettledOverride>();
-  const prStates = options.prStates ?? new Map<string, PrState | null>();
-  const prResolvedAt = options.prResolvedAt ?? new Map<string, number>();
   // Every non-archived thread, always. Search and project scoping are display
   // concerns and must never reach classification — see filterBoardForDisplay.
   const visible = threads.filter((thread) => !thread.isArchived);
@@ -216,7 +188,6 @@ export function buildBoard<T extends BoardThread>(
     lane: Lane;
     latestActivityAt: number;
     hasPinnedThread: boolean;
-    treePr: TreePr;
   };
   const rollups = new Map<string, Rollup>();
 
@@ -229,7 +200,6 @@ export function buildBoard<T extends BoardThread>(
       lane: laneForThread(thread),
       latestActivityAt: thread.latestAttentionAt,
       hasPinnedThread: thread.isPinned,
-      treePr: prForThread(threadId, prStates),
     };
     if (visiting.has(threadId)) return own;
 
@@ -244,7 +214,6 @@ export function buildBoard<T extends BoardThread>(
             child.latestActivityAt,
           ),
           hasPinnedThread: current.hasPinnedThread || child.hasPinnedThread,
-          treePr: moreBlockingPr(current.treePr, child.treePr),
         };
       },
       own,
@@ -311,9 +280,7 @@ export function buildBoard<T extends BoardThread>(
         ? mark
         : null;
     if (settledMark) {
-      // Known unfinished work and pinned descendants keep the tree visible;
-      // unknown PR state honors the mark until a probe reports otherwise.
-      if (item.hasPinnedThread || item.treePr === "in-flight") {
+      if (item.hasPinnedThread) {
         inbox.push(item);
       } else {
         settled.push({ ...item, settledAt: settledMark.at });
@@ -325,28 +292,6 @@ export function buildBoard<T extends BoardThread>(
     const activeOverrideAt = mark?.override === "active" ? mark.at : null;
     const quietSince = Math.max(item.latestActivityAt, activeOverrideAt ?? 0);
     const quiet = now - quietSince > idleCutoffMs;
-    const pr = prStates.get(item.thread.id);
-    if (
-      (pr === "merged" || pr === "closed") &&
-      item.treePr === "clear" &&
-      !item.hasPinnedThread &&
-      (activeOverrideAt === null || quiet)
-    ) {
-      // The PR resolving is the work resolving — settle right away, and date
-      // it by when the PR resolved. A thread quiet for a month whose PR merged
-      // today finished today, and belongs at the top of Settled.
-      settled.push({
-        ...item,
-        settledAt: Math.max(
-          quietSince,
-          prResolvedAt.get(item.thread.id) ?? 0,
-        ),
-      });
-      continue;
-    }
-    // An in-flight PR is unfinished business no matter how quiet the thread:
-    // review can take days, and settling would bury the work waiting on it.
-    // Unknown PR state and a pinned descendant block auto-settle the same way.
     if (quiet && canSettle(item)) {
       settled.push({ ...item, settledAt: quietSince });
       continue;
@@ -388,10 +333,7 @@ export function buildBoard<T extends BoardThread>(
 /**
  * Probe every root. Hidden descendants are skipped only when their tree is
  * pinned or is unsettled and non-idle; expanded rows are always included.
- *
- * A settled tree probes all the way down whether or not the shelf is open: its
- * PR state is what keeps it settled, so letting a collapsed shelf stop probing
- * would let a reopened PR sit there unnoticed.
+ * Settled trees are fully probed so their badges are ready when shown.
  */
 export function selectPrProbeTargets<T extends BoardThread>(
   board: BoardProjection<T>,

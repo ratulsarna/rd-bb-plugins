@@ -3,7 +3,7 @@
 //
 // Two override kinds, because auto-settle needs both directions: "settled"
 // parks a thread the timer would have kept, and "active" un-parks one the
-// timer (or a finished PR) would otherwise re-settle on the next render.
+// timer would otherwise re-settle on the next render.
 import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import { z } from "zod";
 // Relative on purpose: a path install loads server.ts directly, where the

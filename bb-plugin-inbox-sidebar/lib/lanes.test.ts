@@ -8,7 +8,7 @@ import {
   TWO_DAYS_MS,
   type BoardThread,
 } from "./lanes";
-import { DAY, HOUR, NOW, overrideMap, prMap, thread } from "@/test/fixtures";
+import { DAY, HOUR, NOW, overrideMap, thread } from "@/test/fixtures";
 
 describe("buildBoard rollups", () => {
   it("rolls a child needing input up to its idle parent", () => {
@@ -104,14 +104,7 @@ describe("buildBoard quiet auto-settle", () => {
         thread("recent", { latestAttentionAt: NOW - 47 * HOUR }),
         thread("old", { latestAttentionAt: NOW - 49 * HOUR }),
       ],
-      {
-        now: NOW,
-        idleCutoffMs: TWO_DAYS_MS,
-        prStates: prMap([
-          ["recent", null],
-          ["old", null],
-        ]),
-      },
+      { now: NOW, idleCutoffMs: TWO_DAYS_MS },
     );
 
     expect(board.inbox.map((item) => item.thread.id)).toEqual(["recent"]);
@@ -122,7 +115,7 @@ describe("buildBoard quiet auto-settle", () => {
   it("keeps work at the exact cutoff boundary in the inbox", () => {
     const board = buildBoard(
       [thread("boundary", { latestAttentionAt: NOW - TWO_DAYS_MS })],
-      { now: NOW, prStates: prMap([["boundary", null]]) },
+      { now: NOW },
     );
 
     expect(board.inbox[0]?.thread.id).toBe("boundary");
@@ -139,13 +132,7 @@ describe("buildBoard quiet auto-settle", () => {
         }),
         thread("running", { indicator: "runtime", latestAttentionAt: old }),
       ],
-      {
-        now: NOW,
-        prStates: prMap([
-          ["attention", null],
-          ["running", null],
-        ]),
-      },
+      { now: NOW },
     );
 
     expect(board.inbox.map((item) => item.thread.id).sort()).toEqual([
@@ -164,13 +151,7 @@ describe("buildBoard quiet auto-settle", () => {
           latestAttentionAt: NOW - 5 * 60 * 1_000,
         }),
       ],
-      {
-        now: NOW,
-        prStates: prMap([
-          ["parent", null],
-          ["child", null],
-        ]),
-      },
+      { now: NOW },
     );
 
     expect(board.inbox[0]?.thread.id).toBe("parent");
@@ -183,10 +164,7 @@ describe("buildBoard quiet auto-settle", () => {
       updatedAt: NOW,
     };
 
-    const board = buildBoard([metadataUpdated], {
-      now: NOW,
-      prStates: prMap([["old", null]]),
-    });
+    const board = buildBoard([metadataUpdated], { now: NOW });
 
     expect(board.settled.map((item) => item.thread.id)).toEqual(["old"]);
   });
@@ -205,13 +183,7 @@ describe("buildBoard pinned", () => {
           indicator: "waiting-for-input",
         }),
       ],
-      {
-        now: NOW,
-        prStates: prMap([
-          ["pinned-quiet", null],
-          ["pinned-urgent", null],
-        ]),
-      },
+      { now: NOW },
     );
 
     expect(board.pinned.map((item) => item.thread.id).sort()).toEqual([
@@ -233,13 +205,7 @@ describe("buildBoard pinned", () => {
           isPinned: true,
         }),
       ],
-      {
-        now: NOW,
-        prStates: prMap([
-          ["parent", null],
-          ["pinned-child", null],
-        ]),
-      },
+      { now: NOW },
     );
 
     expect(board.inbox.map((item) => item.thread.id)).toEqual(["parent"]);
@@ -295,10 +261,6 @@ describe("buildBoard overrides", () => {
       {
         now: NOW,
         overrides: overrideMap([["parent", "settled", NOW]]),
-        prStates: prMap([
-          ["parent", null],
-          ["pinned-child", null],
-        ]),
       },
     );
 
@@ -314,7 +276,6 @@ describe("buildBoard overrides", () => {
       {
         now: NOW,
         overrides: overrideMap([["revived", "settled", NOW - 40 * DAY]]),
-        prStates: prMap([["revived", null]]),
       },
     );
 
@@ -341,250 +302,11 @@ describe("buildBoard overrides", () => {
       {
         now: NOW,
         overrides: overrideMap([["kept", "active", overrideAt]]),
-        prStates: prMap([["kept", null]]),
       },
     );
 
     expect(board.settled[0]?.thread.id).toBe("kept");
     expect(board.settled[0]?.settledAt).toBe(overrideAt);
-  });
-});
-
-describe("buildBoard pull requests", () => {
-  it("keeps missing PR state unknown and blocks auto and manual settle", () => {
-    const board = buildBoard(
-      [thread("unknown", { latestAttentionAt: NOW - 30 * DAY })],
-      { now: NOW },
-    );
-
-    expect(board.settled).toHaveLength(0);
-    expect(board.inbox[0]?.treePr).toBe("unknown");
-    expect(canSettle(board.inbox[0]!)).toBe(false);
-  });
-
-  it("auto-settles a quiet thread after a known no-PR result", () => {
-    const board = buildBoard(
-      [thread("known-clear", { latestAttentionAt: NOW - 30 * DAY })],
-      { now: NOW, prStates: prMap([["known-clear", null]]) },
-    );
-
-    expect(board.settled.map((item) => item.thread.id)).toEqual([
-      "known-clear",
-    ]);
-  });
-
-  it("settles a merged or closed PR immediately, even with recent activity", () => {
-    const board = buildBoard(
-      [
-        thread("merged", { latestAttentionAt: NOW - HOUR }),
-        thread("merged-child", {
-          parentThreadId: "merged",
-          latestAttentionAt: NOW - HOUR,
-        }),
-        thread("closed", { latestAttentionAt: NOW - HOUR }),
-      ],
-      {
-        now: NOW,
-        prStates: prMap([
-          ["merged", "merged"],
-          ["merged-child", null],
-          ["closed", "closed"],
-        ]),
-      },
-    );
-
-    expect(board.settled.map((item) => item.thread.id).sort()).toEqual([
-      "closed",
-      "merged",
-    ]);
-    expect(board.inbox).toHaveLength(0);
-  });
-
-  // Settled sorts by when work finished. A month-old thread whose PR merged an
-  // hour ago finished an hour ago, so it has to outrank the newer quiet one.
-  it("dates a merged settle by when the PR resolved, not by last activity", () => {
-    const mergedAt = NOW - HOUR;
-    const options = {
-      now: NOW,
-      prStates: prMap([
-        ["merged", "merged" as const],
-        ["quiet", null],
-      ]),
-      prResolvedAt: new Map([["merged", mergedAt]]),
-    };
-    const threads = [
-      thread("merged", { latestAttentionAt: NOW - 30 * DAY }),
-      thread("quiet", { latestAttentionAt: NOW - 3 * DAY }),
-    ];
-
-    const board = buildBoard(threads, options);
-
-    expect(board.settled.map((item) => item.thread.id)).toEqual([
-      "merged",
-      "quiet",
-    ]);
-    expect(board.settled[0]?.settledAt).toBe(mergedAt);
-
-    // The stamp is a fact about the PR, not about this render: a minute later
-    // the row must not drift down the shelf.
-    const later = buildBoard(threads, { ...options, now: NOW + 60_000 });
-    expect(later.settled[0]?.settledAt).toBe(mergedAt);
-  });
-
-  // Settling must never be dated before the user's own last Unsettle: an
-  // active override restarts the quiet clock, and the stamp follows it.
-  it("never dates a merged settle earlier than an active override", () => {
-    const overrideAt = NOW - 3 * DAY;
-    const board = buildBoard(
-      [thread("shipped", { latestAttentionAt: NOW - 30 * DAY })],
-      {
-        now: NOW,
-        overrides: overrideMap([["shipped", "active", overrideAt]]),
-        prStates: prMap([["shipped", "merged"]]),
-      },
-    );
-
-    expect(board.settled[0]?.thread.id).toBe("shipped");
-    expect(board.settled[0]?.settledAt).toBe(overrideAt);
-  });
-
-  it("keeps a merged PR in the inbox while a fresh active override holds", () => {
-    const board = buildBoard(
-      [thread("held", { latestAttentionAt: NOW - HOUR })],
-      {
-        now: NOW,
-        overrides: overrideMap([["held", "active", NOW - HOUR / 2]]),
-        prStates: prMap([["held", "merged"]]),
-      },
-    );
-
-    expect(board.inbox.map((item) => item.thread.id)).toEqual(["held"]);
-  });
-
-  it("never settles a merged PR whose thread is still working", () => {
-    const board = buildBoard(
-      [thread("busy", { indicator: "runtime" })],
-      { now: NOW, prStates: prMap([["busy", "merged"]]) },
-    );
-
-    expect(board.inbox.map((item) => item.thread.id)).toEqual(["busy"]);
-  });
-
-  it("blocks quiet auto-settle while a PR is open or draft", () => {
-    const old = NOW - 30 * DAY;
-    const board = buildBoard(
-      [
-        thread("open-pr", { latestAttentionAt: old }),
-        thread("draft-pr", { latestAttentionAt: old }),
-        thread("no-pr", { latestAttentionAt: old }),
-      ],
-      {
-        now: NOW,
-        prStates: prMap([
-          ["open-pr", "open"],
-          ["draft-pr", "draft"],
-          ["no-pr", null],
-        ]),
-      },
-    );
-
-    expect(board.inbox.map((item) => item.thread.id).sort()).toEqual([
-      "draft-pr",
-      "open-pr",
-    ]);
-    expect(board.settled.map((item) => item.thread.id)).toEqual(["no-pr"]);
-  });
-
-  it("keeps a merged PR with a pinned descendant in the inbox", () => {
-    const board = buildBoard(
-      [
-        thread("parent", { latestAttentionAt: NOW - HOUR }),
-        thread("pinned-child", {
-          parentThreadId: "parent",
-          isPinned: true,
-          latestAttentionAt: NOW - HOUR,
-        }),
-      ],
-      {
-        now: NOW,
-        prStates: prMap([
-          ["parent", "merged"],
-          ["pinned-child", null],
-        ]),
-      },
-    );
-
-    expect(board.inbox.map((item) => item.thread.id)).toEqual(["parent"]);
-  });
-
-  it.each(["open", "draft"] as const)(
-    "blocks auto and manual settle for a %s PR on a descendant",
-    (childPr) => {
-      const old = NOW - 30 * DAY;
-      const board = buildBoard(
-        [
-          thread("parent", { latestAttentionAt: old }),
-          thread("child", {
-            parentThreadId: "parent",
-            latestAttentionAt: old,
-          }),
-        ],
-        {
-          now: NOW,
-          prStates: prMap([
-            ["parent", null],
-            ["child", childPr],
-          ]),
-        },
-      );
-
-      expect(board.settled).toHaveLength(0);
-      expect(board.inbox[0]?.treePr).toBe("in-flight");
-      expect(canSettle(board.inbox[0]!)).toBe(false);
-    },
-  );
-
-  it.each([
-    ["unknown", undefined],
-    ["open", "open"],
-    ["draft", "draft"],
-  ] as const)(
-    "does not immediately settle a merged root with a %s child",
-    (_name, childPr) => {
-      const states = prMap([["parent", "merged"]]);
-      if (childPr) states.set("child", childPr);
-      const board = buildBoard(
-        [thread("parent"), thread("child", { parentThreadId: "parent" })],
-        { now: NOW, prStates: states },
-      );
-
-      expect(board.inbox.map((item) => item.thread.id)).toEqual(["parent"]);
-      expect(board.settled).toHaveLength(0);
-    },
-  );
-
-  it("rejects an in-flight settle mark but honors one while PR state is unknown", () => {
-    const board = buildBoard(
-      [
-        thread("blocked"),
-        thread("blocked-child", { parentThreadId: "blocked" }),
-        thread("unknown"),
-      ],
-      {
-        now: NOW,
-        overrides: overrideMap([
-          ["blocked", "settled", NOW],
-          ["unknown", "settled", NOW],
-        ]),
-        prStates: prMap([
-          ["blocked", null],
-          ["blocked-child", "open"],
-        ]),
-      },
-    );
-
-    expect(board.inbox.map((item) => item.thread.id)).toEqual(["blocked"]);
-    expect(board.settled.map((item) => item.thread.id)).toEqual(["unknown"]);
   });
 });
 
@@ -709,7 +431,6 @@ describe("buildBoard pinned order", () => {
       {
         now: NOW,
         pinnedOrder: ["pin"],
-        prStates: prMap([["done", null]]),
       },
     );
 
@@ -759,7 +480,7 @@ describe("buildBoard scale", () => {
 });
 
 describe("selectPrProbeTargets", () => {
-  it("probes every settle-relevant tree and any otherwise hidden rendered row", () => {
+  it("keeps badge probes ready for visible and settled trees", () => {
     const board = buildBoard(
       [
         thread("pinned", { isPinned: true }),
@@ -810,18 +531,15 @@ describe("selectPrProbeTargets", () => {
 });
 
 describe("canSettle", () => {
-  it("only allows settling idle, clear trees without pinned threads", () => {
+  it("only allows settling idle trees without pinned threads", () => {
     const idle = {
       lane: "idle" as const,
       hasPinnedThread: false,
-      treePr: "clear" as const,
     };
     expect(canSettle(idle)).toBe(true);
     expect(canSettle({ ...idle, lane: "running" })).toBe(false);
     expect(canSettle({ ...idle, lane: "needs-you" })).toBe(false);
     expect(canSettle({ ...idle, hasPinnedThread: true })).toBe(false);
-    expect(canSettle({ ...idle, treePr: "unknown" })).toBe(false);
-    expect(canSettle({ ...idle, treePr: "in-flight" })).toBe(false);
   });
 });
 

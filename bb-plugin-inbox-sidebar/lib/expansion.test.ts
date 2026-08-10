@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildBoard } from "./lanes";
 import { filterBoardForDisplay } from "./display-filter";
 import { ancestorIdsOf, effectiveExpandedIds } from "./expansion";
-import { NOW, prMap, thread } from "@/test/fixtures";
+import { NOW, thread } from "@/test/fixtures";
 
 const nested = () =>
   buildBoard(
@@ -39,13 +39,7 @@ describe("ancestorIdsOf", () => {
         thread("root", { latestAttentionAt: quietAt }),
         thread("child", { parentThreadId: "root", latestAttentionAt: quietAt }),
       ],
-      {
-        now: NOW,
-        prStates: prMap([
-          ["root", null],
-          ["child", null],
-        ]),
-      },
+      { now: NOW },
     );
     expect(board.settled).toHaveLength(1);
 

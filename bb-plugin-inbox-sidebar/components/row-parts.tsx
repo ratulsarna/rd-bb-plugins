@@ -1,6 +1,6 @@
 import type { PluginSidebarPullRequest } from "@bb/plugin-sdk/app";
 import { isolatedRowGestureProps } from "@/components/row-gesture";
-import { statusLabelForItem, type BoardItem, type PrState } from "@/lib/lanes";
+import { statusLabelForItem, type BoardItem } from "@/lib/lanes";
 
 export function formatRelative(timestamp: number, now: number): string {
   const elapsed = Math.max(0, now - timestamp);
@@ -12,7 +12,9 @@ export function formatRelative(timestamp: number, now: number): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
-const PR_LINK: Partial<Record<PrState, { text: string; label: string }>> = {
+const PR_LINK: Partial<
+  Record<PluginSidebarPullRequest["state"], { text: string; label: string }>
+> = {
   draft: { text: "text-muted-foreground", label: "Draft pull request" },
   open: { text: "text-success", label: "Open pull request" },
 };

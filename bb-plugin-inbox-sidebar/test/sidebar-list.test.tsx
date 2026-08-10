@@ -20,7 +20,7 @@ import {
   sidebarActionCalls,
   splitPointerDownCalls,
 } from "./sdk-fake";
-import { DAY, NOW, thread } from "./fixtures";
+import { DAY, HOUR, NOW, thread } from "./fixtures";
 // Importing the plugin entry is what registers the slots, exactly as bb loads
 // it — so these tests exercise the component the host would actually mount.
 import "@/app";
@@ -541,28 +541,23 @@ describe("BoardSidebar sections", () => {
   });
 });
 
-// The settle stamp for a merged PR is a fact about when the PR resolved, and
-// we can only witness that by watching a report change.
-describe("BoardSidebar merged-PR settle stamp", () => {
-  it("dates a PR already merged at load by the thread's quiet clock", async () => {
+describe("BoardSidebar display-only pull requests", () => {
+  it("auto-settles quiet work while keeping its open PR badge and link", async () => {
+    const now = Date.now();
     configureFakeSdk({
       threads: [
-        thread("thr_merged", {
-          title: "Shipped long ago",
-          latestAttentionAt: NOW - 30 * DAY,
-        }),
-        thread("thr_quiet", {
-          title: "Quiet last week",
-          latestAttentionAt: NOW - 3 * DAY,
+        thread("quiet-open", {
+          title: "Quiet with open PR",
+          latestAttentionAt: now - 3 * DAY,
         }),
       ],
       pullRequests: {
-        thr_merged: {
-          number: 1,
-          title: "PR",
-          url: "https://example.test/1",
-          state: "merged",
-          attention: "none",
+        "quiet-open": {
+          number: 81,
+          title: "Still under review",
+          url: "https://example.test/pulls/81",
+          state: "open",
+          attention: "ready_to_merge",
         },
       },
     });
@@ -570,16 +565,87 @@ describe("BoardSidebar merged-PR settle stamp", () => {
 
     const settled = await screen.findByRole("region", { name: "Settled" });
     fireEvent.click(within(settled).getByRole("button"));
+    expect(within(settled).getByText("Quiet with open PR")).toBeDefined();
 
-    // Stamping the load itself would shove the month-old thread to the top,
-    // claiming it finished the moment the sidebar opened.
-    await waitFor(() =>
-      expect(
-        within(settled)
-          .getAllByRole("link")
-          .map((row) => row.getAttribute("aria-label")),
-      ).toEqual(["Quiet last week", "Shipped long ago"]),
-    );
+    const badge = await within(settled).findByRole("link", {
+      name: "Open pull request #81: Still under review",
+    });
+    expect(badge.getAttribute("href")).toBe("https://example.test/pulls/81");
+  });
+
+  it("keeps an explicit settle when a descendant has a draft PR", async () => {
+    const now = Date.now();
+    configureFakeSdk({
+      threads: [
+        thread("settled-root", { title: "Explicitly settled" }),
+        thread("draft-child", {
+          title: "Draft child",
+          parentThreadId: "settled-root",
+        }),
+      ],
+      overrides: [
+        { threadId: "settled-root", override: "settled", at: now + DAY },
+      ],
+      pullRequests: {
+        "draft-child": {
+          number: 82,
+          title: "Child work",
+          url: "https://example.test/pulls/82",
+          state: "draft",
+          attention: "draft",
+        },
+      },
+    });
+    renderList();
+
+    const settled = await screen.findByRole("region", { name: "Settled" });
+    fireEvent.click(within(settled).getByRole("button"));
+    fireEvent.click(within(settled).getByLabelText("Expand 1 subagents"));
+
+    expect(within(settled).getByText("Draft child")).toBeDefined();
+    const badge = await within(settled).findByRole("link", {
+      name: "Draft pull request #82: Child work",
+    });
+    expect(badge.getAttribute("href")).toBe("https://example.test/pulls/82");
+  });
+
+  it("keeps recent merged and closed work in Inbox after probes report", async () => {
+    const recent = Date.now() - HOUR;
+    configureFakeSdk({
+      threads: [
+        thread("recent-merged", {
+          title: "Recently merged",
+          latestAttentionAt: recent,
+        }),
+        thread("recent-closed", {
+          title: "Recently closed",
+          latestAttentionAt: recent,
+        }),
+      ],
+      pullRequests: {
+        "recent-merged": {
+          number: 83,
+          title: "Merged work",
+          url: "https://example.test/pulls/83",
+          state: "merged",
+          attention: "merged",
+        },
+        "recent-closed": {
+          number: 84,
+          title: "Closed work",
+          url: "https://example.test/pulls/84",
+          state: "closed",
+          attention: "closed",
+        },
+      },
+    });
+    renderList();
+
+    await act(async () => {});
+    const inbox = await screen.findByRole("region", { name: "Inbox" });
+    expect(within(inbox).getByText("Recently merged")).toBeDefined();
+    expect(within(inbox).getByText("Recently closed")).toBeDefined();
+    expect(screen.queryByRole("region", { name: "Settled" })).toBeNull();
   });
 });
 
@@ -1004,8 +1070,12 @@ describe("pinned reordering", () => {
       sidebarActionCalls.some((call) => call.method === "open"),
     ).toBe(false);
 
-    expect(fireEvent.click(movedLabel)).toBe(true);
-    await passDoubleClickWindow();
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 400));
+    });
+    expect(
+      fireEvent.click(screen.getByRole("link", { name: "Second" })),
+    ).toBe(false);
     expect(
       sidebarActionCalls.filter((call) => call.method === "open"),
     ).toEqual([{ method: "open", threadId: "b", options: undefined }]);

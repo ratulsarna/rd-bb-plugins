@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildBoard, canSettle } from "./lanes";
+import { buildBoard } from "./lanes";
 import { filterBoardForDisplay } from "./display-filter";
-import { NOW, prMap, thread } from "@/test/fixtures";
+import { NOW, thread } from "@/test/fixtures";
 
 describe("filterBoardForDisplay", () => {
   it("filters one project without losing that project's roots", () => {
@@ -23,25 +23,16 @@ describe("filterBoardForDisplay", () => {
     );
   });
 
-  // The whole reason display filtering is a second layer: a hidden child still
-  // owns the open PR that keeps its root in the Inbox. If search could reach
-  // the projection, the root would look settleable and quietly disappear.
-  it("keeps a root blocked by an open-PR child the query hides", () => {
+  it("classifies from hidden child activity before pruning the view", () => {
     const threads = [
       thread("root", { title: "release prep", latestAttentionAt: NOW - 10 * 24 * 3_600_000 }),
       thread("child", {
         title: "subagent work",
         parentThreadId: "root",
-        latestAttentionAt: NOW - 10 * 24 * 3_600_000,
+        latestAttentionAt: NOW - 60_000,
       }),
     ];
-    const board = buildBoard(threads, {
-      now: NOW,
-      prStates: prMap([
-        ["root", null],
-        ["child", "open"],
-      ]),
-    });
+    const board = buildBoard(threads, { now: NOW });
 
     const view = filterBoardForDisplay(board, { query: "release" });
 
@@ -49,8 +40,7 @@ describe("filterBoardForDisplay", () => {
     expect(view.inbox.map((item) => item.thread.id)).toEqual(["root"]);
     expect(view.settled).toHaveLength(0);
     expect(root.children).toHaveLength(0);
-    expect(root.treePr).toBe("in-flight");
-    expect(canSettle(root)).toBe(false);
+    expect(root.latestActivityAt).toBe(NOW - 60_000);
   });
 
   it("keeps a non-matching parent that hides a matching child", () => {
@@ -77,13 +67,7 @@ describe("filterBoardForDisplay", () => {
         thread("kept", { title: "kept work", latestAttentionAt: quietAt }),
         thread("hidden", { title: "other work", latestAttentionAt: quietAt }),
       ],
-      {
-        now: NOW,
-        prStates: prMap([
-          ["kept", null],
-          ["hidden", null],
-        ]),
-      },
+      { now: NOW },
     );
     expect(board.settled).toHaveLength(2);
 
