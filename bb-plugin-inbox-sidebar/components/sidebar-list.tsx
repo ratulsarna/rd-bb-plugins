@@ -3,6 +3,7 @@ import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
   type PluginThreadListProps,
 } from "@bb/plugin-sdk/app";
+import { AddProjectButton } from "@/components/add-project";
 import { PrProbes } from "@/components/pr-probes";
 import { PinnedReorder } from "@/components/pinned-reorder";
 import { ProjectSelect, useProjectFilter } from "@/components/project-select";
@@ -38,7 +39,9 @@ export function BoardSidebar({
   // search hit or the active thread — and one click still overrules that.
   const [showSettled, setShowSettled] = useState<boolean | null>(null);
   const state = useBoardState();
-  const [projectId, setProjectId] = useProjectFilter(state.projects);
+  const [projectId, setProjectId, setPendingProjectId] = useProjectFilter(
+    state.projects,
+  );
   const projectNames = useMemo(
     () => new Map(state.projects.map((project) => [project.id, project.name])),
     [state.projects],
@@ -95,6 +98,15 @@ export function BoardSidebar({
       onNavigate();
     },
     [actions, onNavigate],
+  );
+
+  const openNewProject = useCallback(
+    (newProjectId: string) => {
+      setPendingProjectId(newProjectId);
+      actions.openNewThread({ projectId: newProjectId, focusPrompt: true });
+      onNavigate();
+    },
+    [actions, onNavigate, setPendingProjectId],
   );
 
   const renameThread = useCallback(
@@ -251,6 +263,7 @@ export function BoardSidebar({
           onChange={setProjectId}
           className="h-7 w-full min-w-0 rounded-md border-0 bg-transparent px-1.5 text-xs font-medium text-muted-foreground outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"
         />
+        <AddProjectButton onCreated={openNewProject} />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
         {isEmpty ? (

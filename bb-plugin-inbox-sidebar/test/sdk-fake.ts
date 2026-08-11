@@ -32,6 +32,17 @@ export interface FakeSdkConfig {
    * settle by hand — the only way to make two responses race on purpose.
    */
   deferRpc: string[];
+  projectHosts: Array<{ id: string; name: string }>;
+  primaryHostId: string | null;
+  createdProjectId: string;
+  projectDirectories: Record<
+    string,
+    {
+      directory: string;
+      parent: string | null;
+      entries: Array<{ name: string; path: string }>;
+    }
+  >;
 }
 
 const DEFAULTS: FakeSdkConfig = {
@@ -45,13 +56,23 @@ const DEFAULTS: FakeSdkConfig = {
   failMovePinned: false,
   failPinnedOrder: false,
   deferRpc: [],
+  projectHosts: [{ id: "host-1", name: "Workstation" }],
+  primaryHostId: "host-1",
+  createdProjectId: "project-new",
+  projectDirectories: {
+    "host-1:<home>": {
+      directory: "/home/ratul",
+      parent: "/home",
+      entries: [],
+    },
+  },
 };
 
 let config: FakeSdkConfig = DEFAULTS;
 
 export interface SidebarActionCall {
   method: string;
-  threadId: string;
+  threadId?: string;
   options?: unknown;
 }
 
@@ -121,6 +142,11 @@ export function setFakeThreads(threads: BoardThread[]): void {
   config.threads = threads;
 }
 
+/** Change the live project list mid-test; re-render to pick it up. */
+export function setFakeProjects(projects: PluginSidebarProject[]): void {
+  config.projects = projects;
+}
+
 interface ThreadListRegistration {
   id: string;
   title: string;
@@ -153,6 +179,8 @@ export function definePluginApp(
 const actions = {
   open: (threadId: string, options?: unknown) =>
     sidebarActionCalls.push({ method: "open", threadId, options }),
+  openNewThread: (options?: unknown) =>
+    sidebarActionCalls.push({ method: "openNewThread", options }),
   setPinned: async (threadId: string, pinned: boolean) => {
     sidebarActionCalls.push({ method: "setPinned", threadId, options: pinned });
   },
@@ -194,6 +222,32 @@ const rpc = {
           at: row.at,
         })),
       };
+    }
+    if (method === "projectCreationContext") {
+      return {
+        hosts: config.projectHosts,
+        primaryHostId: config.primaryHostId,
+      };
+    }
+    if (method === "projectDirectory") {
+      const { hostId, path } = input as {
+        hostId: string;
+        path: string | null;
+      };
+      const listing =
+        config.projectDirectories[`${hostId}:${path ?? "<home>"}`];
+      if (!listing) throw new Error("folder not found");
+      return listing;
+    }
+    if (method === "createProjectFolder") {
+      const { parentPath, name } = input as {
+        parentPath: string;
+        name: string;
+      };
+      return { path: `${parentPath.replace(/\/+$/, "")}/${name}` };
+    }
+    if (method === "addProject") {
+      return { projectId: config.createdProjectId };
     }
     return { ok: true };
   },

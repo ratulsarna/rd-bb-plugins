@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { PluginSidebarProject } from "@bb/plugin-sdk/app";
 
 /**
@@ -8,16 +8,45 @@ import type { PluginSidebarProject } from "@bb/plugin-sdk/app";
  */
 export function useProjectFilter(
   projects: readonly PluginSidebarProject[],
-): [string, (projectId: string) => void] {
-  const [projectId, setProjectId] = useState("");
+): [
+  string,
+  (projectId: string) => void,
+  (projectId: string) => void,
+] {
+  const [selection, setSelection] = useState({
+    projectId: "",
+    allowMissing: false,
+  });
+
+  const setProjectId = useCallback((projectId: string) => {
+    setSelection({ projectId, allowMissing: false });
+  }, []);
+
+  const setPendingProjectId = useCallback((projectId: string) => {
+    setSelection({ projectId, allowMissing: true });
+  }, []);
 
   useEffect(() => {
-    if (projectId && !projects.some((project) => project.id === projectId)) {
-      setProjectId("");
-    }
-  }, [projectId, projects]);
+    if (!selection.projectId) return;
 
-  return [projectId, setProjectId];
+    const exists = projects.some(
+      (project) => project.id === selection.projectId,
+    );
+    if (selection.allowMissing) {
+      if (exists) {
+        setSelection((current) =>
+          current.projectId === selection.projectId
+            ? { ...current, allowMissing: false }
+            : current,
+        );
+      }
+      return;
+    }
+
+    if (!exists) setProjectId("");
+  }, [projects, selection, setProjectId]);
+
+  return [selection.projectId, setProjectId, setPendingProjectId];
 }
 
 export function ProjectSelect({

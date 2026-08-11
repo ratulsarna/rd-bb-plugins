@@ -16,6 +16,7 @@ import {
   resolvePendingRpc,
   rpcCalls,
   setFakePinnedOrder,
+  setFakeProjects,
   setFakeThreads,
   sidebarActionCalls,
   splitPointerDownCalls,
@@ -452,6 +453,81 @@ describe("BoardSidebar host contract", () => {
     });
     expect(screen.queryByText("In bb")).toBeNull();
     expect(screen.getByText("In other")).toBeDefined();
+  });
+
+  it("adds a project and opens a new thread in it", async () => {
+    configureFakeSdk({
+      projectHosts: [
+        { id: "host-primary", name: "Desktop" },
+        { id: "host-other", name: "Laptop" },
+      ],
+      primaryHostId: "host-primary",
+      createdProjectId: "project-created",
+      projectDirectories: {
+        "host-primary:<home>": {
+          directory: "/work",
+          parent: "/",
+          entries: [
+            { name: "new-project", path: "/work/new-project" },
+          ],
+        },
+        "host-primary:/work/new-project": {
+          directory: "/work/new-project",
+          parent: "/work",
+          entries: [],
+        },
+      },
+    });
+    let navigated = 0;
+    const onNavigate = () => (navigated += 1);
+    const rendered = renderList({ onNavigate });
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add project" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Add project" });
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({
+        method: "projectCreationContext",
+        input: {},
+      }),
+    );
+    expect(
+      (within(dialog).getByLabelText("Machine") as HTMLSelectElement).value,
+    ).toBe("host-primary");
+
+    fireEvent.click(
+      await within(dialog).findByRole("button", { name: "new-project" }),
+    );
+    await within(dialog).findByText("Project name:");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Add project" }),
+    );
+
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({
+        method: "addProject",
+        input: { hostId: "host-primary", path: "/work/new-project" },
+      }),
+    );
+    expect(sidebarActionCalls).toContainEqual({
+      method: "openNewThread",
+      options: { projectId: "project-created", focusPrompt: true },
+    });
+    expect(navigated).toBe(1);
+
+    setFakeProjects([
+      { id: "project-1", name: "bb", isPersonal: false },
+      { id: "project-created", name: "new-project", isPersonal: false },
+    ]);
+    rendered.rerender(listElement({ onNavigate }));
+
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText("Filter by project") as HTMLSelectElement)
+          .value,
+      ).toBe("project-created"),
+    );
   });
 });
 

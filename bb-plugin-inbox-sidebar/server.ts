@@ -9,11 +9,53 @@ import { z } from "zod";
 // Relative on purpose: a path install loads server.ts directly, where the
 // bundler's "@/" alias does not exist.
 import { pinnedRootIds } from "./lib/pinned-order";
+import {
+  getProjectPathError,
+  normalizeProjectPath,
+  projectNameFromPath,
+} from "./lib/project-path";
+import {
+  getFolderNameError,
+  joinHostPath,
+} from "./lib/project-browser-path";
 
 const threadIdInput = z.object({ threadId: z.string().trim().min(1) });
 const pinnedOrderOutput = z.object({ ids: z.array(z.string()) });
 
 export const boardRpcContract = defineRpcContract({
+  projectCreationContext: {
+    input: z.object({}),
+    output: z.object({
+      primaryHostId: z.string().nullable(),
+      hosts: z.array(z.object({ id: z.string(), name: z.string() })),
+    }),
+  },
+  projectDirectory: {
+    input: z.object({
+      hostId: z.string().trim().min(1),
+      path: z.string().nullable(),
+    }),
+    output: z.object({
+      directory: z.string(),
+      parent: z.string().nullable(),
+      entries: z.array(z.object({ name: z.string(), path: z.string() })),
+    }),
+  },
+  createProjectFolder: {
+    input: z.object({
+      hostId: z.string().trim().min(1),
+      parentPath: z.string().trim().min(1),
+      name: z.string(),
+    }),
+    output: z.object({ path: z.string() }),
+  },
+  addProject: {
+    input: z.object({
+      hostId: z.string().trim().min(1),
+      path: z.string(),
+    }),
+    output: z.object({ projectId: z.string() }),
+  },
   listOverrides: {
     input: z.object({}),
     output: z.object({
@@ -72,6 +114,54 @@ export default function plugin(bb: BbPluginApi) {
   };
 
   bb.rpc.register(boardRpcContract, {
+    async projectCreationContext() {
+      const [config, allHosts] = await Promise.all([
+        bb.sdk.system.config(),
+        bb.sdk.hosts.list(),
+      ]);
+      const hosts = allHosts
+        .filter((host) => host.status === "connected")
+        .map(({ id, name }) => ({ id, name }));
+      const primaryHostId = hosts.some(
+        (host) => host.id === config.primaryHostId,
+      )
+        ? config.primaryHostId
+        : (hosts[0]?.id ?? null);
+      return { primaryHostId, hosts };
+    },
+    async projectDirectory({ hostId, path }) {
+      const listing = await bb.sdk.hosts.directory({
+        hostId,
+        ...(path ? { path } : {}),
+      });
+      return {
+        directory: listing.directory,
+        parent: listing.parent,
+        entries: listing.entries
+          .filter((entry) => entry.kind === "directory")
+          .map(({ name, path: entryPath }) => ({ name, path: entryPath })),
+      };
+    },
+    async createProjectFolder({ hostId, parentPath, name }) {
+      const trimmedName = name.trim();
+      const nameError = getFolderNameError(trimmedName);
+      if (nameError) throw new Error(nameError);
+
+      const path = joinHostPath(parentPath, trimmedName);
+      await bb.sdk.files.mkdir({ hostId, path });
+      return { path };
+    },
+    async addProject({ hostId, path }) {
+      const pathError = getProjectPathError(path);
+      if (pathError) throw new Error(pathError);
+
+      const normalizedPath = normalizeProjectPath(path);
+      const project = await bb.sdk.projects.create({
+        name: projectNameFromPath(normalizedPath),
+        source: { type: "local_path", hostId, path: normalizedPath },
+      });
+      return { projectId: project.id };
+    },
     async listOverrides() {
       const rows = (
         db
