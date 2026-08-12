@@ -1,0 +1,42 @@
+{
+  "name": "bb-plugin-favorites",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "bb plugin build"
+  },
+  "engines": {
+    "bb": ">=0.36",
+    "bbPluginSdk": "^0.4.1"
+  },
+  "bb": {
+    "name": "Favorites",
+    "description": "Save machine, harness, model, reasoning, and speed setups, then open New Thread already set to them.",
+    "branding": {
+      "icon": "Star"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": []
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@testing-library/react": "^16.3.2",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.2.4",
+    "better-sqlite3": "^12.0.0",
+    "hono": "^4.11.9",
+    "jsdom": "^26.1.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
+  }
+}

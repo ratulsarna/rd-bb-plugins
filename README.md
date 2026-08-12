@@ -6,6 +6,7 @@ Personal plugins for [bb](https://github.com/ymichael/bb).
 
 - [`bb-plugin-inbox-sidebar`](./bb-plugin-inbox-sidebar) — organize threads in an inbox sidebar. [t3code](https://github.com/pingdotgg/t3code) style.
 - [`bb-plugin-usage`](./bb-plugin-usage) — view Codex and Claude Code subscription usage.
+- [`bb-plugin-favorites`](./bb-plugin-favorites) — save machine / harness / model setups and open New Thread already set to them.
 
 ## Development
 
