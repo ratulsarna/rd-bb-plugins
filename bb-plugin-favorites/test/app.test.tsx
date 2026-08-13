@@ -31,6 +31,12 @@ const projects: PickerProject[] = [
     kind: "standard",
     hostIds: ["host_mac"],
   },
+  {
+    id: "proj_personal",
+    name: "Personal",
+    kind: "personal",
+    hostIds: [],
+  },
 ];
 
 const hosts: PickerHost[] = [
@@ -96,13 +102,18 @@ function handlerState(initial: Favorite[] = [favorite]) {
     if (method === "pickerOptions") return { projects, hosts };
     if (method === "catalog") return catalog;
     if (method === "createFavorite") {
+      const projectId = (input as { projectId: string }).projectId;
+      const selectedProject = projects.find((entry) => entry.id === projectId)!;
       const created = {
         ...favorite,
         id: "fav_new",
         name: "",
         ...(input as object),
-        projectName: "plugins",
-        projectKind: "standard" as const,
+        projectName:
+          selectedProject.kind === "personal"
+            ? "No project"
+            : selectedProject.name,
+        projectKind: selectedProject.kind,
         projectMissing: false,
         hostName: "MacBook Pro 16",
         hostStatus: "connected" as const,
@@ -120,15 +131,17 @@ function handlerState(initial: Favorite[] = [favorite]) {
       return { ok: true };
     }
     if (method === "seedFavorite") {
+      const id = (input as { id: string }).id;
+      const selected = favorites.find((entry) => entry.id === id) ?? favorite;
       return {
         seed: {
-          projectId: favorite.projectId,
-          projectKind: favorite.projectKind,
-          hostId: favorite.hostId,
-          providerId: favorite.providerId,
-          model: favorite.model,
-          reasoningLevel: favorite.reasoningLevel,
-          serviceTier: favorite.serviceTier ?? undefined,
+          projectId: selected.projectId,
+          projectKind: selected.projectKind,
+          hostId: selected.hostId,
+          providerId: selected.providerId,
+          model: selected.model,
+          reasoningLevel: selected.reasoningLevel,
+          serviceTier: selected.serviceTier ?? undefined,
         },
       };
     }
@@ -285,6 +298,36 @@ describe("favorites panel", () => {
         name: "Open plugins Codex GPT-5.6-Sol",
       }).textContent,
     ).not.toContain("Sol deep");
+  });
+
+  it("saves and opens a favorite without a project", async () => {
+    configureFakeSdk({ handler: handlerState([]) });
+    renderPanel();
+
+    const projectSelect = await screen.findByLabelText("Project");
+    expect(screen.getByText("Don't work in a project")).toBeTruthy();
+    await waitFor(() => {
+      expect(
+        (screen.getByLabelText("Model") as HTMLSelectElement).disabled,
+      ).toBe(false);
+    });
+    fireEvent.change(projectSelect, { target: { value: "proj_personal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(
+        rpcCalls.find((call) => call.method === "createFavorite")?.input,
+      ).toMatchObject({ projectId: "proj_personal" });
+    });
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Open No project Codex GPT-5.6-Sol",
+      }),
+    );
+
+    expect(await screen.findByTestId("new-thread-composer")).toBeTruthy();
+    expect(screen.getByText("project:proj_personal")).toBeTruthy();
+    expect(screen.getByText(/"workspace":\{"type":"personal"\}/)).toBeTruthy();
   });
 
   it("shows a typed name on the tile and leaves blank names empty", async () => {

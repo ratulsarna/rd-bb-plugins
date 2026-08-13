@@ -167,7 +167,10 @@ function hydrateFavorite(
     id: row.id,
     name: normalizeFavoriteName(row.name),
     projectId: row.project_id,
-    projectName: project?.name ?? "Missing project",
+    projectName:
+      project?.kind === "personal"
+        ? "No project"
+        : (project?.name ?? "Missing project"),
     projectKind: project?.kind ?? "standard",
     projectMissing: !project,
     hostId: row.host_id,

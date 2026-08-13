@@ -121,7 +121,9 @@ export function FavoritePicker({
             ) : null}
             {projects.map((entry) => (
               <option key={entry.id} value={entry.id}>
-                {entry.name}
+                {entry.kind === "personal"
+                  ? "Don't work in a project"
+                  : entry.name}
               </option>
             ))}
           </select>
