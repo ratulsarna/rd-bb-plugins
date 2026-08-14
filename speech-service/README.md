@@ -5,11 +5,11 @@ model and one Qwen3-TTS model warm, with one request lock per model.
 
 ## Proven matrix
 
-This exact matrix passed both GPU smoke tests on `rdlegion` on 2026-08-14.
+This exact matrix passed both GPU smoke tests on the GPU host on 2026-08-14.
 
 | Part | Version |
 | --- | --- |
-| Host | `rdlegion` WSL2 Ubuntu 26.04, RTX 5090 Laptop GPU, driver 610.88 |
+| Host | WSL2 Ubuntu 26.04, RTX 5090 Laptop GPU, driver 610.88 |
 | Python / uv | 3.12.13 / 0.12.4 |
 | PyTorch | 2.12.1+cu130, CUDA runtime 13.0 |
 | STT | `nano-parakeet` 0.2.1, `nvidia/parakeet-tdt-0.6b-v3` |
@@ -22,19 +22,20 @@ The machine needs about 13 GiB of free GPU memory. Startup is deliberately
 fatal if CUDA is missing or a model cannot load, including an out-of-memory
 error.
 
-## Install on rdlegion
+## Install on the GPU host
 
-Run from this repository on `srv1191956`:
+The service runs inside WSL2 on a Windows GPU machine (a native Linux host
+works the same without the `wsl.exe` hops). Copy this directory over, e.g.:
 
 ```bash
-tar -C speech-service -czf - . | ssh rdlegion \
-  "wsl.exe -d Ubuntu -- bash -lc 'mkdir -p /home/ratul/bb-speech-service && tar -xzf - -C /home/ratul/bb-speech-service'"
+tar -C speech-service -czf - . | ssh <gpu-host> \
+  "wsl.exe -d Ubuntu -- bash -lc 'mkdir -p ~/bb-speech-service && tar -xzf - -C ~/bb-speech-service'"
 ```
 
 Then enter WSL and install the system and Python dependencies:
 
 ```powershell
-ssh rdlegion
+ssh <gpu-host>
 wsl.exe -d Ubuntu
 ```
 
@@ -43,7 +44,7 @@ sudo apt-get update
 sudo apt-get install -y ffmpeg curl
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ~/.local/bin/uv python install 3.12
-cd /home/ratul/bb-speech-service
+cd ~/bb-speech-service
 ~/.local/bin/uv sync --frozen
 ```
 
@@ -55,7 +56,7 @@ The smoke tests load both models once, transcribe a real short WAV, and create
 a decodable WAV at the TTS model's native sample rate:
 
 ```bash
-cd /home/ratul/bb-speech-service
+cd ~/bb-speech-service
 ~/.local/bin/uv run --frozen pytest test_smoke.py
 ```
 
@@ -63,8 +64,8 @@ Start the manual POC service as a transient user unit:
 
 ```bash
 systemd-run --user --unit=bb-speech-service --collect \
-  --property=WorkingDirectory=/home/ratul/bb-speech-service \
-  /home/ratul/.local/bin/uv run --frozen \
+  --property=WorkingDirectory=$HOME/bb-speech-service \
+  $HOME/.local/bin/uv run --frozen \
   uvicorn app:app --host 127.0.0.1 --port 18077
 journalctl --user -fu bb-speech-service
 ```
@@ -78,30 +79,30 @@ tailscale serve status
 
 ## Verify
 
-From a Tailscale peer, replace the host only if its Tailscale address changes:
+From a Tailscale peer, using the GPU host's Tailscale address:
 
 ```bash
 curl --fail --show-error --write-out '\nwall=%{time_total}s\n' \
-  http://100.81.193.12:18077/health
+  http://<gpu-host-ip>:18077/health
 
 curl --fail --show-error --write-out '\nwall=%{time_total}s\n' \
   -F file=@speech-service/smoke.wav \
-  http://100.81.193.12:18077/v1/audio/transcriptions
+  http://<gpu-host-ip>:18077/v1/audio/transcriptions
 
 curl --fail --show-error \
   --write-out 'wall=%{time_total}s bytes=%{size_download}\n' \
   -H 'Content-Type: application/json' \
   -d '{"input":"The BB voice proof is ready.","voice":"Aiden"}' \
-  http://100.81.193.12:18077/v1/audio/speech \
+  http://<gpu-host-ip>:18077/v1/audio/speech \
   --output /tmp/bb-speech.wav
 
 ffprobe -v error -show_entries stream=codec_name,sample_rate,channels,duration \
   -of default=noprint_wrappers=1 /tmp/bb-speech.wav
 ```
 
-The proof run from `srv1191956` returned health in 0.054 seconds, the transcript
-`The voice service smoke test is working.` in 0.204 seconds, and an 80,684-byte,
-24 kHz mono WAV in 3.779 seconds.
+The proof run from the bb server host returned health in 0.054 seconds, the
+transcript `The voice service smoke test is working.` in 0.204 seconds, and an
+80,684-byte, 24 kHz mono WAV in 3.779 seconds.
 
 Accepted transcription uploads are WebM, MP4, Ogg, and WAV, up to 25 MB and
 90 seconds. Speech input is capped at 8,000 characters and only the `Aiden`
