@@ -713,9 +713,11 @@ export default function voicePlugin(bb: BbPluginApi): void {
     abortControllers.clear();
     serviceUrls.clear();
     if (active) {
+      const threadId = active.threadId;
       active.audio = null;
       active.audioId = null;
       active = null;
+      publishChanged(threadId);
     }
   });
 }

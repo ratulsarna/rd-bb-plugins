@@ -117,6 +117,7 @@ function createHarness() {
   const routes = new Map<string, HttpHandler>();
   const disposeHooks: Array<() => void | Promise<void>> = [];
   const published: Array<{ channel: string; payload: unknown }> = [];
+  const publishedStates: VoiceState[] = [];
   const sends: unknown[] = [];
   const eventListCalls: string[] = [];
   let threadGetCalls = 0;
@@ -131,6 +132,7 @@ function createHarness() {
     realtime: {
       publish(channel: string, payload: unknown) {
         published.push({ channel, payload });
+        if (rpc) publishedStates.push(rpc.getState(owner));
       },
     },
     rpc: {
@@ -224,6 +226,7 @@ function createHarness() {
     api,
     sends,
     published,
+    publishedStates,
     eventListCalls,
     get threadGetCalls() {
       return threadGetCalls;
@@ -422,6 +425,23 @@ describe("voice backend state machine", () => {
     );
     expect(timeoutHarness.sends).toHaveLength(1);
     await timeoutHarness.dispose();
+  });
+
+  it("publishes ready state while disposing a working exchange", async () => {
+    const harness = createHarness();
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.sends).toHaveLength(1));
+    expect((await state(harness)).phase).toBe("working");
+    const publishCount = harness.published.length;
+
+    await harness.dispose();
+
+    expect(harness.published).toHaveLength(publishCount + 1);
+    expect(harness.published.at(-1)).toEqual({
+      channel: "voice:changed",
+      payload: { threadId: owner.threadId },
+    });
+    expect(harness.publishedStates.at(-1)?.phase).toBe("ready");
   });
 
   it("ends quietly for a pending interaction or a turn with no answer", async () => {
