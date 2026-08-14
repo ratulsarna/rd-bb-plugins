@@ -1,6 +1,6 @@
 /**
  * Minimal stand-ins for the browser capabilities the control drives: the mic,
- * the plugin HTTP routes, object URLs, and audio playback.
+ * the plugin HTTP routes, and Web Audio playback.
  */
 
 export interface UploadRecord {
@@ -10,15 +10,89 @@ export interface UploadRecord {
   sizeBytes: number;
 }
 
+class FakeGainParam {
+  value = 1;
+
+  setValueAtTime(value: number): void {
+    this.value = value;
+  }
+
+  cancelScheduledValues(): void {}
+
+  linearRampToValueAtTime(value: number): void {
+    this.value = value;
+  }
+}
+
+class FakeGainNode {
+  readonly gain = new FakeGainParam();
+
+  connect(): void {}
+}
+
+class FakeAudioBufferSource {
+  buffer: AudioBuffer | null = null;
+  onended: (() => void) | null = null;
+  startAt: number | null = null;
+  stopAt: number | null = null;
+
+  constructor(readonly gain: FakeGainNode) {}
+
+  connect(): void {}
+
+  start(at: number): void {
+    this.startAt = at;
+  }
+
+  stop(at: number): void {
+    this.stopAt = at;
+  }
+
+  finish(): void {
+    const onended = this.onended;
+    this.onended = null;
+    onended?.();
+  }
+}
+
+class FakeAudioContext {
+  currentTime = 0;
+  readonly destination = {} as AudioNode;
+  readonly sources: FakeAudioBufferSource[] = [];
+
+  constructor() {
+    fakes.audioContexts.push(this);
+  }
+
+  resume(): Promise<void> {
+    return fakes.resumeResult === "resolve"
+      ? Promise.resolve()
+      : Promise.reject(new DOMException("blocked", "NotAllowedError"));
+  }
+
+  createBufferSource(): AudioBufferSourceNode {
+    const source = new FakeAudioBufferSource(new FakeGainNode());
+    this.sources.push(source);
+    return source as unknown as AudioBufferSourceNode;
+  }
+
+  createGain(): GainNode {
+    return this.sources.at(-1)!.gain as unknown as GainNode;
+  }
+
+  async decodeAudioData(_bytes: ArrayBuffer): Promise<AudioBuffer> {
+    return { duration: 1 } as AudioBuffer;
+  }
+}
+
 export const fakes = {
   uploads: [] as UploadRecord[],
   audioDownloads: [] as string[],
-  revokedUrls: [] as string[],
   tracksStopped: 0,
   recorders: [] as FakeMediaRecorder[],
-  audios: [] as HTMLAudioElement[],
-  /** How the next `play()` resolves — "reject" mimics a blocked autoplay. */
-  playResult: "resolve" as "resolve" | "reject",
+  audioContexts: [] as FakeAudioContext[],
+  /** How the next `AudioContext.resume()` resolves. */
+  resumeResult: "resolve" as "resolve" | "reject",
   micError: null as unknown,
   /** Thrown by `MediaRecorder.start()`, after the mic is already open. */
   recorderStartError: null as unknown,
@@ -28,11 +102,10 @@ export const fakes = {
 export function resetFakes() {
   fakes.uploads.length = 0;
   fakes.audioDownloads.length = 0;
-  fakes.revokedUrls.length = 0;
   fakes.recorders.length = 0;
-  fakes.audios.length = 0;
+  fakes.audioContexts.length = 0;
   fakes.tracksStopped = 0;
-  fakes.playResult = "resolve";
+  fakes.resumeResult = "resolve";
   fakes.micError = null;
   fakes.recorderStartError = null;
   fakes.onUpload = () => {};
@@ -105,27 +178,7 @@ export function installBrowserFakes(): void {
     },
   });
 
-  let objectUrlSeq = 0;
-  URL.createObjectURL = () => `blob:fake-${++objectUrlSeq}`;
-  URL.revokeObjectURL = (url: string) => {
-    fakes.revokedUrls.push(url);
-  };
-
-  const media = globalThis.HTMLMediaElement.prototype;
-  media.play = function play() {
-    return fakes.playResult === "resolve"
-      ? Promise.resolve()
-      : Promise.reject(new DOMException("blocked", "NotAllowedError"));
-  };
-  media.pause = function pause() {};
-
-  const RealAudio = globalThis.Audio;
-  scope.Audio = class TrackedAudio extends RealAudio {
-    constructor(src?: string) {
-      super(src);
-      fakes.audios.push(this);
-    }
-  };
+  scope.AudioContext = FakeAudioContext;
 
   scope.fetch = async (input: unknown, init?: RequestInit): Promise<Response> => {
     const url = String(input);
@@ -146,7 +199,7 @@ export function installBrowserFakes(): void {
       return {
         ok: true,
         status: 200,
-        blob: async () => new Blob(["wav-bytes"], { type: "audio/wav" }),
+        arrayBuffer: async () => new TextEncoder().encode("wav-bytes").buffer,
         json: async () => ({}),
       } as unknown as Response;
     }
@@ -154,10 +207,12 @@ export function installBrowserFakes(): void {
   };
 }
 
-/** Fire `ended` on the audio element the control is playing. */
-export function endPlayback(): void {
-  const audio = fakes.audios.at(-1);
-  audio?.onended?.(new Event("ended"));
+/** Fire `ended` on the latest scheduled Web Audio source. */
+export function endAudio(): void {
+  const source = fakes.audioContexts
+    .at(-1)
+    ?.sources.find((candidate) => candidate.onended !== null);
+  source?.finish();
 }
 
 export type { FakeMediaRecorder };

@@ -62,10 +62,13 @@ export async function uploadRecording(input: {
   );
 }
 
-export async function downloadAudio(audioId: string): Promise<Blob> {
-  const response = await fetch(audioDownloadUrl(audioId));
+export async function fetchAudioChunk(
+  audioId: string,
+  signal: AbortSignal,
+): Promise<ArrayBuffer> {
+  const response = await fetch(audioDownloadUrl(audioId), { signal });
   if (!response.ok) {
     throw new Error(`answer audio is unavailable (HTTP ${response.status})`);
   }
-  return response.blob();
+  return response.arrayBuffer();
 }

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   defineRpcContract,
   type BbPluginApi,
-  type StandardSchemaV1,
 } from "@bb/plugin-sdk";
 import { z } from "zod";
 import {
@@ -138,38 +137,7 @@ const runtimeRpcContract = defineRpcContract({
   },
 });
 
-type LegacyCompatibleState = {
-  phase: "ready" | "listening" | "working" | "speaking" | "failed";
-  exchangeId: string | null;
-  error: string | null;
-  canControl: boolean;
-  chunks?: { id: string; index: number }[];
-  streamComplete?: boolean;
-  /** Removed from the wire contract; kept only while the S2 client is staged. */
-  audioId?: string | null;
-};
-
-type LegacyCompatibleFinishInput = {
-  threadId: string;
-  controllerId: string;
-  exchangeId: string;
-  playedThroughIndex?: number;
-};
-
-/** The runtime contract above is exact; this type keeps the old client compiling until S2 lands. */
-export const rpcContract = runtimeRpcContract as Omit<
-  typeof runtimeRpcContract,
-  "getState" | "finishPlayback"
-> & {
-  getState: {
-    readonly input: typeof runtimeRpcContract.getState.input;
-    readonly output: StandardSchemaV1<unknown, LegacyCompatibleState>;
-  };
-  finishPlayback: {
-    readonly input: StandardSchemaV1<LegacyCompatibleFinishInput, LegacyCompatibleFinishInput>;
-    readonly output: typeof runtimeRpcContract.finishPlayback.output;
-  };
-};
+export const rpcContract = runtimeRpcContract;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

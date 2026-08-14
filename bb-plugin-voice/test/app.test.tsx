@@ -11,7 +11,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import "../app";
 import type { VoiceState } from "@/lib/view";
 import {
-  endPlayback,
+  endAudio,
   fakes,
   installBrowserFakes,
   resetFakes,
@@ -25,8 +25,9 @@ const ready: VoiceState = {
   phase: "ready",
   canControl: false,
   exchangeId: null,
-  audioId: null,
   error: null,
+  chunks: [],
+  streamComplete: false,
 };
 
 const owned = (overrides: Partial<VoiceState>): VoiceState => ({
@@ -54,6 +55,8 @@ function createBackend() {
         case "cancel":
         case "finishPlayback":
           backend.current = ready;
+          return { ok: true };
+        case "ackPlayback":
           return { ok: true };
         default:
           throw new Error(`unexpected rpc: ${method}`);
@@ -93,7 +96,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("voice header control", () => {
-  it("records, uploads, speaks the answer, and returns to ready", async () => {
+  it("records, uploads, schedules the answer, and supports two serial exchanges", async () => {
     const backend = createBackend();
     renderControl();
 
@@ -121,18 +124,28 @@ describe("voice header control", () => {
     expect(fakes.tracksStopped).toBe(1);
     expect(await screen.findByText("Working")).toBeTruthy();
 
-    await publish(backend, owned({ phase: "speaking", audioId: "aud_1" }));
-    await waitFor(() => expect(fakes.audioDownloads).toEqual(["aud_1"]));
+    await publish(
+      backend,
+      owned({
+        phase: "speaking",
+        chunks: [
+          { id: "aud_1", index: 0 },
+          { id: "aud_2", index: 1 },
+        ],
+        streamComplete: true,
+      }),
+    );
+    await waitFor(() => expect(fakes.audioDownloads).toEqual(["aud_1", "aud_2"]));
     expect(await screen.findByText("Speaking")).toBeTruthy();
     expect(
       await screen.findByRole("button", { name: "Stop playback" }),
     ).toBeTruthy();
 
-    await act(async () => endPlayback());
+    await act(async () => endAudio());
+    await act(async () => endAudio());
     await waitFor(() =>
       expect(rpcCalls.some((call) => call.method === "finishPlayback")).toBe(true),
     );
-    expect(fakes.revokedUrls).toHaveLength(1);
     expect(await micButton()).toBeTruthy();
 
     // A second exchange starts on the same mount without a reload.
@@ -198,8 +211,9 @@ describe("voice header control", () => {
       phase: "failed",
       canControl: false,
       exchangeId: "ex_dead",
-      audioId: null,
       error: "nothing transcribed",
+      chunks: [],
+      streamComplete: false,
     };
     renderControl();
 
@@ -234,16 +248,29 @@ describe("voice header control", () => {
 
   it("offers an explicit play control when autoplay is refused", async () => {
     const backend = createBackend();
-    fakes.playResult = "reject";
+    fakes.resumeResult = "reject";
     renderControl();
-    await micButton();
+    fireEvent.click(await micButton());
+    await stopRecordingButton();
+    fakes.onUpload = () => {
+      backend.current = owned({ phase: "working" });
+    };
+    fireEvent.click(await stopRecordingButton());
+    await waitFor(() => expect(fakes.uploads).toHaveLength(1));
 
-    await publish(backend, owned({ phase: "speaking", audioId: "aud_1" }));
+    await publish(
+      backend,
+      owned({
+        phase: "speaking",
+        chunks: [{ id: "aud_1", index: 0 }],
+        streamComplete: true,
+      }),
+    );
     const play = await screen.findByRole("button", {
       name: "Play the spoken answer",
     });
 
-    fakes.playResult = "resolve";
+    fakes.resumeResult = "resolve";
     fireEvent.click(play);
     expect(await screen.findByText("Speaking")).toBeTruthy();
   });
@@ -253,8 +280,9 @@ describe("voice header control", () => {
       phase: "speaking",
       canControl: false,
       exchangeId: "ex_1",
-      audioId: null,
       error: null,
+      chunks: [],
+      streamComplete: false,
     };
     renderControl();
 

@@ -14,8 +14,9 @@ function state(overrides: Partial<VoiceState> = {}): VoiceState {
     phase: "ready",
     canControl: false,
     exchangeId: null,
-    audioId: null,
     error: null,
+    chunks: [],
+    streamComplete: false,
     ...overrides,
   };
 }
@@ -61,7 +62,8 @@ describe("resolveView", () => {
       phase: "speaking",
       canControl: true,
       exchangeId: "ex_1",
-      audioId: "aud_1",
+      chunks: [{ id: "aud_1", index: 0 }],
+      streamComplete: false,
     });
     expect(resolveView({ ...base, state: speaking }).action).toBe("none");
 
