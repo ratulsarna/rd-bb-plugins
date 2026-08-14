@@ -7,11 +7,12 @@ import {
   loadEventsAfter,
   type VoiceEventRow,
 } from "./lib/correlation";
-import { mdToSpeakable } from "./lib/speakable";
+import { mdToSpeakable, truncateSpeakable } from "./lib/speakable";
 
 const DEFAULT_SPEECH_SERVICE_URL = "http://100.81.193.12:18077";
-const LISTENING_TTL_MS = 75_000;
+const LISTENING_TTL_MS = 3 * 60_000;
 const SPEAKING_TTL_MS = 5 * 60_000;
+const TTS_MAX_INPUT_CHARS = 8_000;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
 type Phase = "listening" | "working" | "speaking" | "failed";
@@ -22,6 +23,9 @@ type Stage =
   | "resolving"
   | "synthesizing"
   | null;
+type TerminalSignal =
+  | { kind: "idle" }
+  | { kind: "failed"; error: string };
 
 interface Exchange {
   exchangeId: string;
@@ -29,10 +33,10 @@ interface Exchange {
   threadId: string;
   phase: Phase;
   stage: Stage;
-  transcript: string | null;
   baselineSeq: string | null;
   requestId: string | null;
-  turnId: string | null;
+  terminalSignal: TerminalSignal | null;
+  reconcileAgain: boolean;
   audio: Buffer | null;
   audioId: string | null;
   error: string | null;
@@ -53,7 +57,6 @@ export const rpcContract = defineRpcContract({
     input: identitySchema,
     output: z.object({
       phase: z.enum(["ready", "listening", "working", "speaking", "failed"]),
-      canStart: z.boolean(),
       canControl: z.boolean(),
       exchangeId: z.string().nullable(),
       audioId: z.string().nullable(),
@@ -233,6 +236,20 @@ export default function voicePlugin(bb: BbPluginApi): void {
     return interactions.some((interaction) => interaction.status === "pending");
   };
 
+  const rememberTerminal = (
+    exchange: Exchange,
+    signal: TerminalSignal,
+  ): void => {
+    if (exchange.terminalSignal?.kind === "failed") return;
+    exchange.terminalSignal = signal;
+  };
+
+  const takeTerminal = (exchange: Exchange): TerminalSignal | null => {
+    const signal = exchange.terminalSignal;
+    exchange.terminalSignal = null;
+    return signal;
+  };
+
   const synthesize = async (
     exchangeId: string,
     text: string,
@@ -290,13 +307,19 @@ export default function voicePlugin(bb: BbPluginApi): void {
       return;
     }
     const answer = findTurnAnswer(rows, exchange.requestId);
-    if (answer) active.turnId = answer.turnId;
+    if (active.terminalSignal?.kind === "failed") {
+      fail(exchangeId, active.terminalSignal.error);
+      return;
+    }
     if (!answer?.text) {
       release(exchangeId);
       return;
     }
 
-    const speakable = mdToSpeakable(answer.text);
+    const speakable = truncateSpeakable(
+      mdToSpeakable(answer.text),
+      TTS_MAX_INPUT_CHARS,
+    );
     if (!speakable) {
       release(exchangeId);
       return;
@@ -315,14 +338,18 @@ export default function voicePlugin(bb: BbPluginApi): void {
       return;
     }
     exchange.stage = "resolving";
+    exchange.reconcileAgain = false;
 
-    if (await pendingProviderInteraction(exchange)) {
-      if (active?.exchangeId === exchangeId && active.stage === "resolving") {
-        release(exchangeId);
-      }
+    const hasPendingInteraction = await pendingProviderInteraction(exchange);
+    if (active?.exchangeId !== exchangeId || active.stage !== "resolving") {
       return;
     }
-    if (active?.exchangeId !== exchangeId || active.stage !== "resolving") {
+    if (active.terminalSignal?.kind === "failed") {
+      fail(exchangeId, active.terminalSignal.error);
+      return;
+    }
+    if (hasPendingInteraction) {
+      release(exchangeId);
       return;
     }
 
@@ -333,12 +360,18 @@ export default function voicePlugin(bb: BbPluginApi): void {
     if (active?.exchangeId !== exchangeId || active.stage !== "resolving") {
       return;
     }
-    if (thread.status === "error") {
+    const terminalSignal = takeTerminal(active);
+    if (terminalSignal?.kind === "failed") {
+      fail(exchangeId, terminalSignal.error);
+    } else if (thread.status === "error") {
       fail(exchangeId, "thread turn failed");
-    } else if (thread.status === "idle") {
+    } else if (terminalSignal?.kind === "idle" || thread.status === "idle") {
       await completeExchange(exchangeId);
     } else {
       active.stage = "waiting";
+      if (active.reconcileAgain) {
+        await reconcileTerminal(exchangeId);
+      }
     }
   };
 
@@ -394,8 +427,6 @@ export default function voicePlugin(bb: BbPluginApi): void {
       fail(exchangeId, "nothing transcribed");
       return;
     }
-    active.transcript = transcript;
-
     const timeline = await bb.sdk.threads.timeline({
       threadId: exchange.threadId,
       summaryOnly: "true",
@@ -426,17 +457,8 @@ export default function voicePlugin(bb: BbPluginApi): void {
       return;
     }
     active.requestId = requestId;
-    const accepted = findTurnAnswer(rows, requestId);
-    active.turnId = accepted?.turnId ?? null;
     active.stage = "waiting";
     await reconcileTerminal(exchangeId);
-  };
-
-  const canReserveThread = async (threadId: string): Promise<boolean> => {
-    const thread = await bb.sdk.threads.get({ threadId });
-    if (thread.status !== "idle") return false;
-    const interactions = await bb.sdk.threads.interactions.list({ threadId });
-    return !interactions.some((interaction) => interaction.status === "pending");
   };
 
   const reserve = async (input: {
@@ -482,10 +504,10 @@ export default function voicePlugin(bb: BbPluginApi): void {
         threadId: input.threadId,
         phase: "listening",
         stage: null,
-        transcript: null,
         baselineSeq: null,
         requestId: null,
-        turnId: null,
+        terminalSignal: null,
+        reconcileAgain: false,
         audio: null,
         audioId: null,
         error: null,
@@ -501,12 +523,11 @@ export default function voicePlugin(bb: BbPluginApi): void {
   };
 
   bb.rpc.register(rpcContract, {
-    async getState(input) {
+    getState(input) {
       const exchange = active;
       if (!exchange || exchange.threadId !== input.threadId) {
         return {
           phase: "ready" as const,
-          canStart: !exchange && (await canReserveThread(input.threadId).catch(() => false)),
           canControl: false,
           exchangeId: null,
           audioId: null,
@@ -514,12 +535,8 @@ export default function voicePlugin(bb: BbPluginApi): void {
         };
       }
       const canControl = exchange.controllerId === input.controllerId;
-      const canStart =
-        exchange.phase === "failed" &&
-        (await canReserveThread(input.threadId).catch(() => false));
       return {
         phase: exchange.phase,
-        canStart,
         canControl,
         exchangeId: exchange.exchangeId,
         audioId: canControl ? exchange.audioId : null,
@@ -602,11 +619,13 @@ export default function voicePlugin(bb: BbPluginApi): void {
     const exchange = active;
     if (
       exchange?.threadId !== thread.id ||
-      exchange.stage !== "waiting" ||
+      (exchange.stage !== "waiting" && exchange.stage !== "resolving") ||
       !exchange.requestId
     ) {
       return;
     }
+    rememberTerminal(exchange, { kind: "idle" });
+    if (exchange.stage === "resolving") return;
     runForExchange(exchange.exchangeId, () =>
       reconcileTerminal(exchange.exchangeId),
     );
@@ -616,9 +635,16 @@ export default function voicePlugin(bb: BbPluginApi): void {
     const exchange = active;
     if (
       exchange?.threadId !== thread.id ||
-      exchange.stage !== "waiting" ||
+      (exchange.stage !== "waiting" && exchange.stage !== "resolving") ||
       !exchange.requestId
     ) {
+      return;
+    }
+    if (exchange.stage === "resolving") {
+      rememberTerminal(exchange, {
+        kind: "failed",
+        error: error || "thread turn failed",
+      });
       return;
     }
     fail(exchange.exchangeId, error || "thread turn failed");
@@ -629,11 +655,15 @@ export default function voicePlugin(bb: BbPluginApi): void {
     callback(event) {
       const exchange = active;
       if (
-        exchange?.stage !== "waiting" ||
+        (exchange?.stage !== "waiting" && exchange?.stage !== "resolving") ||
         !exchange.requestId ||
         event.id !== exchange.threadId ||
         !event.changes.includes("interactions-changed")
       ) {
+        return;
+      }
+      if (exchange.stage === "resolving") {
+        exchange.reconcileAgain = true;
         return;
       }
       runForExchange(exchange.exchangeId, () =>
@@ -649,9 +679,13 @@ export default function voicePlugin(bb: BbPluginApi): void {
       if (
         event.state !== "connected" ||
         !event.reconnected ||
-        exchange?.stage !== "waiting" ||
+        (exchange?.stage !== "waiting" && exchange?.stage !== "resolving") ||
         !exchange.requestId
       ) {
+        return;
+      }
+      if (exchange.stage === "resolving") {
+        exchange.reconcileAgain = true;
         return;
       }
       runForExchange(exchange.exchangeId, () =>

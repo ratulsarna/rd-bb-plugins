@@ -12,7 +12,6 @@ const base = {
 function state(overrides: Partial<VoiceState> = {}): VoiceState {
   return {
     phase: "ready",
-    canStart: true,
     canControl: false,
     exchangeId: null,
     audioId: null,
@@ -22,14 +21,10 @@ function state(overrides: Partial<VoiceState> = {}): VoiceState {
 }
 
 describe("resolveView", () => {
-  it("keeps the mic clickable even when the last known state said it could not start", () => {
-    // `canStart` carries thread status, which goes stale in both directions;
-    // a disabled button would strand the mic after a typed turn finishes.
-    for (const canStart of [true, false]) {
-      const view = resolveView({ ...base, state: state({ canStart }) });
-      expect(view.action).toBe("start");
-      expect(view.actionDisabled).toBe(false);
-    }
+  it("offers the mic whenever voice is ready", () => {
+    const view = resolveView({ ...base, state: state() });
+    expect(view.action).toBe("start");
+    expect(view.actionDisabled).toBe(false);
   });
 
   it("shows local recording even while the fetched state is still stale", () => {
@@ -50,7 +45,6 @@ describe("resolveView", () => {
         ...base,
         state: state({
           phase,
-          canStart: false,
           canControl: false,
           exchangeId: "ex_1",
         }),
@@ -65,7 +59,6 @@ describe("resolveView", () => {
   it("falls back to an explicit play control when autoplay was refused", () => {
     const speaking = state({
       phase: "speaking",
-      canStart: false,
       canControl: true,
       exchangeId: "ex_1",
       audioId: "aud_1",
@@ -80,7 +73,6 @@ describe("resolveView", () => {
   it("lets only the owner dismiss a failure, and always names the error", () => {
     const failure = {
       phase: "failed",
-      canStart: true,
       exchangeId: "ex_1",
       error: "nothing transcribed",
     } as const;
@@ -107,7 +99,7 @@ describe("resolveView", () => {
     const compact = resolveView({
       ...base,
       isCompact: true,
-      state: state({ phase: "working", canStart: false, exchangeId: "ex_1" }),
+      state: state({ phase: "working", exchangeId: "ex_1" }),
     });
     expect(compact.label).toBe("");
     expect(compact.statusLabel).toBe("Working");

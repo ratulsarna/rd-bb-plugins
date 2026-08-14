@@ -5,7 +5,7 @@ import type { VoiceEventRow } from "../lib/correlation";
 
 type ThreadStatus = "idle" | "active" | "error";
 type RpcHandlers = {
-  getState(input: Identity): Promise<VoiceState>;
+  getState(input: Identity): VoiceState;
   reserve(input: Identity): Promise<ReserveResult>;
   cancel(input: Mutation): { ok: boolean };
   finishPlayback(input: Mutation): { ok: boolean };
@@ -31,7 +31,6 @@ interface ReserveResult {
 
 interface VoiceState {
   phase: "ready" | "listening" | "working" | "speaking" | "failed";
-  canStart: boolean;
   canControl: boolean;
   exchangeId: string | null;
   audioId: string | null;
@@ -112,6 +111,7 @@ function createHarness() {
     threadStatus = "active";
   };
   let eventLoader: ((afterSeq: string) => Promise<VoiceEventRow[]>) | null = null;
+  let threadLoader: ((call: number) => Promise<ThreadStatus>) | null = null;
   const eventHandlers = new Map<string, EventHandler>();
   const subscriptions = new Map<string, SubscriptionHandler>();
   const routes = new Map<string, HttpHandler>();
@@ -120,6 +120,7 @@ function createHarness() {
   const sends: unknown[] = [];
   const eventListCalls: string[] = [];
   let threadGetCalls = 0;
+  let interactionListCalls = 0;
 
   const bb = {
     settings: {
@@ -151,10 +152,14 @@ function createHarness() {
       threads: {
         async get() {
           threadGetCalls += 1;
-          return { id: owner.threadId, status: threadStatus };
+          const status = threadLoader
+            ? await threadLoader(threadGetCalls)
+            : threadStatus;
+          return { id: owner.threadId, status };
         },
         interactions: {
           async list() {
+            interactionListCalls += 1;
             return interactions;
           },
         },
@@ -223,6 +228,9 @@ function createHarness() {
     get threadGetCalls() {
       return threadGetCalls;
     },
+    get interactionListCalls() {
+      return interactionListCalls;
+    },
     setThreadStatus(status: ThreadStatus) {
       threadStatus = status;
     },
@@ -234,6 +242,9 @@ function createHarness() {
     },
     setEventLoader(loader: (afterSeq: string) => Promise<VoiceEventRow[]>) {
       eventLoader = loader;
+    },
+    setThreadLoader(loader: (call: number) => Promise<ThreadStatus>) {
+      threadLoader = loader;
     },
     setSendError(error: Error | null) {
       sendError = error;
@@ -320,6 +331,21 @@ afterEach(() => {
 });
 
 describe("voice backend state machine", () => {
+  it("reads ready state without querying the thread or its interactions", async () => {
+    const harness = createHarness();
+
+    expect(await state(harness)).toEqual({
+      phase: "ready",
+      canControl: false,
+      exchangeId: null,
+      audioId: null,
+      error: null,
+    });
+    expect(harness.threadGetCalls).toBe(0);
+    expect(harness.interactionListCalls).toBe(0);
+    await harness.dispose();
+  });
+
   it("sends nothing for an empty transcript", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ text: "  \n" }));
     const harness = createHarness();
@@ -467,7 +493,8 @@ describe("voice backend state machine", () => {
   it("does not treat an active turn's completed message as terminal", async () => {
     const harness = createHarness();
     await beginUpload(harness);
-    const waiting = await waitForPhase(harness, "working");
+    await vi.waitFor(() => expect(harness.threadGetCalls).toBeGreaterThanOrEqual(2));
+    const waiting = await state(harness);
     expect(waiting.audioId).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(1);
 
@@ -476,6 +503,26 @@ describe("voice backend state machine", () => {
       thread: { id: owner.threadId },
       lastAssistantText: "Voice answer",
     });
+    await waitForPhase(harness, "speaking");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await harness.dispose();
+  });
+
+  it("remembers idle while an active reconciliation read is in flight", async () => {
+    let resolveStatus!: (status: ThreadStatus) => void;
+    const delayedStatus = new Promise<ThreadStatus>((resolve) => {
+      resolveStatus = resolve;
+    });
+    const harness = createHarness();
+    harness.setThreadLoader((call) =>
+      call === 1 ? Promise.resolve("idle") : delayedStatus,
+    );
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.threadGetCalls).toBe(2));
+
+    harness.emit("thread.idle", { thread: { id: owner.threadId } });
+    resolveStatus("active");
+
     await waitForPhase(harness, "speaking");
     expect(fetch).toHaveBeenCalledTimes(2);
     await harness.dispose();
@@ -538,12 +585,32 @@ describe("voice backend state machine", () => {
     vi.mocked(fetch).mockClear();
     const reconnectHarness = createHarness();
     await beginUpload(reconnectHarness);
-    await waitForPhase(reconnectHarness, "working");
+    await vi.waitFor(() =>
+      expect(reconnectHarness.threadGetCalls).toBeGreaterThanOrEqual(2),
+    );
     reconnectHarness.setThreadStatus("idle");
     reconnectHarness.reconnect();
     await waitForPhase(reconnectHarness, "speaking");
     expect(fetch).toHaveBeenCalledTimes(2);
     await reconnectHarness.dispose();
+  });
+
+  it("truncates long answers before requesting speech", async () => {
+    const harness = createHarness();
+    harness.setEvents(voiceRows({
+      answer: `${"sentence ".repeat(870)}Done. ${"overflow ".repeat(200)}`,
+    }));
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+    await beginUpload(harness);
+    await waitForPhase(harness, "speaking");
+
+    const speechCall = vi.mocked(fetch).mock.calls.find(([input]) =>
+      String(input).endsWith("/v1/audio/speech"),
+    );
+    const payload = JSON.parse(String(speechCall?.[1]?.body)) as { input: string };
+    expect(payload.input.length).toBeLessThanOrEqual(8_000);
+    expect(payload.input).toMatch(/[.!?]$/);
+    await harness.dispose();
   });
 
   it("allows exactly one of two concurrent reservations", async () => {
@@ -580,6 +647,8 @@ describe("voice backend state machine", () => {
     const listeningHarness = createHarness();
     await reserve(listeningHarness);
     await vi.advanceTimersByTimeAsync(80_000);
+    expect((await state(listeningHarness)).phase).toBe("listening");
+    await vi.advanceTimersByTimeAsync(105_000);
     expect((await state(listeningHarness)).phase).toBe("ready");
     await listeningHarness.dispose();
 

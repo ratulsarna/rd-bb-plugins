@@ -23,7 +23,6 @@ const Control = registrations.threadHeaderActions[0]!.component;
 
 const ready: VoiceState = {
   phase: "ready",
-  canStart: true,
   canControl: false,
   exchangeId: null,
   audioId: null,
@@ -32,7 +31,6 @@ const ready: VoiceState = {
 
 const owned = (overrides: Partial<VoiceState>): VoiceState => ({
   ...ready,
-  canStart: false,
   canControl: true,
   exchangeId: "ex_1",
   ...overrides,
@@ -42,12 +40,15 @@ const owned = (overrides: Partial<VoiceState>): VoiceState => ({
 function createBackend() {
   const backend = {
     current: ready,
+    reserveReason: null as string | null,
     handle(method: string): unknown {
       switch (method) {
         case "getState":
           return { ...backend.current };
         case "reserve":
-          if (!backend.current.canStart) return { ok: false, reason: "voice is busy" };
+          if (backend.reserveReason) {
+            return { ok: false, reason: backend.reserveReason };
+          }
           backend.current = owned({ phase: "listening" });
           return { ok: true, exchangeId: "ex_1" };
         case "cancel":
@@ -158,7 +159,7 @@ describe("voice header control", () => {
   it("surfaces the backend's reason, and opens no mic, when the click loses the race", async () => {
     // The thread went busy after the last fetched state said it was idle.
     const backend = createBackend();
-    backend.current = { ...ready, canStart: false };
+    backend.reserveReason = "voice is busy";
     renderControl();
 
     fireEvent.click(await micButton());
@@ -177,7 +178,6 @@ describe("voice header control", () => {
     // Nobody can dismiss this one: the controller that owned it never came back.
     backend.current = {
       phase: "failed",
-      canStart: true,
       canControl: false,
       exchangeId: "ex_dead",
       audioId: null,
@@ -231,7 +231,6 @@ describe("voice header control", () => {
   it("shows status only, and never fetches audio, for a pane it does not own", async () => {
     createBackend().current = {
       phase: "speaking",
-      canStart: false,
       canControl: false,
       exchangeId: "ex_1",
       audioId: null,
