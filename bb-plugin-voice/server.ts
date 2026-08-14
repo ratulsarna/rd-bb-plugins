@@ -11,7 +11,7 @@ import { mdToSpeakable, truncateSpeakable } from "./lib/speakable";
 
 const DEFAULT_SPEECH_SERVICE_URL = "http://100.81.193.12:18077";
 const LISTENING_TTL_MS = 3 * 60_000;
-const SPEAKING_TTL_MS = 5 * 60_000;
+const SPEAKING_TTL_MS = 15 * 60_000;
 const TTS_MAX_INPUT_CHARS = 8_000;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 

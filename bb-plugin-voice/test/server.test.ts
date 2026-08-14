@@ -660,7 +660,11 @@ describe("voice backend state machine", () => {
     if (!audioId) throw new Error("speaking state has no audio id");
     expect((await speakingHarness.getAudio(audioId)).status).toBe(200);
 
-    await vi.advanceTimersByTimeAsync(5 * 60_000 + 5_000);
+    await vi.advanceTimersByTimeAsync(8 * 60_000 + 5_000);
+    expect((await state(speakingHarness)).phase).toBe("speaking");
+    expect((await speakingHarness.getAudio(audioId)).status).toBe(200);
+
+    await vi.advanceTimersByTimeAsync(7 * 60_000);
     expect((await state(speakingHarness)).phase).toBe("ready");
     expect((await speakingHarness.getAudio(audioId)).status).toBe(404);
     await speakingHarness.dispose();
