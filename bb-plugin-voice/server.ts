@@ -1,19 +1,29 @@
 import { randomUUID } from "node:crypto";
-import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
+import {
+  defineRpcContract,
+  type BbPluginApi,
+  type StandardSchemaV1,
+} from "@bb/plugin-sdk";
 import { z } from "zod";
 import {
   findTurnAnswer,
   findVoiceRequestId,
-  loadEventsAfter,
   type VoiceEventRow,
 } from "./lib/correlation";
-import { mdToSpeakable, truncateSpeakable } from "./lib/speakable";
+import {
+  initialStreamState,
+  processEvents,
+  type StreamState,
+} from "./lib/stream-follower";
+import { SentenceAssembler, type Sentence } from "./lib/sentencer";
+import { truncateSpeakable } from "./lib/speakable";
 
 const DEFAULT_SPEECH_SERVICE_URL = "http://127.0.0.1:18077";
 const LISTENING_TTL_MS = 3 * 60_000;
 const SPEAKING_TTL_MS = 15 * 60_000;
 const TTS_MAX_INPUT_CHARS = 8_000;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+const MAX_STASH_BYTES = 64 * 1024 * 1024;
 
 type Phase = "listening" | "working" | "speaking" | "failed";
 type Stage =
@@ -21,11 +31,30 @@ type Stage =
   | "sending"
   | "waiting"
   | "resolving"
-  | "synthesizing"
   | null;
 type TerminalSignal =
   | { kind: "idle" }
   | { kind: "failed"; error: string };
+type ChunkState = "queued" | "synthesizing" | "stashed" | "played";
+
+export interface ChunkLedgerEntry {
+  audio: Buffer | null;
+  audioId: string;
+  epoch: number;
+  index: number;
+  itemId: string;
+  speakable: string;
+  span: { rawStart: number; rawEnd: number };
+  state: ChunkState;
+}
+
+interface TtsJob {
+  controller: AbortController;
+  epoch: number;
+  index: number;
+  itemId: string;
+  unlink: () => void;
+}
 
 interface Exchange {
   exchangeId: string;
@@ -35,12 +64,24 @@ interface Exchange {
   stage: Stage;
   baselineSeq: string | null;
   requestId: string | null;
+  transcript: string | null;
+  stream: StreamState;
+  eventRows: VoiceEventRow[];
+  eventSeqs: Set<number>;
   terminalSignal: TerminalSignal | null;
   reconcileAgain: boolean;
-  audio: Buffer | null;
-  audioId: string | null;
+  reconcilePrepared: boolean;
+  streamComplete: boolean;
+  ledger: Map<number, ChunkLedgerEntry>;
+  queuedIndexes: number[];
+  nextChunkIndex: number;
+  ttsJob: TtsJob | null;
+  audioBytes: number;
+  lastAckIndex: number;
   error: string | null;
   expiresAt: number;
+  pumpRunning: boolean;
+  pumpAgain: boolean;
 }
 
 const identitySchema = z.object({
@@ -52,15 +93,27 @@ const mutationSchema = identitySchema.extend({
   exchangeId: z.string().min(1),
 }).strict();
 
-export const rpcContract = defineRpcContract({
+const playbackMutationSchema = mutationSchema.extend({
+  playedThroughIndex: z.number().int().nonnegative(),
+}).strict();
+
+const cancelSchema = mutationSchema.extend({
+  playedThroughIndex: z.number().int().nonnegative().optional(),
+}).strict();
+
+const runtimeRpcContract = defineRpcContract({
   getState: {
     input: identitySchema,
     output: z.object({
       phase: z.enum(["ready", "listening", "working", "speaking", "failed"]),
-      canControl: z.boolean(),
       exchangeId: z.string().nullable(),
-      audioId: z.string().nullable(),
       error: z.string().nullable(),
+      canControl: z.boolean(),
+      chunks: z.array(z.object({
+        id: z.string(),
+        index: z.number().int().nonnegative(),
+      }).strict()),
+      streamComplete: z.boolean(),
     }).strict(),
   },
   reserve: {
@@ -71,15 +124,52 @@ export const rpcContract = defineRpcContract({
       reason: z.string().optional(),
     }).strict(),
   },
+  ackPlayback: {
+    input: playbackMutationSchema,
+    output: z.object({ ok: z.boolean() }).strict(),
+  },
   cancel: {
-    input: mutationSchema,
+    input: cancelSchema,
     output: z.object({ ok: z.boolean() }).strict(),
   },
   finishPlayback: {
-    input: mutationSchema,
+    input: playbackMutationSchema,
     output: z.object({ ok: z.boolean() }).strict(),
   },
 });
+
+type LegacyCompatibleState = {
+  phase: "ready" | "listening" | "working" | "speaking" | "failed";
+  exchangeId: string | null;
+  error: string | null;
+  canControl: boolean;
+  chunks?: { id: string; index: number }[];
+  streamComplete?: boolean;
+  /** Removed from the wire contract; kept only while the S2 client is staged. */
+  audioId?: string | null;
+};
+
+type LegacyCompatibleFinishInput = {
+  threadId: string;
+  controllerId: string;
+  exchangeId: string;
+  playedThroughIndex?: number;
+};
+
+/** The runtime contract above is exact; this type keeps the old client compiling until S2 lands. */
+export const rpcContract = runtimeRpcContract as Omit<
+  typeof runtimeRpcContract,
+  "getState" | "finishPlayback"
+> & {
+  getState: {
+    readonly input: typeof runtimeRpcContract.getState.input;
+    readonly output: StandardSchemaV1<unknown, LegacyCompatibleState>;
+  };
+  finishPlayback: {
+    readonly input: StandardSchemaV1<LegacyCompatibleFinishInput, LegacyCompatibleFinishInput>;
+    readonly output: typeof runtimeRpcContract.finishPlayback.output;
+  };
+};
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -146,6 +236,79 @@ async function fetchWithTimeout(
   }
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function eventError(row: VoiceEventRow): string | null {
+  const data = record(row.data);
+  const error = record(data?.error);
+  return typeof error?.message === "string" ? error.message : null;
+}
+
+function turnStatus(row: VoiceEventRow): string | null {
+  return typeof record(row.data)?.status === "string"
+    ? String(record(row.data)?.status)
+    : null;
+}
+
+function sentenceFromOffset(
+  text: string,
+  rawOffset: number,
+): Sentence[] {
+  if (rawOffset >= text.length) return [];
+  const assembler = new SentenceAssembler();
+  const suffix = text.slice(rawOffset);
+  const sentences = [...assembler.push(suffix), ...assembler.flushTail()];
+  return sentences.map((sentence) => ({
+    ...sentence,
+    rawStart: sentence.rawStart + rawOffset,
+    rawEnd: sentence.rawEnd + rawOffset,
+  }));
+}
+
+function coveredThrough(
+  ledger: Iterable<ChunkLedgerEntry>,
+  itemId: string,
+  epoch: number,
+): number {
+  let covered = 0;
+  for (const entry of ledger) {
+    if (entry.itemId === itemId && entry.epoch === epoch) {
+      covered = Math.max(covered, entry.span.rawEnd);
+    }
+  }
+  return covered;
+}
+
+function playedThrough(
+  ledger: Iterable<ChunkLedgerEntry>,
+  itemId: string,
+): number {
+  let played = 0;
+  for (const entry of ledger) {
+    if (entry.itemId === itemId && entry.state === "played") {
+      played = Math.max(played, entry.span.rawEnd);
+    }
+  }
+  return played;
+}
+
+export function deriveReconcileStart(input: {
+  ledger: Iterable<ChunkLedgerEntry>;
+  finalItemId: string;
+  liveItemId: string | null;
+  liveEpoch: number;
+  invalidated: boolean;
+}): number {
+  if (!input.invalidated && input.liveItemId === input.finalItemId) {
+    return coveredThrough(input.ledger, input.finalItemId, input.liveEpoch);
+  }
+  return playedThrough(input.ledger, input.finalItemId);
+}
+
 export default function voicePlugin(bb: BbPluginApi): void {
   const settings = bb.settings.define({
     speechServiceUrl: {
@@ -157,10 +320,21 @@ export default function voicePlugin(bb: BbPluginApi): void {
 
   let active: Exchange | null = null;
   let reservationTail = Promise.resolve();
-  const abortControllers = new Map<string, AbortController>();
+  const exchangeControllers = new Map<string, AbortController>();
   const serviceUrls = new Map<string, string>();
 
-  const publishChanged = (threadId: string) => {
+  const updatePhase = (exchange: Exchange): void => {
+    if (exchange.phase === "listening" || exchange.phase === "failed") return;
+    const hasUnplayedAudio = [...exchange.ledger.values()].some(
+      (entry) => entry.state === "stashed",
+    );
+    exchange.phase = hasUnplayedAudio || exchange.streamComplete
+      ? "speaking"
+      : "working";
+  };
+
+  const publishChanged = (threadId: string): void => {
+    if (active?.threadId === threadId) updatePhase(active);
     bb.realtime.publish("voice:changed", { threadId });
   };
 
@@ -173,31 +347,40 @@ export default function voicePlugin(bb: BbPluginApi): void {
     active.controllerId === input.controllerId &&
     active.exchangeId === input.exchangeId;
 
+  const clearExchangeResources = (exchange: Exchange): void => {
+    const controller = exchangeControllers.get(exchange.exchangeId);
+    controller?.abort();
+    exchangeControllers.delete(exchange.exchangeId);
+    if (exchange.ttsJob) {
+      exchange.ttsJob.controller.abort();
+      exchange.ttsJob.unlink();
+      exchange.ttsJob = null;
+    }
+    exchange.queuedIndexes = [];
+    exchange.ledger.clear();
+    exchange.audioBytes = 0;
+    serviceUrls.delete(exchange.exchangeId);
+  };
+
   const release = (exchangeId: string): boolean => {
     if (active?.exchangeId !== exchangeId) return false;
     const threadId = active.threadId;
-    abortControllers.get(exchangeId)?.abort();
-    abortControllers.delete(exchangeId);
-    serviceUrls.delete(exchangeId);
-    active.audio = null;
-    active.audioId = null;
+    clearExchangeResources(active);
     active = null;
     publishChanged(threadId);
     return true;
   };
 
   const fail = (exchangeId: string, message: string): void => {
-    if (active?.exchangeId !== exchangeId) return;
-    abortControllers.get(exchangeId)?.abort();
-    abortControllers.delete(exchangeId);
-    serviceUrls.delete(exchangeId);
-    active.phase = "failed";
-    active.stage = null;
-    active.audio = null;
-    active.audioId = null;
-    active.error = message;
-    active.expiresAt = Number.MAX_SAFE_INTEGER;
-    publishChanged(active.threadId);
+    if (active?.exchangeId !== exchangeId || active.phase === "failed") return;
+    const exchange = active;
+    clearExchangeResources(exchange);
+    exchange.phase = "failed";
+    exchange.stage = null;
+    exchange.streamComplete = false;
+    exchange.error = message;
+    exchange.expiresAt = Number.MAX_SAFE_INTEGER;
+    publishChanged(exchange.threadId);
   };
 
   const runForExchange = (
@@ -205,35 +388,10 @@ export default function voicePlugin(bb: BbPluginApi): void {
     operation: () => Promise<void>,
   ): void => {
     void operation().catch((error) => {
-      if (active?.exchangeId === exchangeId) {
+      if (active?.exchangeId === exchangeId && active.phase !== "failed") {
         fail(exchangeId, errorMessage(error));
       }
     });
-  };
-
-  const loadEvents = (exchange: Exchange): Promise<VoiceEventRow[]> => {
-    if (exchange.baselineSeq === null) {
-      throw new Error("voice exchange has no event baseline");
-    }
-    const signal = abortControllers.get(exchange.exchangeId)?.signal;
-    return loadEventsAfter(exchange.baselineSeq, (afterSeq, limit) =>
-      bb.sdk.threads.events.list({
-        threadId: exchange.threadId,
-        afterSeq,
-        limit,
-        signal,
-      }),
-    );
-  };
-
-  const pendingProviderInteraction = async (
-    exchange: Exchange,
-  ): Promise<boolean> => {
-    const interactions = await bb.sdk.threads.interactions.list({
-      threadId: exchange.threadId,
-      signal: abortControllers.get(exchange.exchangeId)?.signal,
-    });
-    return interactions.some((interaction) => interaction.status === "pending");
   };
 
   const rememberTerminal = (
@@ -250,130 +408,408 @@ export default function voicePlugin(bb: BbPluginApi): void {
     return signal;
   };
 
-  const synthesize = async (
-    exchangeId: string,
-    text: string,
-  ): Promise<void> => {
-    const exchange = active;
-    if (
-      exchange?.exchangeId !== exchangeId ||
-      exchange.stage !== "synthesizing"
-    ) {
-      return;
-    }
-    const url = serviceUrls.get(exchangeId);
-    const controller = abortControllers.get(exchangeId);
-    if (!url || !controller) throw new Error("voice exchange resources expired");
+  const currentController = (exchange: Exchange): AbortController | null =>
+    exchangeControllers.get(exchange.exchangeId) ?? null;
 
-    const response = await fetchWithTimeout(
-      `${url}/v1/audio/speech`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ input: text, voice: "Aiden" }),
-      },
-      controller.signal,
-      180_000,
-    );
-    if (!response.ok) {
-      throw new Error(`speech synthesis failed (HTTP ${response.status})`);
-    }
-    const audio = Buffer.from(await response.arrayBuffer());
-    if (active?.exchangeId !== exchangeId || active.stage !== "synthesizing") {
-      return;
-    }
-    if (audio.byteLength === 0) throw new Error("speech synthesis returned no audio");
+  const isCurrentTts = (
+    exchange: Exchange,
+    job: TtsJob,
+    entry: ChunkLedgerEntry,
+  ): boolean =>
+    active?.exchangeId === exchange.exchangeId &&
+    exchange.ttsJob?.index === job.index &&
+    exchange.ledger.get(job.index) === entry &&
+    entry.state === "synthesizing" &&
+    entry.epoch === job.epoch &&
+    entry.itemId === job.itemId &&
+    exchange.stream.epoch === job.epoch &&
+    (exchange.stream.speakingItemId === job.itemId || exchange.reconcilePrepared);
 
-    active.audio = audio;
-    active.audioId = randomUUID();
-    active.phase = "speaking";
-    active.stage = null;
-    active.error = null;
-    active.expiresAt = Date.now() + SPEAKING_TTL_MS;
-    abortControllers.delete(exchangeId);
-    serviceUrls.delete(exchangeId);
-    publishChanged(active.threadId);
+  const maybeCompleteStream = (exchange: Exchange): void => {
+    if (!exchange.reconcilePrepared || exchange.streamComplete) return;
+    if (exchange.ttsJob) return;
+    if ([...exchange.ledger.values()].some(
+      (entry) => entry.state === "queued" || entry.state === "synthesizing",
+    )) return;
+    exchange.streamComplete = true;
+    exchange.expiresAt = Date.now() + SPEAKING_TTL_MS;
+    publishChanged(exchange.threadId);
   };
 
-  const completeExchange = async (exchangeId: string): Promise<void> => {
+  const startNextTts = (exchangeId: string): void => {
     const exchange = active;
-    if (exchange?.exchangeId !== exchangeId || exchange.stage !== "resolving") {
-      return;
-    }
-    if (!exchange.requestId) throw new Error("voice request was not resolved");
+    if (
+      !exchange ||
+      exchange.exchangeId !== exchangeId ||
+      exchange.ttsJob ||
+      exchange.phase === "failed"
+    ) return;
 
-    const rows = await loadEvents(exchange);
-    if (active?.exchangeId !== exchangeId || active.stage !== "resolving") {
+    while (exchange.queuedIndexes.length > 0) {
+      const index = exchange.queuedIndexes.shift()!;
+      const entry = exchange.ledger.get(index);
+      if (
+        !entry ||
+        entry.state !== "queued" ||
+        entry.epoch !== exchange.stream.epoch ||
+        (entry.itemId !== exchange.stream.speakingItemId && !exchange.reconcilePrepared)
+      ) {
+        if (entry?.state === "queued") exchange.ledger.delete(index);
+        continue;
+      }
+
+      const serviceUrl = serviceUrls.get(exchangeId);
+      const exchangeController = currentController(exchange);
+      if (!serviceUrl || !exchangeController) {
+        fail(exchangeId, "voice exchange resources expired");
+        return;
+      }
+
+      entry.state = "synthesizing";
+      const controller = new AbortController();
+      const abortJob = () => controller.abort(exchangeController.signal.reason);
+      if (exchangeController.signal.aborted) abortJob();
+      else exchangeController.signal.addEventListener("abort", abortJob, { once: true });
+      const job: TtsJob = {
+        controller,
+        epoch: entry.epoch,
+        index: entry.index,
+        itemId: entry.itemId,
+        unlink: () => exchangeController.signal.removeEventListener("abort", abortJob),
+      };
+      exchange.ttsJob = job;
+
+      void (async () => {
+        try {
+          const response = await fetchWithTimeout(
+            `${serviceUrl}/v1/audio/speech`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                input: truncateSpeakable(entry.speakable ?? "", TTS_MAX_INPUT_CHARS),
+                voice: "Aiden",
+              }),
+            },
+            controller.signal,
+            180_000,
+          );
+          if (!response.ok) {
+            throw new Error(`speech synthesis failed (HTTP ${response.status})`);
+          }
+          const audio = Buffer.from(await response.arrayBuffer());
+          if (!isCurrentTts(exchange, job, entry)) return;
+          if (audio.byteLength === 0) {
+            throw new Error("speech synthesis returned no audio");
+          }
+          if (exchange.audioBytes + audio.byteLength > MAX_STASH_BYTES) {
+            throw new Error("speech audio stash exceeds the 64 MB limit");
+          }
+
+          entry.audio = audio;
+          entry.state = "stashed";
+          exchange.audioBytes += audio.byteLength;
+          exchange.expiresAt = Date.now() + SPEAKING_TTL_MS;
+          publishChanged(exchange.threadId);
+        } catch (error) {
+          const stale =
+            controller.signal.aborted ||
+            !isCurrentTts(exchange, job, entry) ||
+            active?.exchangeId !== exchangeId;
+          if (!stale) fail(exchangeId, errorMessage(error));
+        } finally {
+          job.unlink();
+          if (exchange.ttsJob?.index === job.index) exchange.ttsJob = null;
+          if (active?.exchangeId === exchangeId && exchange.phase !== "failed") {
+            maybeCompleteStream(exchange);
+            startNextTts(exchangeId);
+          }
+        }
+      })();
       return;
     }
-    const answer = findTurnAnswer(rows, exchange.requestId);
-    if (active.terminalSignal?.kind === "failed") {
-      fail(exchangeId, active.terminalSignal.error);
+
+    maybeCompleteStream(exchange);
+  };
+
+  const enqueueSentences = (
+    exchange: Exchange,
+    itemId: string,
+    epoch: number,
+    sentences: readonly Sentence[],
+  ): void => {
+    if (exchange.phase === "failed") return;
+    for (const sentence of sentences) {
+      if (!sentence.speakable || sentence.rawEnd <= sentence.rawStart) continue;
+      const index = exchange.nextChunkIndex++;
+      exchange.ledger.set(index, {
+        audio: null,
+        audioId: randomUUID(),
+        epoch,
+        index,
+        itemId,
+        speakable: sentence.speakable,
+        span: { rawStart: sentence.rawStart, rawEnd: sentence.rawEnd },
+        state: "queued",
+      });
+      exchange.queuedIndexes.push(index);
+    }
+    startNextTts(exchange.exchangeId);
+  };
+
+  const invalidatePriorAudio = (exchange: Exchange): void => {
+    const liveEpoch = exchange.stream.epoch;
+    const liveItemId = exchange.stream.speakingItemId;
+    for (const [index, entry] of exchange.ledger) {
+      if (entry.state === "played") continue;
+      if (entry.state === "stashed") exchange.audioBytes -= entry.audio?.byteLength ?? 0;
+      exchange.ledger.delete(index);
+    }
+    exchange.queuedIndexes = exchange.queuedIndexes.filter((index) => {
+      const entry = exchange.ledger.get(index);
+      return Boolean(entry);
+    });
+    if (
+      exchange.ttsJob &&
+      (exchange.ttsJob.epoch !== liveEpoch || exchange.ttsJob.itemId !== liveItemId)
+    ) {
+      exchange.ttsJob.controller.abort(new Error("voice epoch superseded"));
+    }
+    updatePhase(exchange);
+    publishChanged(exchange.threadId);
+  };
+
+  const markAck = (exchange: Exchange, index: number): boolean => {
+    if (!Number.isInteger(index) || index <= exchange.lastAckIndex) return false;
+    const entry = exchange.ledger.get(index);
+    if (!entry || entry.state !== "stashed") return false;
+    entry.state = "played";
+    exchange.lastAckIndex = index;
+    exchange.expiresAt = Date.now() + SPEAKING_TTL_MS;
+    publishChanged(exchange.threadId);
+    return true;
+  };
+
+  const appendEventRows = (exchange: Exchange, rows: readonly VoiceEventRow[]): VoiceEventRow[] => {
+    const fresh: VoiceEventRow[] = [];
+    for (const row of rows) {
+      if (exchange.eventSeqs.has(row.seq)) continue;
+      exchange.eventSeqs.add(row.seq);
+      exchange.eventRows.push(row);
+      fresh.push(row);
+    }
+    return fresh;
+  };
+
+  const applyEventPage = (exchange: Exchange, rows: readonly VoiceEventRow[]): void => {
+    const fresh = appendEventRows(exchange, rows);
+    let correlated = false;
+    if (exchange.requestId === null && exchange.transcript !== null) {
+      const requestId = findVoiceRequestId(exchange.eventRows, exchange.transcript);
+      if (requestId) {
+        exchange.requestId = requestId;
+        correlated = true;
+        exchange.stream = {
+          ...exchange.stream,
+          requestId,
+        };
+        exchange.stage = "waiting";
+      }
+    }
+    if (exchange.requestId === null) return;
+
+    const result = processEvents(exchange.stream, fresh, exchange.requestId);
+    exchange.stream = result.state;
+    if (result.invalidatePriorAudio) invalidatePriorAudio(exchange);
+    if (result.live) {
+      enqueueSentences(
+        exchange,
+        result.live.itemId,
+        result.live.epoch,
+        result.live.sentences,
+      );
+    }
+    for (const row of fresh) {
+      if (row.type !== "turn/completed") continue;
+      const status = turnStatus(row);
+      if (status === "failed" || status === "interrupted") {
+        rememberTerminal(exchange, {
+          kind: "failed",
+          error: eventError(row) ?? "thread turn failed",
+        });
+      } else {
+        rememberTerminal(exchange, { kind: "idle" });
+      }
+    }
+    if ((correlated || result.turnCompleted) && exchange.stage === "waiting") {
+      requestReconcile(exchange.exchangeId);
+    }
+  };
+
+  const pumpExchange = async (exchangeId: string): Promise<void> => {
+    const exchange = active;
+    if (!exchange || exchange.exchangeId !== exchangeId || exchange.baselineSeq === null) return;
+    const controller = currentController(exchange);
+    if (!controller) return;
+
+    while (
+      active?.exchangeId === exchangeId &&
+      exchange.baselineSeq !== null &&
+      (exchange.stage === "sending" || exchange.stage === "waiting" || exchange.stage === "resolving")
+    ) {
+      const before = Number(exchange.stream.cursorSeq);
+      const page = await bb.sdk.threads.events.list({
+        threadId: exchange.threadId,
+        afterSeq: exchange.stream.cursorSeq,
+        limit: "100",
+        signal: controller.signal,
+      });
+      if (page.length === 0) break;
+      applyEventPage(exchange, page);
+      const lastSeq = page.at(-1)?.seq ?? before;
+      if (lastSeq <= before) break;
+      if (page.length < 100) break;
+    }
+    if (active?.exchangeId === exchangeId && exchange.requestId && exchange.terminalSignal) {
+      requestReconcile(exchangeId);
+    }
+  };
+
+  const wake = (exchangeId: string): void => {
+    const exchange = active;
+    if (
+      !exchange ||
+      exchange.exchangeId !== exchangeId ||
+      exchange.baselineSeq === null ||
+      exchange.stage === "transcribing" ||
+      exchange.stage === null
+    ) return;
+    if (exchange.pumpRunning) {
+      exchange.pumpAgain = true;
       return;
     }
-    if (!answer?.text) {
+    exchange.pumpRunning = true;
+    void pumpExchange(exchangeId)
+      .catch((error) => {
+        if (active?.exchangeId === exchangeId && exchange.phase !== "failed") {
+          fail(exchangeId, errorMessage(error));
+        }
+      })
+      .finally(() => {
+        const current = active;
+        if (!current || current.exchangeId !== exchangeId) return;
+        current.pumpRunning = false;
+        if (current.pumpAgain) {
+          current.pumpAgain = false;
+          wake(exchangeId);
+        }
+        if (
+          current.stage === "waiting" &&
+          current.requestId !== null &&
+          (current.terminalSignal !== null || current.reconcileAgain)
+        ) {
+          requestReconcile(exchangeId);
+        }
+      });
+  };
+
+  const completeStreaming = async (exchangeId: string): Promise<void> => {
+    const exchange = active;
+    if (
+      !exchange ||
+      exchange.exchangeId !== exchangeId ||
+      exchange.stage !== "resolving" ||
+      !exchange.requestId
+    ) return;
+    if (exchange.reconcilePrepared) {
+      maybeCompleteStream(exchange);
+      return;
+    }
+
+    const answer = findTurnAnswer(exchange.eventRows, exchange.requestId);
+    if (!answer?.text || !answer.itemId) {
       release(exchangeId);
       return;
     }
 
-    const speakable = truncateSpeakable(
-      mdToSpeakable(answer.text),
-      TTS_MAX_INPUT_CHARS,
+    exchange.reconcilePrepared = true;
+    exchange.stream = answer.turnId === exchange.stream.turnId
+      ? exchange.stream
+      : { ...exchange.stream, turnId: answer.turnId };
+    const invalidated = exchange.stream.invalidatedItemIds?.includes(answer.itemId) ?? false;
+    const start = deriveReconcileStart({
+      ledger: exchange.ledger.values(),
+      finalItemId: answer.itemId,
+      liveItemId: exchange.stream.speakingItemId,
+      liveEpoch: exchange.stream.epoch,
+      invalidated,
+    });
+    enqueueSentences(
+      exchange,
+      answer.itemId,
+      exchange.stream.epoch,
+      sentenceFromOffset(answer.text, Math.min(start, answer.text.length)),
     );
-    if (!speakable) {
-      release(exchangeId);
-      return;
-    }
-    active.stage = "synthesizing";
-    await synthesize(exchangeId, speakable);
+    maybeCompleteStream(exchange);
   };
 
   const reconcileTerminal = async (exchangeId: string): Promise<void> => {
     const exchange = active;
     if (
-      exchange?.exchangeId !== exchangeId ||
+      !exchange ||
+      exchange.exchangeId !== exchangeId ||
       exchange.stage !== "waiting" ||
       !exchange.requestId
-    ) {
-      return;
-    }
+    ) return;
     exchange.stage = "resolving";
     exchange.reconcileAgain = false;
 
-    const hasPendingInteraction = await pendingProviderInteraction(exchange);
-    if (active?.exchangeId !== exchangeId || active.stage !== "resolving") {
+    const interactions = await bb.sdk.threads.interactions.list({
+      threadId: exchange.threadId,
+      signal: currentController(exchange)?.signal,
+    });
+    if (active?.exchangeId !== exchangeId || exchange.stage !== "resolving") return;
+    if (exchange.terminalSignal?.kind === "failed") {
+      fail(exchangeId, exchange.terminalSignal.error);
       return;
     }
-    if (active.terminalSignal?.kind === "failed") {
-      fail(exchangeId, active.terminalSignal.error);
-      return;
-    }
-    if (hasPendingInteraction) {
+    if (interactions.some((interaction) => interaction.status === "pending")) {
       release(exchangeId);
       return;
     }
 
     const thread = await bb.sdk.threads.get({
       threadId: exchange.threadId,
-      signal: abortControllers.get(exchangeId)?.signal,
+      signal: currentController(exchange)?.signal,
     });
-    if (active?.exchangeId !== exchangeId || active.stage !== "resolving") {
-      return;
-    }
-    const terminalSignal = takeTerminal(active);
+    if (active?.exchangeId !== exchangeId || exchange.stage !== "resolving") return;
+    const terminalSignal = takeTerminal(exchange);
     if (terminalSignal?.kind === "failed") {
       fail(exchangeId, terminalSignal.error);
     } else if (thread.status === "error") {
       fail(exchangeId, "thread turn failed");
     } else if (terminalSignal?.kind === "idle" || thread.status === "idle") {
-      await completeExchange(exchangeId);
+      await completeStreaming(exchangeId);
     } else {
-      active.stage = "waiting";
-      if (active.reconcileAgain) {
-        await reconcileTerminal(exchangeId);
-      }
+      exchange.stage = "waiting";
+      if (exchange.reconcileAgain) requestReconcile(exchangeId);
     }
   };
+
+  function requestReconcile(exchangeId: string): void {
+    const exchange = active;
+    if (!exchange || exchange.exchangeId !== exchangeId || !exchange.requestId) return;
+    if (exchange.stage === "resolving") {
+      exchange.reconcileAgain = true;
+      return;
+    }
+    if (exchange.stage !== "waiting") return;
+    if (exchange.pumpRunning) {
+      exchange.reconcileAgain = true;
+      return;
+    }
+    runForExchange(exchangeId, () => reconcileTerminal(exchangeId));
+  }
 
   const processUpload = async (
     exchangeId: string,
@@ -381,22 +817,15 @@ export default function voicePlugin(bb: BbPluginApi): void {
     audio: Buffer,
   ): Promise<void> => {
     const exchange = active;
-    if (
-      exchange?.exchangeId !== exchangeId ||
-      exchange.stage !== "transcribing"
-    ) {
-      return;
-    }
+    if (!exchange || exchange.exchangeId !== exchangeId || exchange.stage !== "transcribing") return;
     const { speechServiceUrl } = await settings.get();
-    if (active?.exchangeId !== exchangeId || active.stage !== "transcribing") {
-      return;
-    }
+    if (active?.exchangeId !== exchangeId || exchange.stage !== "transcribing") return;
     const url = trimServiceUrl(speechServiceUrl);
     if (!url) throw new Error("speech service URL is empty");
     serviceUrls.set(exchangeId, url);
 
     const controller = new AbortController();
-    abortControllers.set(exchangeId, controller);
+    exchangeControllers.set(exchangeId, controller);
     const form = new FormData();
     form.append(
       "file",
@@ -409,13 +838,9 @@ export default function voicePlugin(bb: BbPluginApi): void {
       controller.signal,
       60_000,
     );
-    if (!response.ok) {
-      throw new Error(`transcription failed (HTTP ${response.status})`);
-    }
+    if (!response.ok) throw new Error(`transcription failed (HTTP ${response.status})`);
     const payload: unknown = await response.json();
-    if (active?.exchangeId !== exchangeId || active.stage !== "transcribing") {
-      return;
-    }
+    if (active?.exchangeId !== exchangeId || exchange.stage !== "transcribing") return;
     const transcript =
       payload &&
       typeof payload === "object" &&
@@ -427,38 +852,27 @@ export default function voicePlugin(bb: BbPluginApi): void {
       fail(exchangeId, "nothing transcribed");
       return;
     }
+
     const timeline = await bb.sdk.threads.timeline({
       threadId: exchange.threadId,
       summaryOnly: "true",
       signal: controller.signal,
     });
-    if (active?.exchangeId !== exchangeId || active.stage !== "transcribing") {
-      return;
-    }
-    active.baselineSeq = String(timeline.maxSeq);
-    active.stage = "sending";
+    if (active?.exchangeId !== exchangeId || exchange.stage !== "transcribing") return;
+    exchange.baselineSeq = String(timeline.maxSeq);
+    exchange.transcript = transcript;
+    exchange.stream = initialStreamState(exchange.baselineSeq);
+    exchange.eventRows = [];
+    exchange.eventSeqs.clear();
+    exchange.stage = "sending";
 
     await bb.sdk.threads.send({
       threadId: exchange.threadId,
       mode: "start",
       input: [{ type: "text", text: transcript, mentions: [] }],
     });
-    if (active?.exchangeId !== exchangeId || active.stage !== "sending") {
-      return;
-    }
-
-    const rows = await loadEvents(active);
-    if (active?.exchangeId !== exchangeId || active.stage !== "sending") {
-      return;
-    }
-    const requestId = findVoiceRequestId(rows, transcript);
-    if (!requestId) {
-      fail(exchangeId, "sent voice message could not be found");
-      return;
-    }
-    active.requestId = requestId;
-    active.stage = "waiting";
-    await reconcileTerminal(exchangeId);
+    if (active?.exchangeId !== exchangeId || exchange.stage !== "sending") return;
+    wake(exchangeId);
   };
 
   const reserve = async (input: {
@@ -479,9 +893,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
       if (active && active.exchangeId !== replaceableId) {
         return { ok: false, reason: "voice is busy" };
       }
-      if (thread.status !== "idle") {
-        return { ok: false, reason: "thread is busy" };
-      }
+      if (thread.status !== "idle") return { ok: false, reason: "thread is busy" };
       const interactions = await bb.sdk.threads.interactions.list({
         threadId: input.threadId,
       });
@@ -492,10 +904,8 @@ export default function voicePlugin(bb: BbPluginApi): void {
         return { ok: false, reason: "thread needs input" };
       }
 
-      if (replaceableId) {
-        abortControllers.get(replaceableId)?.abort();
-        abortControllers.delete(replaceableId);
-        serviceUrls.delete(replaceableId);
+      if (replaceableId && active) {
+        clearExchangeResources(active);
       }
       const exchangeId = randomUUID();
       active = {
@@ -506,12 +916,24 @@ export default function voicePlugin(bb: BbPluginApi): void {
         stage: null,
         baselineSeq: null,
         requestId: null,
+        transcript: null,
+        stream: initialStreamState(),
+        eventRows: [],
+        eventSeqs: new Set(),
         terminalSignal: null,
         reconcileAgain: false,
-        audio: null,
-        audioId: null,
+        reconcilePrepared: false,
+        streamComplete: false,
+        ledger: new Map(),
+        queuedIndexes: [],
+        nextChunkIndex: 0,
+        ttsJob: null,
+        audioBytes: 0,
+        lastAckIndex: -1,
         error: null,
         expiresAt: Date.now() + LISTENING_TTL_MS,
+        pumpRunning: false,
+        pumpAgain: false,
       };
       publishChanged(input.threadId);
       return { ok: true, exchangeId };
@@ -522,33 +944,50 @@ export default function voicePlugin(bb: BbPluginApi): void {
     }
   };
 
-  bb.rpc.register(rpcContract, {
+  bb.rpc.register(runtimeRpcContract, {
     getState(input) {
       const exchange = active;
       if (!exchange || exchange.threadId !== input.threadId) {
         return {
           phase: "ready" as const,
-          canControl: false,
           exchangeId: null,
-          audioId: null,
           error: null,
+          canControl: false,
+          chunks: [],
+          streamComplete: false,
         };
       }
+      updatePhase(exchange);
       const canControl = exchange.controllerId === input.controllerId;
       return {
         phase: exchange.phase,
-        canControl,
         exchangeId: exchange.exchangeId,
-        audioId: canControl ? exchange.audioId : null,
         error: exchange.error,
+        canControl,
+        chunks: canControl
+          ? [...exchange.ledger.values()]
+              .filter((entry) => entry.state === "stashed")
+              .sort((left, right) => left.index - right.index)
+              .map((entry) => ({ id: entry.audioId, index: entry.index }))
+          : [],
+        streamComplete: exchange.streamComplete,
       };
     },
     reserve,
+    ackPlayback(input) {
+      return { ok: owns(input) && markAck(active!, input.playedThroughIndex) };
+    },
     cancel(input) {
-      return { ok: owns(input) && release(input.exchangeId) };
+      if (!owns(input)) return { ok: false };
+      if (input.playedThroughIndex !== undefined) markAck(active!, input.playedThroughIndex);
+      return { ok: release(input.exchangeId) };
     },
     finishPlayback(input) {
-      if (!owns(input) || active?.phase !== "speaking") return { ok: false };
+      if (!owns(input) || !active || !active.streamComplete) return { ok: false };
+      markAck(active, input.playedThroughIndex);
+      if ([...active.ledger.values()].some((entry) => entry.state === "stashed")) {
+        return { ok: false };
+      }
       return { ok: release(input.exchangeId) };
     },
   });
@@ -564,11 +1003,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
       if (!exchangeId || !controllerId || !mimeType) {
         return context.json({ error: "exchangeId, controllerId, and mimeType are required" }, 400);
       }
-      if (
-        !exchange ||
-        exchange.exchangeId !== exchangeId ||
-        exchange.controllerId !== controllerId
-      ) {
+      if (!exchange || exchange.exchangeId !== exchangeId || exchange.controllerId !== controllerId) {
         return context.json({ error: "voice exchange is not owned by this controller" }, 409);
       }
       if (exchange.phase !== "listening") {
@@ -581,7 +1016,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
 
       try {
         const body = await readAudioBody(context.req.raw);
-        if (active?.exchangeId !== exchangeId || active.stage !== "transcribing") {
+        if (active?.exchangeId !== exchangeId || exchange.stage !== "transcribing") {
           return context.json({ error: "voice exchange ended during upload" }, 409);
         }
         runForExchange(exchangeId, () => processUpload(exchangeId, mimeType, body));
@@ -597,18 +1032,16 @@ export default function voicePlugin(bb: BbPluginApi): void {
 
   bb.http.route("GET", "/audio", (context) => {
     const audioId = context.req.query("id")?.trim();
-    if (
-      !audioId ||
-      active?.phase !== "speaking" ||
-      active.audioId !== audioId ||
-      !active.audio
-    ) {
+    const entry = audioId
+      ? [...(active?.ledger.values() ?? [])].find((candidate) => candidate.audioId === audioId)
+      : undefined;
+    if (!entry?.audio || active?.phase === "failed") {
       return context.json({ error: "audio not found" }, 404);
     }
-    return new Response(new Uint8Array(active.audio), {
+    return new Response(new Uint8Array(entry.audio), {
       headers: {
         "Content-Type": "audio/wav",
-        "Content-Length": String(active.audio.byteLength),
+        "Content-Length": String(entry.audio.byteLength),
         "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",
       },
@@ -617,58 +1050,58 @@ export default function voicePlugin(bb: BbPluginApi): void {
 
   bb.events.on("thread.idle", ({ thread }) => {
     const exchange = active;
-    if (
-      exchange?.threadId !== thread.id ||
-      (exchange.stage !== "waiting" && exchange.stage !== "resolving") ||
-      !exchange.requestId
-    ) {
+    if (exchange?.threadId !== thread.id || exchange.stage === null || exchange.stage === "transcribing") return;
+    if (exchange.stage === "sending") {
+      wake(exchange.exchangeId);
       return;
     }
     rememberTerminal(exchange, { kind: "idle" });
-    if (exchange.stage === "resolving") return;
-    runForExchange(exchange.exchangeId, () =>
-      reconcileTerminal(exchange.exchangeId),
-    );
+    if (exchange.stage === "resolving") {
+      exchange.reconcileAgain = true;
+    } else if (exchange.requestId) {
+      requestReconcile(exchange.exchangeId);
+    } else {
+      wake(exchange.exchangeId);
+    }
   });
 
   bb.events.on("thread.failed", ({ thread, error }) => {
     const exchange = active;
-    if (
-      exchange?.threadId !== thread.id ||
-      (exchange.stage !== "waiting" && exchange.stage !== "resolving") ||
-      !exchange.requestId
-    ) {
-      return;
-    }
+    if (exchange?.threadId !== thread.id || exchange.stage === null || exchange.stage === "transcribing") return;
+    const signal: TerminalSignal = { kind: "failed", error: error || "thread turn failed" };
     if (exchange.stage === "resolving") {
-      rememberTerminal(exchange, {
-        kind: "failed",
-        error: error || "thread turn failed",
-      });
+      rememberTerminal(exchange, signal);
       return;
     }
-    fail(exchange.exchangeId, error || "thread turn failed");
+    if (exchange.stage === "sending") {
+      wake(exchange.exchangeId);
+      return;
+    }
+    fail(exchange.exchangeId, signal.error);
   });
 
+  const relevantEventTypes = new Set([
+    "item/agentMessage/delta",
+    "item/started",
+    "item/completed",
+    "turn/completed",
+  ]);
   const unsubscribeThreadChanges = bb.sdk.subscribe({
     event: "thread:changed",
     callback(event) {
       const exchange = active;
-      if (
-        (exchange?.stage !== "waiting" && exchange?.stage !== "resolving") ||
-        !exchange.requestId ||
-        event.id !== exchange.threadId ||
-        !event.changes.includes("interactions-changed")
-      ) {
-        return;
+      if (!exchange || event.id !== exchange.threadId) return;
+      if (event.changes.includes("events-appended")) {
+        const eventTypes = event.metadata?.eventTypes;
+        if (!eventTypes || eventTypes.some((type) => relevantEventTypes.has(type))) {
+          wake(exchange.exchangeId);
+        }
       }
-      if (exchange.stage === "resolving") {
-        exchange.reconcileAgain = true;
-        return;
+      if (event.changes.includes("interactions-changed")) {
+        if (exchange.stage === "resolving") exchange.reconcileAgain = true;
+        else requestReconcile(exchange.exchangeId);
       }
-      runForExchange(exchange.exchangeId, () =>
-        reconcileTerminal(exchange.exchangeId),
-      );
+      if (event.changes.includes("status-changed")) wake(exchange.exchangeId);
     },
   });
 
@@ -676,21 +1109,10 @@ export default function voicePlugin(bb: BbPluginApi): void {
     event: "realtime:connection",
     callback(event) {
       const exchange = active;
-      if (
-        event.state !== "connected" ||
-        !event.reconnected ||
-        (exchange?.stage !== "waiting" && exchange?.stage !== "resolving") ||
-        !exchange.requestId
-      ) {
-        return;
-      }
-      if (exchange.stage === "resolving") {
-        exchange.reconcileAgain = true;
-        return;
-      }
-      runForExchange(exchange.exchangeId, () =>
-        reconcileTerminal(exchange.exchangeId),
-      );
+      if (!exchange || !event.reconnected || event.state !== "connected") return;
+      wake(exchange.exchangeId);
+      if (exchange.requestId && exchange.stage === "waiting") requestReconcile(exchange.exchangeId);
+      if (exchange.stage === "resolving") exchange.reconcileAgain = true;
     },
   });
 
@@ -709,13 +1131,9 @@ export default function voicePlugin(bb: BbPluginApi): void {
     clearInterval(expirySweep);
     unsubscribeReconnect();
     unsubscribeThreadChanges();
-    for (const controller of abortControllers.values()) controller.abort();
-    abortControllers.clear();
-    serviceUrls.clear();
     if (active) {
       const threadId = active.threadId;
-      active.audio = null;
-      active.audioId = null;
+      clearExchangeResources(active);
       active = null;
       publishChanged(threadId);
     }

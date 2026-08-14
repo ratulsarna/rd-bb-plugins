@@ -7,8 +7,9 @@ type ThreadStatus = "idle" | "active" | "error";
 type RpcHandlers = {
   getState(input: Identity): VoiceState;
   reserve(input: Identity): Promise<ReserveResult>;
-  cancel(input: Mutation): { ok: boolean };
-  finishPlayback(input: Mutation): { ok: boolean };
+  ackPlayback(input: PlayedMutation): { ok: boolean };
+  cancel(input: CancelMutation): { ok: boolean };
+  finishPlayback(input: PlayedMutation): { ok: boolean };
 };
 type EventHandler = (payload: Record<string, unknown>) => void;
 type SubscriptionHandler = (event: Record<string, unknown>) => void;
@@ -23,6 +24,14 @@ interface Mutation extends Identity {
   exchangeId: string;
 }
 
+interface PlayedMutation extends Mutation {
+  playedThroughIndex: number;
+}
+
+interface CancelMutation extends Mutation {
+  playedThroughIndex?: number;
+}
+
 interface ReserveResult {
   ok: boolean;
   exchangeId?: string;
@@ -33,8 +42,9 @@ interface VoiceState {
   phase: "ready" | "listening" | "working" | "speaking" | "failed";
   canControl: boolean;
   exchangeId: string | null;
-  audioId: string | null;
   error: string | null;
+  chunks: { id: string; index: number }[];
+  streamComplete: boolean;
 }
 
 interface Interaction {
@@ -79,7 +89,7 @@ function voiceRows({ answer = "Voice answer" }: { answer?: string | null } = {})
   if (answer !== null) {
     rows.push(
       row(13, "item/completed", turnScope, {
-        item: { type: "agentMessage", text: answer },
+        item: { type: "agentMessage", id: "answer-1", text: answer },
       }),
     );
   }
@@ -258,8 +268,12 @@ function createHarness() {
     emit(event: "thread.idle" | "thread.failed", payload: Record<string, unknown>) {
       eventHandlers.get(event)?.(payload);
     },
-    changeThread(changes: string[]) {
-      subscriptions.get("thread:changed")?.({ id: owner.threadId, changes });
+    changeThread(changes: string[], eventTypes?: string[]) {
+      subscriptions.get("thread:changed")?.({
+        id: owner.threadId,
+        changes,
+        ...(eventTypes ? { metadata: { eventTypes } } : {}),
+      });
     },
     reconnect() {
       subscriptions.get("realtime:connection")?.({
@@ -341,8 +355,9 @@ describe("voice backend state machine", () => {
       phase: "ready",
       canControl: false,
       exchangeId: null,
-      audioId: null,
       error: null,
+      chunks: [],
+      streamComplete: false,
     });
     expect(harness.threadGetCalls).toBe(0);
     expect(harness.interactionListCalls).toBe(0);
@@ -515,7 +530,7 @@ describe("voice backend state machine", () => {
     await beginUpload(harness);
     await vi.waitFor(() => expect(harness.threadGetCalls).toBeGreaterThanOrEqual(2));
     const waiting = await state(harness);
-    expect(waiting.audioId).toBeNull();
+    expect(waiting.chunks).toEqual([]);
     expect(fetch).toHaveBeenCalledTimes(1);
 
     harness.setThreadStatus("idle");
@@ -655,10 +670,14 @@ describe("voice backend state machine", () => {
     harness.setOnSend(() => harness.setThreadStatus("idle"));
     expect((await harness.upload(exchangeId)).status).toBe(202);
     const speaking = await waitForPhase(harness, "speaking");
-    expect(speaking.audioId).not.toBeNull();
-    expect((await state(harness, other)).audioId).toBeNull();
+    expect(speaking.chunks).toHaveLength(1);
+    expect((await state(harness, other)).chunks).toEqual([]);
     expect((await harness.getAudio("guessed-audio-id")).status).toBe(404);
-    expect(harness.api.finishPlayback({ ...other, exchangeId })).toEqual({ ok: false });
+    expect(harness.api.finishPlayback({
+      ...other,
+      exchangeId,
+      playedThroughIndex: 0,
+    })).toEqual({ ok: false });
     await harness.dispose();
   });
 
@@ -676,8 +695,8 @@ describe("voice backend state machine", () => {
     speakingHarness.setOnSend(() => speakingHarness.setThreadStatus("idle"));
     await beginUpload(speakingHarness);
     const speaking = await waitForPhase(speakingHarness, "speaking");
-    const audioId = speaking.audioId;
-    if (!audioId) throw new Error("speaking state has no audio id");
+    const audioId = speaking.chunks[0]?.id;
+    if (!audioId) throw new Error("speaking state has no chunk id");
     expect((await speakingHarness.getAudio(audioId)).status).toBe(200);
 
     await vi.advanceTimersByTimeAsync(8 * 60_000 + 5_000);
@@ -690,17 +709,244 @@ describe("voice backend state machine", () => {
     await speakingHarness.dispose();
   });
 
-  it("finishPlayback releases the slot and invalidates the audio id", async () => {
+  it("finishPlayback releases the slot and invalidates the chunk id", async () => {
     const harness = createHarness();
     harness.setOnSend(() => harness.setThreadStatus("idle"));
     const exchangeId = await beginUpload(harness);
     const speaking = await waitForPhase(harness, "speaking");
-    const audioId = speaking.audioId;
-    if (!audioId) throw new Error("speaking state has no audio id");
+    const audioId = speaking.chunks[0]?.id;
+    if (!audioId) throw new Error("speaking state has no chunk id");
 
-    expect(harness.api.finishPlayback({ ...owner, exchangeId })).toEqual({ ok: true });
+    expect(harness.api.finishPlayback({
+      ...owner,
+      exchangeId,
+      playedThroughIndex: speaking.chunks[0]!.index,
+    })).toEqual({ ok: true });
     expect((await state(harness)).phase).toBe("ready");
     expect((await harness.getAudio(audioId)).status).toBe(404);
+    await harness.dispose();
+  });
+
+  it("stashes one fetchable WAV per sentence while the turn is still active", async () => {
+    const harness = createHarness();
+    harness.setEvents([
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(12, "turn/input/accepted", turnScope, {
+        clientRequestId: "request-voice",
+      }),
+      row(13, "item/started", turnScope, {
+        item: { type: "agentMessage", id: "live-answer", text: "" },
+      }),
+      row(14, "item/agentMessage/delta", turnScope, {
+        itemId: "live-answer",
+        delta: "First sentence. Second sentence.",
+      }),
+    ]);
+
+    const exchangeId = await beginUpload(harness);
+    const speaking = await vi.waitFor(async () => {
+      const next = await state(harness);
+      expect(next.chunks).toHaveLength(2);
+      return next;
+    });
+
+    expect(speaking.phase).toBe("speaking");
+    expect(speaking.streamComplete).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    for (const chunk of speaking.chunks) {
+      expect((await harness.getAudio(chunk.id)).status).toBe(200);
+    }
+    expect(exchangeId).toBeTruthy();
+    await harness.dispose();
+  });
+
+  it("keeps duplicate event pings and overlapping reads from duplicating TTS", async () => {
+    let resolveEvents!: (rows: VoiceEventRow[]) => void;
+    const pending = new Promise<VoiceEventRow[]>((resolve) => {
+      resolveEvents = resolve;
+    });
+    const harness = createHarness();
+    harness.setEventLoader(() => pending);
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.eventListCalls).toEqual(["10"]));
+
+    harness.changeThread(["events-appended"], ["item/agentMessage/delta"]);
+    harness.changeThread(["events-appended"], ["item/agentMessage/delta"]);
+    expect(harness.eventListCalls).toEqual(["10"]);
+
+    resolveEvents([
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(12, "turn/input/accepted", turnScope, {
+        clientRequestId: "request-voice",
+      }),
+      row(13, "item/started", turnScope, {
+        item: { type: "agentMessage", id: "answer", text: "" },
+      }),
+      row(14, "item/agentMessage/delta", turnScope, {
+        itemId: "answer",
+        delta: "Only once.",
+      }),
+    ]);
+
+    await vi.waitFor(async () => expect((await state(harness)).chunks).toHaveLength(1));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await harness.dispose();
+  });
+
+  it("drains a full terminal page before reconciling the final answer", async () => {
+    const firstPage: VoiceEventRow[] = [
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(12, "turn/input/accepted", turnScope, {
+        clientRequestId: "request-voice",
+      }),
+      ...Array.from({ length: 97 }, (_, index) =>
+        row(13 + index, "test/noop", threadScope, {}),
+      ),
+      row(110, "turn/completed", turnScope, { status: "completed" }),
+    ];
+    const secondPage = [
+      row(111, "item/completed", turnScope, {
+        item: { type: "agentMessage", id: "final-answer", text: "Final answer." },
+      }),
+    ];
+    const harness = createHarness();
+    harness.setEventLoader((afterSeq) =>
+      Promise.resolve(afterSeq === "10" ? firstPage : secondPage),
+    );
+
+    await beginUpload(harness);
+    const speaking = await waitForPhase(harness, "speaking");
+
+    expect(harness.eventListCalls).toEqual(["10", "110"]);
+    expect(speaking.chunks).toHaveLength(1);
+    expect(speaking.streamComplete).toBe(true);
+    await harness.dispose();
+  });
+
+  it("aborts stale epoch synthesis and streams the next assistant item", async () => {
+    let speechCalls = 0;
+    let firstSignal: AbortSignal | undefined;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/v1/audio/transcriptions")) return jsonResponse({ text: "voice transcript" });
+      if (!url.endsWith("/v1/audio/speech")) throw new Error(`unexpected fetch ${url}`);
+      speechCalls += 1;
+      if (speechCalls === 1) {
+        firstSignal = init?.signal ?? undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          firstSignal?.addEventListener("abort", () => reject(firstSignal?.reason), { once: true });
+        });
+      }
+      return new Response(new Uint8Array([82, 73, 70, 70]), {
+        headers: { "content-type": "audio/wav" },
+      });
+    });
+
+    const harness = createHarness();
+    harness.setEvents([
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(12, "turn/input/accepted", turnScope, { clientRequestId: "request-voice" }),
+      row(13, "item/started", turnScope, {
+        item: { type: "agentMessage", id: "first", text: "" },
+      }),
+      row(14, "item/agentMessage/delta", turnScope, {
+        itemId: "first",
+        delta: "Old sentence.",
+      }),
+    ]);
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(speechCalls).toBe(1));
+
+    harness.setEvents([
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(12, "turn/input/accepted", turnScope, { clientRequestId: "request-voice" }),
+      row(13, "item/started", turnScope, {
+        item: { type: "agentMessage", id: "first", text: "" },
+      }),
+      row(14, "item/agentMessage/delta", turnScope, {
+        itemId: "first",
+        delta: "Old sentence.",
+      }),
+      row(15, "item/started", turnScope, {
+        item: { type: "commandExecution", id: "tool-1", command: "pwd" },
+      }),
+      row(16, "item/started", turnScope, {
+        item: { type: "agentMessage", id: "second", text: "" },
+      }),
+      row(17, "item/agentMessage/delta", turnScope, {
+        itemId: "second",
+        delta: "New sentence.",
+      }),
+    ]);
+    harness.changeThread(["events-appended"], ["item/started", "item/agentMessage/delta"]);
+
+    await vi.waitFor(async () => {
+      const next = await state(harness);
+      expect(next.chunks).toHaveLength(1);
+      expect(next.error).toBeNull();
+    });
+    expect(firstSignal?.aborted).toBe(true);
+    expect(speechCalls).toBe(2);
+    await harness.dispose();
+  });
+
+  it("acknowledges exact chunks, keeps their audio fetchable, and rejects stale acks", async () => {
+    const harness = createHarness();
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+    const exchangeId = await beginUpload(harness);
+    const speaking = await waitForPhase(harness, "speaking");
+    const chunk = speaking.chunks[0]!;
+
+    expect(harness.api.ackPlayback({ ...owner, exchangeId, playedThroughIndex: chunk.index })).toEqual({ ok: true });
+    expect((await state(harness)).chunks).toEqual([]);
+    expect((await harness.getAudio(chunk.id)).status).toBe(200);
+    expect(harness.api.ackPlayback({ ...owner, exchangeId, playedThroughIndex: chunk.index })).toEqual({ ok: false });
+    expect(harness.api.finishPlayback({ ...owner, exchangeId, playedThroughIndex: chunk.index })).toEqual({ ok: true });
+    expect((await state(harness)).phase).toBe("ready");
+    await harness.dispose();
+  });
+
+  it("treats a stash over 64 MB as a post-send exchange failure", async () => {
+    const huge = new Uint8Array(64 * 1024 * 1024 + 1);
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/v1/audio/transcriptions")) return jsonResponse({ text: "voice transcript" });
+      if (url.endsWith("/v1/audio/speech")) {
+        return {
+          ok: true,
+          status: 200,
+          arrayBuffer: async () => huge.buffer,
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    const harness = createHarness();
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+    await beginUpload(harness);
+
+    const failed = await waitForPhase(harness, "failed");
+    expect(failed.error).toContain("64 MB");
+    expect(harness.sends).toHaveLength(1);
     await harness.dispose();
   });
 });
