@@ -42,24 +42,25 @@ describe("turn correlation", () => {
         clientRequestId: "older",
       }),
       row(21, "item/completed", turnScope("unrelated"), {
-        item: { type: "agentMessage", text: "Old answer" },
+        item: { type: "agentMessage", id: "old", text: "Old answer" },
       }),
       row(22, "turn/input/accepted", turnScope("voice-turn"), {
         clientRequestId: "voice-request",
       }),
       row(23, "item/completed", turnScope("voice-turn"), {
-        item: { type: "agentMessage", text: "Draft answer" },
+        item: { type: "agentMessage", id: "draft", text: "Draft answer" },
       }),
       row(24, "item/completed", turnScope("voice-turn"), {
-        item: { type: "agentMessage", text: "   " },
+        item: { type: "agentMessage", id: "blank", text: "   " },
       }),
       row(25, "item/completed", turnScope("voice-turn"), {
-        item: { type: "agentMessage", text: "Final answer" },
+        item: { type: "agentMessage", id: "final", text: "Final answer" },
       }),
     ];
 
     expect(findTurnAnswer(rows, "voice-request")).toEqual({
       turnId: "voice-turn",
+      itemId: "final",
       text: "Final answer",
     });
   });
@@ -72,12 +73,45 @@ describe("turn correlation", () => {
             clientRequestId: "voice-request",
           }),
           row(31, "item/started", turnScope("voice-turn"), {
-            item: { type: "agentMessage", text: "Partial" },
+            item: { type: "agentMessage", id: "partial", text: "Partial" },
           }),
         ],
         "voice-request",
       ),
-    ).toEqual({ turnId: "voice-turn", text: null });
+      ).toEqual({ turnId: "voice-turn", itemId: null, text: null });
+  });
+
+  it("accepts only non-empty root agent messages", () => {
+    expect(
+      findTurnAnswer(
+        [
+          row(1, "turn/input/accepted", turnScope("voice-turn"), {
+            clientRequestId: "voice-request",
+          }),
+          row(2, "item/completed", turnScope("voice-turn"), {
+            item: {
+              type: "agentMessage",
+              id: "nested",
+              text: "Nested tool answer.",
+              parentToolCallId: "tool-1",
+            },
+          }),
+          row(3, "item/completed", turnScope("voice-turn"), {
+            item: {
+              type: "agentMessage",
+              id: "root",
+              text: "  Root answer.  ",
+              parentToolCallId: null,
+            },
+          }),
+        ],
+        "voice-request",
+      ),
+    ).toEqual({
+      turnId: "voice-turn",
+      itemId: "root",
+      text: "  Root answer.  ",
+    });
   });
 
   it("loads every event page before correlating a long turn", async () => {
@@ -88,7 +122,7 @@ describe("turn correlation", () => {
     );
     events.push(
       row(102, "item/completed", turnScope("voice-turn"), {
-        item: { type: "agentMessage", text: "Answer after page one" },
+        item: { type: "agentMessage", id: "page-two", text: "Answer after page one" },
       }),
     );
     const calls: string[] = [];

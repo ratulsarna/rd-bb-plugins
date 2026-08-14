@@ -44,7 +44,7 @@ export function findVoiceRequestId(
 export function findTurnAnswer(
   rows: readonly VoiceEventRow[],
   requestId: string,
-): { turnId: string; text: string | null } | null {
+): { turnId: string; itemId: string | null; text: string | null } | null {
   const accepted = [...rows]
     .sort((left, right) => left.seq - right.seq)
     .find(
@@ -55,6 +55,7 @@ export function findTurnAnswer(
     );
   if (!accepted || accepted.scope.kind !== "turn") return null;
 
+  let itemId: string | null = null;
   let text: string | null = null;
   for (const row of [...rows].sort((left, right) => left.seq - right.seq)) {
     if (
@@ -65,13 +66,21 @@ export function findTurnAnswer(
       continue;
     }
     const item = record(record(row.data)?.item);
-    if (item?.type !== "agentMessage" || typeof item.text !== "string") {
+    if (
+      item?.type !== "agentMessage" ||
+      item.parentToolCallId != null ||
+      typeof item.id !== "string" ||
+      typeof item.text !== "string"
+    ) {
       continue;
     }
     const candidate = item.text.trim();
-    if (candidate) text = candidate;
+    if (candidate) {
+      itemId = item.id;
+      text = item.text;
+    }
   }
-  return { turnId: accepted.scope.turnId, text };
+  return { turnId: accepted.scope.turnId, itemId, text };
 }
 
 export async function loadEventsAfter(
