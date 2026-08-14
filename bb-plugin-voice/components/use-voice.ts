@@ -1,0 +1,389 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useRealtime,
+  useRealtimeConnectionState,
+  useRpc,
+} from "@bb/plugin-sdk/app";
+import { toast } from "sonner";
+import {
+  isRecordingSupported,
+  micErrorMessage,
+  startRecording,
+  type Recording,
+  type RecorderHandle,
+} from "@/lib/recorder";
+import { downloadAudio, uploadRecording } from "@/lib/transport";
+import {
+  resolveView,
+  type LocalStage,
+  type PlaybackStage,
+  type VoiceState,
+  type VoiceView,
+} from "@/lib/view";
+import type { rpcContract } from "../server";
+
+/** Hard stop, matching the backend's listening expiry with room to upload. */
+const MAX_RECORDING_MS = 60_000;
+const TICK_MS = 250;
+
+function randomId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `c-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export interface VoiceControlApi {
+  view: VoiceView;
+  start: () => void;
+  stopRecording: () => void;
+  play: () => void;
+  stopPlayback: () => void;
+  dismiss: () => void;
+}
+
+export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi {
+  const rpc = useRpc<typeof rpcContract>();
+  // One controller per mount: a split layout gives each pane its own identity.
+  const [controllerId] = useState(randomId);
+  const [isSupported] = useState(isRecordingSupported);
+
+  const [state, setState] = useState<VoiceState | null>(null);
+  const [stage, setStage] = useState<LocalStage>("idle");
+  const [playback, setPlayback] = useState<PlaybackStage>("idle");
+  const [elapsedMs, setElapsedMs] = useState(0);
+
+  const mountedRef = useRef(true);
+  const stageRef = useRef<LocalStage>("idle");
+  const exchangeIdRef = useRef<string | null>(null);
+  const recorderRef = useRef<RecorderHandle | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
+  const playbackAudioIdRef = useRef<string | null>(null);
+  const fetchSeqRef = useRef(0);
+  // Bumped by every local mutation so a getState answer that was issued before
+  // it cannot overwrite the newer truth we already know.
+  const mutationSeqRef = useRef(0);
+
+  const applyStage = useCallback((next: LocalStage) => {
+    stageRef.current = next;
+    setStage(next);
+  }, []);
+
+  const refresh = useCallback(async (): Promise<VoiceState | null> => {
+    const seq = ++fetchSeqRef.current;
+    const mutation = mutationSeqRef.current;
+    try {
+      const next = await rpc.call("getState", { threadId, controllerId });
+      if (
+        !mountedRef.current ||
+        seq !== fetchSeqRef.current ||
+        mutation !== mutationSeqRef.current
+      ) {
+        return null;
+      }
+      setState(next);
+      return next;
+    } catch {
+      return null;
+    }
+  }, [controllerId, rpc, threadId]);
+
+  const releaseAudio = useCallback(() => {
+    const audio = audioRef.current;
+    audioRef.current = null;
+    if (audio) {
+      audio.onended = null;
+      audio.pause();
+      audio.removeAttribute("src");
+    }
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
+    }
+    playbackAudioIdRef.current = null;
+    setPlayback("idle");
+  }, []);
+
+  const cancelExchange = useCallback(
+    async (exchangeId: string) => {
+      if (exchangeIdRef.current === exchangeId) exchangeIdRef.current = null;
+      try {
+        await rpc.call("cancel", { threadId, controllerId, exchangeId });
+      } catch {
+        // The backend's expiry sweep is the fallback.
+      }
+      mutationSeqRef.current += 1;
+    },
+    [controllerId, rpc, threadId],
+  );
+
+  const submit = useCallback(
+    async (exchangeId: string, recording: Recording | null) => {
+      recorderRef.current = null;
+      if (!recording || recording.blob.size === 0) {
+        toast.error("No audio was captured");
+        await cancelExchange(exchangeId);
+        if (mountedRef.current) applyStage("idle");
+        void refresh();
+        return;
+      }
+      try {
+        await uploadRecording({
+          blob: recording.blob,
+          mimeType: recording.mimeType,
+          exchangeId,
+          controllerId,
+        });
+        mutationSeqRef.current += 1;
+      } catch (error) {
+        toast.error("Voice message failed", { description: messageOf(error) });
+        await cancelExchange(exchangeId);
+        if (mountedRef.current) applyStage("idle");
+        void refresh();
+        return;
+      }
+      // The upload route flips the exchange to working before it answers, so
+      // this refresh always hands the chip over to the backend's phase.
+      await refresh();
+      if (mountedRef.current) applyStage("idle");
+    },
+    [applyStage, cancelExchange, controllerId, refresh],
+  );
+
+  const start = useCallback(() => {
+    if (stageRef.current !== "idle" || !isSupported) return;
+    applyStage("starting");
+    void (async () => {
+      let exchangeId: string;
+      try {
+        const result = await rpc.call("reserve", { threadId, controllerId });
+        mutationSeqRef.current += 1;
+        if (!result.ok || !result.exchangeId) {
+          toast.error(result.reason ?? "Voice is busy");
+          applyStage("idle");
+          void refresh();
+          return;
+        }
+        exchangeId = result.exchangeId;
+      } catch (error) {
+        toast.error("Voice is unavailable", { description: messageOf(error) });
+        applyStage("idle");
+        return;
+      }
+
+      exchangeIdRef.current = exchangeId;
+      try {
+        recorderRef.current = await startRecording((recording) => {
+          void submit(exchangeId, recording);
+        });
+      } catch (error) {
+        toast.error(micErrorMessage(error));
+        await cancelExchange(exchangeId);
+        applyStage("idle");
+        void refresh();
+        return;
+      }
+      if (!mountedRef.current) {
+        // Unmounted while the mic was opening: never leave it running.
+        recorderRef.current.dispose();
+        recorderRef.current = null;
+        void cancelExchange(exchangeId);
+        return;
+      }
+      setElapsedMs(0);
+      applyStage("recording");
+      void refresh();
+    })();
+  }, [
+    applyStage,
+    cancelExchange,
+    controllerId,
+    isSupported,
+    refresh,
+    rpc,
+    submit,
+    threadId,
+  ]);
+
+  const stopRecording = useCallback(() => {
+    if (stageRef.current !== "recording") return;
+    applyStage("uploading");
+    recorderRef.current?.stop();
+  }, [applyStage]);
+
+  // Recording clock, and the hard stop the plan requires.
+  useEffect(() => {
+    if (stage !== "recording") return;
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      setElapsedMs(elapsed);
+      if (elapsed >= MAX_RECORDING_MS) stopRecording();
+    }, TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [stage, stopRecording]);
+
+  const finishPlayback = useCallback(
+    async (exchangeId: string) => {
+      releaseAudio();
+      if (exchangeIdRef.current === exchangeId) exchangeIdRef.current = null;
+      try {
+        await rpc.call("finishPlayback", { threadId, controllerId, exchangeId });
+      } catch {
+        // Expiry releases the slot if the call never lands.
+      }
+      mutationSeqRef.current += 1;
+      void refresh();
+    },
+    [controllerId, refresh, releaseAudio, rpc, threadId],
+  );
+
+  const beginPlayback = useCallback(
+    async (audioId: string, exchangeId: string) => {
+      setPlayback("loading");
+      let audio: HTMLAudioElement;
+      try {
+        const blob = await downloadAudio(audioId);
+        if (!mountedRef.current || playbackAudioIdRef.current !== audioId) return;
+        const url = URL.createObjectURL(blob);
+        blobUrlRef.current = url;
+        audio = new Audio(url);
+        audioRef.current = audio;
+        audio.onended = () => void finishPlayback(exchangeId);
+      } catch (error) {
+        toast.error("Could not play the answer", {
+          description: messageOf(error),
+        });
+        releaseAudio();
+        await cancelExchange(exchangeId);
+        void refresh();
+        return;
+      }
+      try {
+        await audio.play();
+        if (mountedRef.current && audioRef.current === audio) {
+          setPlayback("playing");
+        }
+      } catch {
+        // Autoplay was refused: the user plays it with an explicit tap.
+        if (mountedRef.current && audioRef.current === audio) {
+          setPlayback("blocked");
+        }
+      }
+    },
+    [cancelExchange, finishPlayback, refresh, releaseAudio],
+  );
+
+  const play = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    void audio
+      .play()
+      .then(() => {
+        if (mountedRef.current && audioRef.current === audio) {
+          setPlayback("playing");
+        }
+      })
+      .catch((error: unknown) => {
+        toast.error("Could not play the answer", {
+          description: messageOf(error),
+        });
+      });
+  }, []);
+
+  const stopPlayback = useCallback(() => {
+    const exchangeId = exchangeIdRef.current ?? state?.exchangeId ?? null;
+    releaseAudio();
+    if (!exchangeId) return;
+    void cancelExchange(exchangeId).then(() => refresh());
+  }, [cancelExchange, refresh, releaseAudio, state]);
+
+  const dismiss = useCallback(() => {
+    const exchangeId = state?.exchangeId;
+    if (!exchangeId) return;
+    void cancelExchange(exchangeId).then(() => refresh());
+  }, [cancelExchange, refresh, state]);
+
+  // Start playback as soon as this control owns a speaking exchange.
+  useEffect(() => {
+    if (
+      !state ||
+      state.phase !== "speaking" ||
+      !state.canControl ||
+      !state.audioId ||
+      !state.exchangeId ||
+      playbackAudioIdRef.current === state.audioId
+    ) {
+      return;
+    }
+    playbackAudioIdRef.current = state.audioId;
+    exchangeIdRef.current = state.exchangeId;
+    void beginPlayback(state.audioId, state.exchangeId);
+  }, [beginPlayback, state]);
+
+  // Ownership loss (backend restart, expiry, another controller): drop every
+  // local resource instead of recording or playing into a dead exchange.
+  useEffect(() => {
+    const owned = exchangeIdRef.current;
+    if (!state || !owned) return;
+    if (state.exchangeId === owned && state.canControl) return;
+    exchangeIdRef.current = null;
+    recorderRef.current?.dispose();
+    recorderRef.current = null;
+    releaseAudio();
+    if (stageRef.current !== "idle") applyStage("idle");
+  }, [applyStage, releaseAudio, state]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const onChanged = useCallback(() => {
+    void refresh();
+  }, [refresh]);
+  useRealtime("voice:changed", onChanged);
+
+  // Plugin signals are ephemeral, so reconcile after a dropped connection.
+  const connection = useRealtimeConnectionState();
+  const previousConnection = useRef(connection);
+  useEffect(() => {
+    if (previousConnection.current !== "connected" && connection === "connected") {
+      void refresh();
+    }
+    previousConnection.current = connection;
+  }, [connection, refresh]);
+
+  // Kept in a ref so unmount cleanup never runs early on a dependency change.
+  const disposeRef = useRef<() => void>(() => {});
+  disposeRef.current = () => {
+    recorderRef.current?.dispose();
+    recorderRef.current = null;
+    releaseAudio();
+    const exchangeId = exchangeIdRef.current;
+    exchangeIdRef.current = null;
+    if (exchangeId) {
+      void rpc.call("cancel", { threadId, controllerId, exchangeId }).catch(() => {});
+    }
+  };
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      disposeRef.current();
+    };
+  }, []);
+
+  return {
+    view: resolveView({ state, stage, playback, elapsedMs, isCompact, isSupported }),
+    start,
+    stopRecording,
+    play,
+    stopPlayback,
+    dismiss,
+  };
+}

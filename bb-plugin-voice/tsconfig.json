@@ -15,10 +15,18 @@
       "@bb/plugin-sdk/app": [
         "../types/bb-plugin-sdk-app.d.ts",
         "./types/bb-plugin-sdk-app.d.ts"
-      ]
+      ],
+      "@/*": ["./*"]
     },
     "noEmit": true,
     "skipLibCheck": false
   },
-  "include": ["server.ts", "app.tsx", "lib", "test", "vitest.config.ts"]
+  "include": [
+    "server.ts",
+    "app.tsx",
+    "components",
+    "lib",
+    "test",
+    "vitest.config.ts"
+  ]
 }
