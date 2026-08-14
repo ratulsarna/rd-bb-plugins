@@ -348,7 +348,14 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
     recorderRef.current?.dispose();
     recorderRef.current = null;
     releaseAudio();
-    if (stageRef.current !== "idle") applyStage("idle");
+    if (stageRef.current !== "idle") {
+      applyStage("idle");
+      // The mic was open and what it captured is gone. Losing that silently
+      // reads as a control that simply forgot what the user just said.
+      toast.error("Recording discarded", {
+        description: "This voice exchange is no longer active.",
+      });
+    }
   }, [applyStage, releaseAudio, state]);
 
   useEffect(() => {

@@ -20,6 +20,8 @@ export const fakes = {
   /** How the next `play()` resolves — "reject" mimics a blocked autoplay. */
   playResult: "resolve" as "resolve" | "reject",
   micError: null as unknown,
+  /** Thrown by `MediaRecorder.start()`, after the mic is already open. */
+  recorderStartError: null as unknown,
   onUpload: (() => {}) as () => void,
 };
 
@@ -32,6 +34,7 @@ export function resetFakes() {
   fakes.tracksStopped = 0;
   fakes.playResult = "resolve";
   fakes.micError = null;
+  fakes.recorderStartError = null;
   fakes.onUpload = () => {};
 }
 
@@ -52,6 +55,7 @@ class FakeMediaRecorder {
   }
 
   start(): void {
+    if (fakes.recorderStartError) throw fakes.recorderStartError;
     this.state = "recording";
   }
 

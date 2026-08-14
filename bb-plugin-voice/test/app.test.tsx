@@ -156,6 +156,24 @@ describe("voice header control", () => {
     expect(await micButton()).toBeTruthy();
   });
 
+  it("releases the mic when the recorder refuses to start", async () => {
+    const backend = createBackend();
+    renderControl();
+
+    // getUserMedia already handed over a live stream at this point, so a
+    // failure here leaves the mic on unless the recorder releases it.
+    fakes.recorderStartError = new DOMException("nope", "InvalidStateError");
+    fireEvent.click(await micButton());
+
+    await waitFor(() => expect(fakes.tracksStopped).toBe(1));
+    await waitFor(() =>
+      expect(rpcCalls.some((call) => call.method === "cancel")).toBe(true),
+    );
+    expect(toasts[0]?.message).toBe("Could not start recording");
+    expect(backend.current.phase).toBe("ready");
+    expect(await micButton()).toBeTruthy();
+  });
+
   it("surfaces the backend's reason, and opens no mic, when the click loses the race", async () => {
     // The thread went busy after the last fetched state said it was idle.
     const backend = createBackend();
@@ -209,6 +227,8 @@ describe("voice header control", () => {
     await waitFor(() => expect(fakes.tracksStopped).toBe(1));
     expect(fakes.recorders[0]!.state).toBe("inactive");
     expect(fakes.uploads).toHaveLength(0);
+    // Losing what was just said has to be said out loud.
+    expect(toasts.at(-1)).toMatchObject({ message: "Recording discarded" });
     expect(await micButton()).toBeTruthy();
   });
 

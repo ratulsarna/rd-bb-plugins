@@ -73,15 +73,6 @@ export async function startRecording(
 ): Promise<RecorderHandle> {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const mimeType = preferredMimeType();
-  let recorder: MediaRecorder;
-  try {
-    recorder = mimeType
-      ? new MediaRecorder(stream, { mimeType })
-      : new MediaRecorder(stream);
-  } catch (error) {
-    stopTracks(stream);
-    throw error;
-  }
 
   const chunks: Blob[] = [];
   let settled = false;
@@ -92,19 +83,33 @@ export async function startRecording(
     onComplete(recording);
   };
 
-  recorder.ondataavailable = (event) => {
-    if (event.data.size > 0) chunks.push(event.data);
-  };
-  recorder.onerror = () => {
-    safeStop(recorder);
-    settle(null);
-  };
-  recorder.onstop = () => {
-    const type = recorder.mimeType || mimeType || "audio/webm";
-    settle(chunks.length ? { blob: new Blob(chunks, { type }), mimeType: type } : null);
-  };
-  // Timeslice keeps chunks flowing so a stop always has data to flush.
-  recorder.start(250);
+  // Everything the mic can outlive lives in here: whatever throws — the
+  // constructor or `start` — the tracks are released before the caller sees it.
+  let recorder: MediaRecorder;
+  try {
+    recorder = mimeType
+      ? new MediaRecorder(stream, { mimeType })
+      : new MediaRecorder(stream);
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
+    };
+    recorder.onerror = () => {
+      safeStop(recorder);
+      settle(null);
+    };
+    recorder.onstop = () => {
+      const type = recorder.mimeType || mimeType || "audio/webm";
+      settle(
+        chunks.length ? { blob: new Blob(chunks, { type }), mimeType: type } : null,
+      );
+    };
+    // Timeslice keeps chunks flowing so a stop always has data to flush.
+    recorder.start(250);
+  } catch (error) {
+    settled = true;
+    stopTracks(stream);
+    throw error;
+  }
 
   return {
     stop() {
