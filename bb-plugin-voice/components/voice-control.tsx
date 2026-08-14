@@ -12,7 +12,9 @@ const TONE_TEXT: Record<VoiceTone, string> = {
 };
 
 const BUTTON =
-  "inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40";
+  // Not `pointer-events-none` when disabled: the title carries the reason the
+  // mic is unavailable, and a tooltip needs the pointer to reach the button.
+  "inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
 
 function Svg({ children }: { children: React.ReactNode }) {
   return (
