@@ -1,0 +1,36 @@
+{
+  "name": "bb-plugin-voice",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "bb plugin build"
+  },
+  "engines": {
+    "bb": ">=0.37",
+    "bbPluginSdk": "^0.4.2"
+  },
+  "bb": {
+    "name": "Voice",
+    "description": "Send voice messages to bb threads and speak their replies.",
+    "branding": {
+      "icon": "Mic"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": []
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.2.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
+  }
+}
