@@ -6,6 +6,7 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 export default defineConfig({
   resolve: {
     alias: [
+      { find: /^@bb\/plugin-sdk$/, replacement: `${root}test/server-sdk-fake.ts` },
       { find: "@bb/plugin-sdk/app", replacement: `${root}test/sdk-fake.ts` },
       { find: "sonner", replacement: `${root}test/toast-fake.ts` },
       { find: /^@\//, replacement: root },

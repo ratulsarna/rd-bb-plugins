@@ -230,13 +230,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
       threadId: exchange.threadId,
       signal: abortControllers.get(exchange.exchangeId)?.signal,
     });
-    return interactions.some(
-      (interaction) =>
-        interaction.status === "pending" &&
-        (interaction.payload.kind === "approval" ||
-          interaction.payload.kind === "user_question") &&
-        (exchange.turnId === null || interaction.turnId === exchange.turnId),
-    );
+    return interactions.some((interaction) => interaction.status === "pending");
   };
 
   const synthesize = async (
@@ -613,8 +607,9 @@ export default function voicePlugin(bb: BbPluginApi): void {
     ) {
       return;
     }
-    exchange.stage = "resolving";
-    runForExchange(exchange.exchangeId, () => completeExchange(exchange.exchangeId));
+    runForExchange(exchange.exchangeId, () =>
+      reconcileTerminal(exchange.exchangeId),
+    );
   });
 
   bb.events.on("thread.failed", ({ thread, error }) => {
