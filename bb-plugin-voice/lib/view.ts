@@ -96,6 +96,9 @@ export function resolveView(input: {
   }
 
   switch (state.phase) {
+    // `canStart` also reflects thread status, which changes with no signal this
+    // control can hear, so it is stale as often as it is right. `reserve` is the
+    // authority: it rejects with the live reason, which the click surfaces.
     case "ready":
       return {
         ...NO_ACTION,
@@ -104,10 +107,7 @@ export function resolveView(input: {
         statusLabel: "Voice ready",
         action: "start",
         actionLabel: "Record a voice message",
-        actionDisabled: !state.canStart,
-        detail: state.canStart
-          ? null
-          : "Voice is busy or this thread is not idle.",
+        actionDisabled: false,
       };
     // Another control on this thread is recording; this one only reports.
     case "listening":
@@ -161,6 +161,12 @@ export function resolveView(input: {
         tone: "failed",
         label: isCompact ? "Failed" : error,
         statusLabel: `Voice failed: ${error}`,
+        // Recording again replaces a failed exchange, so every pane can recover
+        // from one — including after the pane that owned it is gone and nobody
+        // is left who could dismiss it.
+        action: "start",
+        actionLabel: "Record a new voice message",
+        actionDisabled: false,
         showDismiss: state.canControl,
         detail: error,
       };

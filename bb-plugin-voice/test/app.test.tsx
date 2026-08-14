@@ -155,6 +155,47 @@ describe("voice header control", () => {
     expect(await micButton()).toBeTruthy();
   });
 
+  it("surfaces the backend's reason, and opens no mic, when the click loses the race", async () => {
+    // The thread went busy after the last fetched state said it was idle.
+    const backend = createBackend();
+    backend.current = { ...ready, canStart: false };
+    renderControl();
+
+    fireEvent.click(await micButton());
+
+    await waitFor(() => expect(toasts).toHaveLength(1));
+    expect(toasts[0]).toMatchObject({
+      message: "Voice cannot start",
+      description: "voice is busy",
+    });
+    expect(fakes.recorders).toHaveLength(0);
+    expect(await micButton()).toBeTruthy();
+  });
+
+  it("records again over a failed exchange whose owning pane is gone", async () => {
+    const backend = createBackend();
+    // Nobody can dismiss this one: the controller that owned it never came back.
+    backend.current = {
+      phase: "failed",
+      canStart: true,
+      canControl: false,
+      exchangeId: "ex_dead",
+      audioId: null,
+      error: "nothing transcribed",
+    };
+    renderControl();
+
+    expect(await screen.findByText("nothing transcribed")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Dismiss the voice error" }),
+    ).toBeNull();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Record a new voice message" }),
+    );
+    expect(await stopRecordingButton()).toBeTruthy();
+  });
+
   it("stops the recorder when the exchange is lost mid-recording", async () => {
     const backend = createBackend();
     renderControl();
@@ -216,6 +257,43 @@ describe("voice header control", () => {
       rpcCalls.filter((call) => call.method === "cancel").at(-1)?.input,
     ).toMatchObject({ exchangeId: "ex_1" });
     expect(fakes.uploads).toHaveLength(0);
+  });
+
+  it("drops an open mic when the backend silently forgets the exchange", async () => {
+    vi.useFakeTimers();
+    const flush = async () => {
+      for (let tick = 0; tick < 8; tick += 1) await act(async () => {});
+    };
+    try {
+      const backend = createBackend();
+      renderControl();
+      await flush();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Record a voice message" }),
+      );
+      await flush();
+      expect(
+        screen.getByRole("button", { name: "Stop recording and send" }),
+      ).toBeTruthy();
+
+      // A plugin reload or server restart: the slot is gone and, unlike a phase
+      // change, nothing is published to say so.
+      backend.current = ready;
+      await act(async () => {
+        vi.advanceTimersByTime(6_000);
+      });
+      await flush();
+
+      expect(fakes.tracksStopped).toBe(1);
+      expect(fakes.recorders[0]!.state).toBe("inactive");
+      expect(fakes.uploads).toHaveLength(0);
+      expect(
+        screen.getByRole("button", { name: "Record a voice message" }),
+      ).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("hard-stops a recording that runs past the 60 second cap", async () => {

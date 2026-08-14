@@ -59,13 +59,6 @@ const SpeakerIcon = () => (
   </Svg>
 );
 
-const AlertIcon = () => (
-  <Svg>
-    <path d="M12 4 3 19h18z" />
-    <path d="M12 10v4M12 17h.01" />
-  </Svg>
-);
-
 const SpinnerIcon = () => (
   <svg
     aria-hidden
@@ -101,15 +94,15 @@ export function VoiceControl({
     isCompactViewport,
   );
 
+  // What the control offers wins over what it reports: a failed exchange is
+  // told by its red error text, and its button is the mic that retries.
   const glyph =
-    view.tone === "busy" ? (
-      <SpinnerIcon />
-    ) : view.tone === "failed" ? (
-      <AlertIcon />
-    ) : view.action === "stop-recording" ? (
+    view.action === "stop-recording" ? (
       <StopIcon />
     ) : view.action === "play" ? (
       <PlayIcon />
+    ) : view.tone === "busy" ? (
+      <SpinnerIcon />
     ) : view.tone === "speaking" ? (
       <SpeakerIcon />
     ) : (

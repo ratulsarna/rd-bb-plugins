@@ -22,13 +22,14 @@ function state(overrides: Partial<VoiceState> = {}): VoiceState {
 }
 
 describe("resolveView", () => {
-  it("offers the mic only when the backend says a new exchange can start", () => {
-    expect(resolveView({ ...base, state: state() }).actionDisabled).toBe(false);
-
-    const blocked = resolveView({ ...base, state: state({ canStart: false }) });
-    expect(blocked.action).toBe("start");
-    expect(blocked.actionDisabled).toBe(true);
-    expect(blocked.detail).toMatch(/busy|idle/i);
+  it("keeps the mic clickable even when the last known state said it could not start", () => {
+    // `canStart` carries thread status, which goes stale in both directions;
+    // a disabled button would strand the mic after a typed turn finishes.
+    for (const canStart of [true, false]) {
+      const view = resolveView({ ...base, state: state({ canStart }) });
+      expect(view.action).toBe("start");
+      expect(view.actionDisabled).toBe(false);
+    }
   });
 
   it("shows local recording even while the fetched state is still stale", () => {
@@ -44,7 +45,7 @@ describe("resolveView", () => {
   });
 
   it("renders status only for a pane that does not own the exchange", () => {
-    for (const phase of ["listening", "working", "speaking", "failed"] as const) {
+    for (const phase of ["listening", "working", "speaking"] as const) {
       const view = resolveView({
         ...base,
         state: state({
@@ -52,7 +53,6 @@ describe("resolveView", () => {
           canStart: false,
           canControl: false,
           exchangeId: "ex_1",
-          error: phase === "failed" ? "nothing transcribed" : null,
         }),
       });
       expect(view.action).toBe("none");
@@ -97,6 +97,10 @@ describe("resolveView", () => {
       state: state({ ...failure, canControl: false }),
     });
     expect(other.showDismiss).toBe(false);
+    // Nobody is left to dismiss it, so recording again must be the way out.
+    expect(other.action).toBe("start");
+    expect(other.actionDisabled).toBe(false);
+    expect(other.detail).toBe("nothing transcribed");
   });
 
   it("drops prose on compact viewports but keeps an accessible status", () => {

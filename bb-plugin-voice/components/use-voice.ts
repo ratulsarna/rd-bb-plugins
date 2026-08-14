@@ -25,6 +25,8 @@ import type { rpcContract } from "../server";
 /** Hard stop, matching the backend's listening expiry with room to upload. */
 const MAX_RECORDING_MS = 60_000;
 const TICK_MS = 250;
+/** How often an open mic re-checks that its exchange still exists. */
+const OWNERSHIP_CHECK_MS = 5_000;
 
 function randomId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -163,7 +165,9 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
         const result = await rpc.call("reserve", { threadId, controllerId });
         mutationSeqRef.current += 1;
         if (!result.ok || !result.exchangeId) {
-          toast.error(result.reason ?? "Voice is busy");
+          // The only place the live reason is told, now that the button no
+          // longer pretends to know it ahead of the click.
+          toast.error("Voice cannot start", { description: result.reason });
           applyStage("idle");
           void refresh();
           return;
@@ -215,17 +219,26 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
     recorderRef.current?.stop();
   }, [applyStage]);
 
-  // Recording clock, and the hard stop the plan requires.
+  // Recording clock, the hard stop the plan requires, and — because an open mic
+  // must never outlive its exchange — a re-read of the state it depends on. A
+  // backend that forgot the exchange (plugin reload, server restart) publishes
+  // nothing, so this is the only thing that would notice.
   useEffect(() => {
     if (stage !== "recording") return;
     const startedAt = Date.now();
+    let checkedAt = 0;
     const timer = window.setInterval(() => {
       const elapsed = Date.now() - startedAt;
       setElapsedMs(elapsed);
-      if (elapsed >= MAX_RECORDING_MS) stopRecording();
+      if (elapsed >= MAX_RECORDING_MS) {
+        stopRecording();
+      } else if (elapsed - checkedAt >= OWNERSHIP_CHECK_MS) {
+        checkedAt = elapsed;
+        void refresh();
+      }
     }, TICK_MS);
     return () => window.clearInterval(timer);
-  }, [stage, stopRecording]);
+  }, [refresh, stage, stopRecording]);
 
   const finishPlayback = useCallback(
     async (exchangeId: string) => {
