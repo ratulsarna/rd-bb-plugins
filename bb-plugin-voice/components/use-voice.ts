@@ -107,7 +107,7 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
   );
 
   const cancelExchange = useCallback(
-    async (exchangeId: string, playedThroughIndex?: number) => {
+    async (exchangeId: string) => {
       settlingExchangeIdRef.current = exchangeId;
       if (exchangeIdRef.current === exchangeId) exchangeIdRef.current = null;
       try {
@@ -115,7 +115,6 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
           threadId,
           controllerId,
           exchangeId,
-          ...(playedThroughIndex === undefined ? {} : { playedThroughIndex }),
         });
       } catch {
         // The backend's expiry sweep is the fallback.
@@ -219,7 +218,7 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
       recorderRef.current = null;
       if (!recording || recording.blob.size === 0) {
         toast.error("No audio was captured");
-        await cancelExchange(exchangeId, queueRef.current?.playedThroughIndex());
+        await cancelExchange(exchangeId);
         if (mountedRef.current) applyStage("idle");
         void refresh();
         return;
@@ -234,7 +233,7 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
         mutationSeqRef.current += 1;
       } catch (error) {
         toast.error("Voice message failed", { description: messageOf(error) });
-        await cancelExchange(exchangeId, queueRef.current?.playedThroughIndex());
+        await cancelExchange(exchangeId);
         if (mountedRef.current) applyStage("idle");
         void refresh();
         return;
@@ -280,7 +279,7 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
         });
       } catch (error) {
         toast.error(micErrorMessage(error));
-        await cancelExchange(exchangeId, queueRef.current?.playedThroughIndex());
+        await cancelExchange(exchangeId);
         applyStage("idle");
         void refresh();
         return;
@@ -289,7 +288,7 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
         // Unmounted while the mic was opening: never leave it running.
         recorderRef.current.dispose();
         recorderRef.current = null;
-        void cancelExchange(exchangeId, queueRef.current?.playedThroughIndex());
+        void cancelExchange(exchangeId);
         return;
       }
       setElapsedMs(0);
@@ -338,11 +337,10 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
   const stopPlayback = useCallback(() => {
     const exchangeId = exchangeIdRef.current ?? state?.exchangeId ?? null;
     const queue = queueRef.current;
-    const playedThroughIndex = queue?.playedThroughIndex();
     if (exchangeId) settlingExchangeIdRef.current = exchangeId;
     queue?.stop();
     if (!exchangeId) return;
-    void cancelExchange(exchangeId, playedThroughIndex).then(() => refresh());
+    void cancelExchange(exchangeId).then(() => refresh());
   }, [cancelExchange, refresh, state]);
 
   const play = useCallback(() => {
@@ -363,11 +361,10 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
   const dismiss = useCallback(() => {
     const exchangeId = state?.exchangeId;
     const queue = queueRef.current;
-    const playedThroughIndex = queue?.playedThroughIndex();
     if (exchangeId) settlingExchangeIdRef.current = exchangeId;
     queue?.stop();
     if (!exchangeId) return;
-    void cancelExchange(exchangeId, playedThroughIndex).then(() => refresh());
+    void cancelExchange(exchangeId).then(() => refresh());
   }, [cancelExchange, refresh, state]);
 
   // Queue callbacks are kept in a ref so PlaybackQueue never needs to know
@@ -401,13 +398,12 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
       const exchangeId = exchangeIdRef.current;
       const queue = queueRef.current;
       if (!exchangeId) return;
-      const playedThroughIndex = queue?.playedThroughIndex();
       settlingExchangeIdRef.current = exchangeId;
       toast.error("Could not play the answer", {
         description: messageOf(error),
       });
       queue?.stop();
-      void cancelExchange(exchangeId, playedThroughIndex).then(() => refresh());
+      void cancelExchange(exchangeId).then(() => refresh());
     },
   };
 
@@ -458,8 +454,18 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
     recorderRef.current?.dispose();
     recorderRef.current = null;
     const queue = queueRef.current;
-    const playedThroughIndex = queue?.playedThroughIndex();
     queue?.stop();
+    queueRef.current = null;
+    queueExchangeIdRef.current = null;
+    const context = audioContextRef.current;
+    audioContextRef.current = null;
+    if (context && context.state !== "closed") {
+      try {
+        void context.close().catch(() => {});
+      } catch {
+        // A context can close between the state check and close call.
+      }
+    }
     const exchangeId = exchangeIdRef.current;
     exchangeIdRef.current = null;
     if (exchangeId) {
@@ -468,7 +474,6 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
           threadId,
           controllerId,
           exchangeId,
-          ...(playedThroughIndex === undefined ? {} : { playedThroughIndex }),
         })
         .catch(() => {});
     }

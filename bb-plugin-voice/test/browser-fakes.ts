@@ -56,6 +56,7 @@ class FakeAudioBufferSource {
 }
 
 class FakeAudioContext {
+  state: "running" | "closed" = "running";
   currentTime = 0;
   readonly destination = {} as AudioNode;
   readonly sources: FakeAudioBufferSource[] = [];
@@ -68,6 +69,11 @@ class FakeAudioContext {
     return fakes.resumeResult === "resolve"
       ? Promise.resolve()
       : Promise.reject(new DOMException("blocked", "NotAllowedError"));
+  }
+
+  close(): Promise<void> {
+    this.state = "closed";
+    return Promise.resolve();
   }
 
   createBufferSource(): AudioBufferSourceNode {

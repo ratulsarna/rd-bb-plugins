@@ -297,12 +297,18 @@ describe("voice header control", () => {
 
     fireEvent.click(await micButton());
     await stopRecordingButton();
+    const context = fakes.audioContexts[0]!;
     view.unmount();
 
     await waitFor(() => expect(fakes.tracksStopped).toBe(1));
+    expect(context.state).toBe("closed");
     expect(
       rpcCalls.filter((call) => call.method === "cancel").at(-1)?.input,
-    ).toMatchObject({ exchangeId: "ex_1" });
+    ).toEqual({
+      threadId: "thr_1",
+      controllerId: expect.any(String),
+      exchangeId: "ex_1",
+    });
     expect(fakes.uploads).toHaveLength(0);
   });
 
