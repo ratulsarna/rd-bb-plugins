@@ -641,35 +641,86 @@ describe("voice backend state machine", () => {
     expect(harness.publishedStates.at(-1)?.phase).toBe("ready");
   });
 
-  it("ends quietly for a pending interaction or a turn with no answer", async () => {
-    const interactionHarness = createHarness();
-    interactionHarness.setOnSend(() => {
-      interactionHarness.setThreadStatus("active");
-      interactionHarness.setInteractions([
-        {
-          status: "pending",
-          turnId: null,
-          payload: { kind: "plugin" },
-        },
-      ]);
-    });
-    await beginUpload(interactionHarness);
-    await waitForPhase(interactionHarness, "ready");
-    expect(fetch).toHaveBeenCalledTimes(1);
-    await interactionHarness.dispose();
-
-    vi.mocked(fetch).mockClear();
-    const noAnswerHarness = createHarness();
-    noAnswerHarness.setEvents([
+  it("ends quietly for a turn with no answer", async () => {
+    const harness = createHarness();
+    harness.setEvents([
       ...voiceRows({ answer: null }),
       row(13, "turn/completed", turnScope, { status: "completed" }),
     ]);
-    noAnswerHarness.setOnSend(() => noAnswerHarness.setThreadStatus("idle"));
-    await beginUpload(noAnswerHarness);
-    await waitForPhase(noAnswerHarness, "ready");
-    expect(noAnswerHarness.sends).toHaveLength(1);
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+    await beginUpload(harness);
+    await waitForPhase(harness, "ready");
+    expect(harness.sends).toHaveLength(1);
     expect(fetch).toHaveBeenCalledTimes(1);
-    await noAnswerHarness.dispose();
+    await harness.dispose();
+  });
+
+  it("keeps a pending interaction alive through the clamp and resumes after approval", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    harness.setEvents(voiceRows({ answer: null }));
+    harness.setOnSend(() => {
+      harness.setThreadStatus("active");
+      harness.setInteractions([
+        {
+          status: "pending",
+          turnId: "turn-voice",
+          payload: { kind: "approval" },
+        },
+      ]);
+    });
+
+    const exchangeId = await beginUpload(harness);
+    await waitForPhase(harness, "working");
+    await vi.advanceTimersByTimeAsync(3 * 60_000 + 5_000);
+
+    const paused = await state(harness);
+    expect(paused.exchangeId).toBe(exchangeId);
+    expect(paused.phase).toBe("working");
+
+    harness.setInteractions([]);
+    harness.setThreadStatus("idle");
+    harness.setEvents([
+      ...voiceRows(),
+      row(14, "turn/completed", turnScope, { status: "completed" }),
+    ]);
+    harness.changeThread(
+      ["events-appended", "interactions-changed"],
+      ["item/completed", "turn/completed"],
+    );
+
+    const resumed = await waitForPhase(harness, "speaking");
+    expect(resumed.streamComplete).toBe(true);
+    expect(resumed.chunks).toHaveLength(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await harness.dispose();
+  });
+
+  it("fails a paused interaction when its turn fails", async () => {
+    const harness = createHarness();
+    harness.setEvents(voiceRows({ answer: null }));
+    harness.setOnSend(() => {
+      harness.setThreadStatus("active");
+      harness.setInteractions([
+        {
+          status: "pending",
+          turnId: "turn-voice",
+          payload: { kind: "approval" },
+        },
+      ]);
+    });
+
+    await beginUpload(harness);
+    await waitForPhase(harness, "working");
+    await vi.waitFor(() => expect(harness.interactionListCalls).toBeGreaterThan(1));
+    harness.emit("thread.failed", {
+      thread: { id: owner.threadId },
+      error: "approval turn failed",
+    });
+
+    const failed = await waitForPhase(harness, "failed");
+    expect(failed.error).toBe("approval turn failed");
+    await harness.dispose();
   });
 
   it("releases an unaccepted turn after its terminal signal is consumed", async () => {
@@ -920,7 +971,8 @@ describe("voice backend state machine", () => {
     harness.changeThread(["interactions-changed"]);
     resolveStatus("idle");
 
-    await waitForPhase(harness, "ready");
+    await waitForPhase(harness, "working");
+    expect((await state(harness)).exchangeId).not.toBeNull();
     expect(harness.interactionListCalls).toBe(3);
     await harness.dispose();
   });
@@ -948,27 +1000,6 @@ describe("voice backend state machine", () => {
 
     await waitForPhase(harness, "speaking");
     expect(fetch).toHaveBeenCalledTimes(2);
-    await harness.dispose();
-  });
-
-  it("lets an interaction win an idle race before synthesis starts", async () => {
-    const harness = createHarness();
-    await beginUpload(harness);
-    await waitForPhase(harness, "working");
-    harness.setThreadStatus("idle");
-    harness.setInteractions([
-      {
-        status: "pending",
-        turnId: "turn-voice",
-        payload: { kind: "approval" },
-      },
-    ]);
-
-    harness.emit("thread.idle", { thread: { id: owner.threadId } });
-    harness.changeThread(["interactions-changed"]);
-
-    await waitForPhase(harness, "ready");
-    expect(fetch).toHaveBeenCalledTimes(1);
     await harness.dispose();
   });
 

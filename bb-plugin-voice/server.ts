@@ -70,6 +70,7 @@ interface Exchange {
   eventRows: VoiceEventRow[];
   eventSeqs: Set<number>;
   terminalSignal: TerminalSignal | null;
+  interactionPending: boolean;
   reconcileAgain: boolean;
   reconcilePrepared: boolean;
   streamComplete: boolean;
@@ -910,10 +911,40 @@ export default function voicePlugin(bb: BbPluginApi): void {
       fail(exchangeId, exchange.terminalSignal.error);
       return;
     }
-    if (interactions.some((interaction) => interaction.status === "pending")) {
-      release(exchangeId);
+    const interactionPending = interactions.some(
+      (interaction) => interaction.status === "pending",
+    );
+    if (interactionPending) {
+      if (turnCompleted(exchange.eventRows, exchange.stream.turnId)) {
+        exchange.interactionPending = false;
+        await completeStreaming(exchangeId);
+        return;
+      }
+
+      const thread = await bb.sdk.threads.get({
+        threadId: exchange.threadId,
+        signal: currentController(exchange)?.signal,
+      });
+      if (active?.exchangeId !== exchangeId || exchange.stage !== "resolving") return;
+      const terminalSignal = exchange.terminalSignal as TerminalSignal | null;
+      if (terminalSignal?.kind === "failed") {
+        fail(exchangeId, terminalSignal.error);
+      } else if (thread.status === "error") {
+        fail(exchangeId, "thread turn failed");
+      } else {
+        const retry = exchange.reconcileAgain;
+        if (exchange.terminalSignal?.kind === "idle") {
+          exchange.terminalSignal = null;
+        }
+        exchange.interactionPending = true;
+        exchange.stage = "waiting";
+        exchange.expiresAt = Date.now() + LISTENING_TTL_MS;
+        exchange.reconcileAgain = false;
+        if (retry) requestReconcile(exchangeId);
+      }
       return;
     }
+    exchange.interactionPending = false;
 
     const thread = await bb.sdk.threads.get({
       threadId: exchange.threadId,
@@ -1063,6 +1094,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
         eventRows: [],
         eventSeqs: new Set(),
         terminalSignal: null,
+        interactionPending: false,
         reconcileAgain: false,
         reconcilePrepared: false,
         streamComplete: false,
@@ -1253,6 +1285,9 @@ export default function voicePlugin(bb: BbPluginApi): void {
 
   const expirySweep = setInterval(() => {
     const exchange = active;
+    if (exchange?.interactionPending) {
+      exchange.expiresAt = Date.now() + LISTENING_TTL_MS;
+    }
     const speakingExpired = exchange?.phase === "speaking" && exchange.streamComplete;
     const workingExpired = exchange?.phase === "working";
     if (
