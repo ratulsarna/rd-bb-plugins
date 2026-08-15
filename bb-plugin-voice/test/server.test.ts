@@ -8,7 +8,7 @@ type RpcHandlers = {
   getState(input: Identity): VoiceState;
   reserve(input: Identity): Promise<ReserveResult>;
   ackPlayback(input: PlayedMutation): { ok: boolean };
-  cancel(input: CancelMutation): { ok: boolean };
+  cancel(input: Mutation): { ok: boolean };
   finishPlayback(input: PlayedMutation): { ok: boolean };
 };
 type EventHandler = (payload: Record<string, unknown>) => void;
@@ -26,10 +26,6 @@ interface Mutation extends Identity {
 
 interface PlayedMutation extends Mutation {
   playedThroughIndex: number;
-}
-
-interface CancelMutation extends Mutation {
-  playedThroughIndex?: number;
 }
 
 interface ReserveResult {
@@ -373,6 +369,24 @@ describe("voice backend state machine", () => {
     expect(failed.error).toBe("nothing transcribed");
     expect(harness.sends).toHaveLength(0);
     expect(fetch).toHaveBeenCalledTimes(1);
+    await harness.dispose();
+  });
+
+  it("fails once after draining more than one unmatched event page", async () => {
+    const unmatched = Array.from({ length: 101 }, (_, index) =>
+      row(11 + index, "test/unrelated", threadScope, {}),
+    );
+    const harness = createHarness();
+    harness.setEventLoader((afterSeq) => {
+      const after = Number(afterSeq);
+      return Promise.resolve(unmatched.filter((event) => event.seq > after).slice(0, 100));
+    });
+
+    await beginUpload(harness);
+
+    const failed = await waitForPhase(harness, "failed");
+    expect(failed.error).toBe("sent voice message could not be found");
+    expect(harness.eventListCalls).toEqual(["10", "110"]);
     await harness.dispose();
   });
 
@@ -935,16 +949,18 @@ describe("voice backend state machine", () => {
 
   it("acknowledges exact chunks, keeps their audio fetchable, and rejects stale acks", async () => {
     const harness = createHarness();
+    harness.setEvents(voiceRows({ answer: "One. Two. Three." }));
     harness.setOnSend(() => harness.setThreadStatus("idle"));
     const exchangeId = await beginUpload(harness);
     const speaking = await waitForPhase(harness, "speaking");
+    expect(speaking.chunks).toHaveLength(3);
     const chunk = speaking.chunks[0]!;
 
-    expect(harness.api.ackPlayback({ ...owner, exchangeId, playedThroughIndex: chunk.index })).toEqual({ ok: true });
+    expect(harness.api.ackPlayback({ ...owner, exchangeId, playedThroughIndex: 2 })).toEqual({ ok: true });
     expect((await state(harness)).chunks).toEqual([]);
     expect((await harness.getAudio(chunk.id)).status).toBe(200);
-    expect(harness.api.ackPlayback({ ...owner, exchangeId, playedThroughIndex: chunk.index })).toEqual({ ok: false });
-    expect(harness.api.finishPlayback({ ...owner, exchangeId, playedThroughIndex: chunk.index })).toEqual({ ok: true });
+    expect(harness.api.ackPlayback({ ...owner, exchangeId, playedThroughIndex: 2 })).toEqual({ ok: false });
+    expect(harness.api.finishPlayback({ ...owner, exchangeId, playedThroughIndex: 2 })).toEqual({ ok: true });
     expect((await state(harness)).phase).toBe("ready");
     await harness.dispose();
   });

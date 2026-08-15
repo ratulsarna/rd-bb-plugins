@@ -96,10 +96,6 @@ const playbackMutationSchema = mutationSchema.extend({
   playedThroughIndex: z.number().int().nonnegative(),
 }).strict();
 
-const cancelSchema = mutationSchema.extend({
-  playedThroughIndex: z.number().int().nonnegative().optional(),
-}).strict();
-
 const runtimeRpcContract = defineRpcContract({
   getState: {
     input: identitySchema,
@@ -128,7 +124,7 @@ const runtimeRpcContract = defineRpcContract({
     output: z.object({ ok: z.boolean() }).strict(),
   },
   cancel: {
-    input: cancelSchema,
+    input: mutationSchema,
     output: z.object({ ok: z.boolean() }).strict(),
   },
   finishPlayback: {
@@ -551,7 +547,11 @@ export default function voicePlugin(bb: BbPluginApi): void {
     if (!Number.isInteger(index) || index <= exchange.lastAckIndex) return false;
     const entry = exchange.ledger.get(index);
     if (!entry || entry.state !== "stashed") return false;
-    entry.state = "played";
+    for (const candidate of exchange.ledger.values()) {
+      if (candidate.index <= index && candidate.state === "stashed") {
+        candidate.state = "played";
+      }
+    }
     exchange.lastAckIndex = index;
     exchange.expiresAt = Date.now() + SPEAKING_TTL_MS;
     publishChanged(exchange.threadId);
@@ -634,9 +634,25 @@ export default function voicePlugin(bb: BbPluginApi): void {
       });
       if (page.length === 0) break;
       applyEventPage(exchange, page);
-      const lastSeq = page.at(-1)?.seq ?? before;
+      const lastSeq = page.reduce(
+        (highest, row) => Math.max(highest, row.seq),
+        before,
+      );
+      if (exchange.requestId === null && lastSeq > before) {
+        exchange.stream = {
+          ...exchange.stream,
+          cursorSeq: String(lastSeq),
+        };
+      }
       if (lastSeq <= before) break;
       if (page.length < 100) break;
+    }
+    if (
+      active?.exchangeId === exchangeId &&
+      exchange.requestId === null
+    ) {
+      fail(exchangeId, "sent voice message could not be found");
+      return;
     }
     if (active?.exchangeId === exchangeId && exchange.requestId && exchange.terminalSignal) {
       requestReconcile(exchangeId);
@@ -957,7 +973,6 @@ export default function voicePlugin(bb: BbPluginApi): void {
     },
     cancel(input) {
       if (!owns(input)) return { ok: false };
-      if (input.playedThroughIndex !== undefined) markAck(active!, input.playedThroughIndex);
       return { ok: release(input.exchangeId) };
     },
     finishPlayback(input) {
