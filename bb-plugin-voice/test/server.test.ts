@@ -585,6 +585,7 @@ describe("voice backend state machine", () => {
   });
 
   it("releases an unaccepted turn after its terminal signal is consumed", async () => {
+    vi.useFakeTimers();
     const harness = createHarness();
     harness.setEvents([
       row(11, "client/turn/requested", threadScope, {
@@ -599,7 +600,53 @@ describe("voice backend state machine", () => {
     harness.setThreadStatus("idle");
     harness.emit("thread.idle", { thread: { id: owner.threadId } });
 
+    expect((await state(harness)).phase).toBe("working");
+    await vi.advanceTimersByTimeAsync(3 * 60_000 + 5_000);
     expect((await waitForPhase(harness, "ready")).exchangeId).toBeNull();
+    await harness.dispose();
+  });
+
+  it("keeps an idle read before turn acceptance alive until the answer arrives", async () => {
+    const initialPage = [
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+    ];
+    const answerPage = [
+      row(12, "turn/input/accepted", turnScope, {
+        clientRequestId: "request-voice",
+      }),
+      row(13, "item/completed", turnScope, {
+        item: { type: "agentMessage", id: "answer-1", text: "Voice answer" },
+      }),
+      row(14, "turn/completed", turnScope, { status: "completed" }),
+    ];
+    let answerVisible = false;
+    const harness = createHarness();
+    harness.setEventLoader((afterSeq) => Promise.resolve(
+      afterSeq === "10"
+        ? initialPage
+        : answerVisible
+          ? answerPage
+          : [],
+    ));
+
+    const exchangeId = await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.eventListCalls).toEqual(["10"]));
+
+    harness.setThreadStatus("idle");
+    harness.emit("thread.idle", { thread: { id: owner.threadId } });
+    await vi.waitFor(async () => expect((await state(harness)).phase).toBe("working"));
+    expect((await state(harness)).exchangeId).toBe(exchangeId);
+
+    answerVisible = true;
+    harness.changeThread(["events-appended"], ["turn/input/accepted", "item/completed", "turn/completed"]);
+
+    const speaking = await waitForPhase(harness, "speaking");
+    expect(speaking.chunks).toHaveLength(1);
+    expect(speaking.streamComplete).toBe(true);
     await harness.dispose();
   });
 

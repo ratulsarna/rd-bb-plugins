@@ -219,6 +219,18 @@ function turnStatus(row: VoiceEventRow): string | null {
     : null;
 }
 
+function turnCompleted(
+  rows: readonly VoiceEventRow[],
+  turnId: string | null,
+): boolean {
+  return turnId !== null && rows.some(
+    (row) =>
+      row.type === "turn/completed" &&
+      row.scope.kind === "turn" &&
+      row.scope.turnId === turnId,
+  );
+}
+
 function sentenceFromOffset(
   text: string,
   rawOffset: number,
@@ -727,17 +739,19 @@ export default function voicePlugin(bb: BbPluginApi): void {
 
     const answer = findTurnAnswer(exchange.eventRows, exchange.requestId);
     if (answer === null) {
+      if (!turnCompleted(exchange.eventRows, exchange.stream.turnId)) {
+        exchange.stage = "waiting";
+        exchange.expiresAt = Math.min(
+          exchange.expiresAt,
+          Date.now() + LISTENING_TTL_MS,
+        );
+        return;
+      }
       release(exchangeId);
       return;
     }
     if (!answer?.text || !answer.itemId) {
-      const turnCompleted = answer !== null && exchange.eventRows.some(
-        (row) =>
-          row.type === "turn/completed" &&
-          row.scope.kind === "turn" &&
-          row.scope.turnId === answer.turnId,
-      );
-      if (!turnCompleted) {
+      if (!turnCompleted(exchange.eventRows, answer.turnId)) {
         exchange.stage = "waiting";
         return;
       }
@@ -1130,9 +1144,10 @@ export default function voicePlugin(bb: BbPluginApi): void {
   const expirySweep = setInterval(() => {
     const exchange = active;
     const speakingExpired = exchange?.phase === "speaking" && exchange.streamComplete;
+    const workingExpired = exchange?.phase === "working";
     if (
       exchange &&
-      (exchange.phase === "listening" || speakingExpired) &&
+      (exchange.phase === "listening" || workingExpired || speakingExpired) &&
       exchange.expiresAt <= Date.now()
     ) {
       release(exchange.exchangeId);

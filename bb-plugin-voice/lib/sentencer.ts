@@ -287,8 +287,10 @@ export class SentenceAssembler {
   }
 
   private emitBoundary(boundaryIndex: number, sentences: Sentence[]): void {
-    const sentence = this.makeSentence(this.emitCursor, boundaryIndex + 1);
-    this.emitCursor = boundaryIndex + 1;
+    const end = boundaryIndex + 1;
+    if (end <= this.emitCursor) return;
+    const sentence = this.makeSentence(this.emitCursor, end);
+    this.emitCursor = end;
     if (sentence) sentences.push(sentence);
   }
 
@@ -314,9 +316,10 @@ export class SentenceAssembler {
       return;
     }
     this.clearLinkLabel();
-    this.replayPlainBracketAt = start;
-    this.state = state;
-    this.scanCursor = start;
+    const canReplay = start >= this.emitCursor;
+    this.replayPlainBracketAt = canReplay ? start : null;
+    if (canReplay) this.state = state;
+    this.scanCursor = Math.max(start, this.emitCursor);
     this.pendingBoundaryIndex = null;
   }
 

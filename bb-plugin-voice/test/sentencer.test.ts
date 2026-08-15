@@ -116,6 +116,25 @@ describe("SentenceAssembler", () => {
     ]);
   });
 
+  it("does not replay a link-label span after a paragraph boundary", () => {
+    const assembler = new SentenceAssembler();
+
+    const sentences = [
+      ...assembler.push("Options are [a. b.\n\n"),
+      ...assembler.push("c] done. "),
+    ];
+
+    expect(sentences.map((sentence) => sentence.speakable)).toEqual([
+      "Options are [a. b.",
+      "c] done.",
+    ]);
+    for (let index = 1; index < sentences.length; index += 1) {
+      expect(sentences[index]!.rawStart).toBeGreaterThanOrEqual(
+        sentences[index - 1]!.rawEnd,
+      );
+    }
+  });
+
   it("holds inline code, link destinations, and HTML tag attributes", () => {
     const assembler = new SentenceAssembler();
 
