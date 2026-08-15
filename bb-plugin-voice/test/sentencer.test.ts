@@ -6,7 +6,7 @@ describe("SentenceAssembler", () => {
     const assembler = new SentenceAssembler();
 
     expect(assembler.push("The first sent")).toEqual([]);
-    expect(assembler.push("ence. The second! A third?")).toEqual([
+    expect(assembler.push("ence. The second! A third? ")).toEqual([
       { speakable: "The first sentence.", rawStart: 0, rawEnd: 19 },
       { speakable: "The second!", rawStart: 19, rawEnd: 31 },
       { speakable: "A third?", rawStart: 31, rawEnd: 40 },
@@ -19,7 +19,7 @@ describe("SentenceAssembler", () => {
     expect(assembler.push("Before.\n\n```ts\nconst answer = 1.")).toEqual([
       { speakable: "Before.", rawStart: 0, rawEnd: 7 },
     ]);
-    expect(assembler.push("\n```\nAfter.")).toEqual([
+    expect(assembler.push("\n```\nAfter. ")).toEqual([
       {
         speakable: "code omitted\nAfter.",
         rawStart: 9,
@@ -28,20 +28,44 @@ describe("SentenceAssembler", () => {
     ]);
   });
 
-  it("holds inline code, link destinations, and HTML tag attributes", () => {
+  it("keeps decimals, versions, and domains in the same sentence", () => {
     const assembler = new SentenceAssembler();
 
     expect(
       assembler.push(
-        'Use `x.y` and read [the docs](https://example.test/a.b). <span title="x.">Done.</span>',
-      ),
+        "Pi is 3.14. Version 2.12.1 is valid. Visit example.com for docs. Done. ",
+      ).map((sentence) => sentence.speakable),
     ).toEqual([
+      "Pi is 3.14.",
+      "Version 2.12.1 is valid.",
+      "Visit example.com for docs.",
+      "Done.",
+    ]);
+  });
+
+  it("holds a punctuation boundary at the end of a delta", () => {
+    const assembler = new SentenceAssembler();
+
+    expect(assembler.push("A sentence.")).toEqual([]);
+    expect(assembler.push(" ")).toEqual([
+      { speakable: "A sentence.", rawStart: 0, rawEnd: 11 },
+    ]);
+  });
+
+  it("holds inline code, link destinations, and HTML tag attributes", () => {
+    const assembler = new SentenceAssembler();
+
+    expect(assembler.push(
+      'Use `x.y` and read [the docs](https://example.test/a.b). <span title="x.">Done.</span>',
+    )).toEqual([
       {
         speakable: "Use x.y and read the docs.",
         rawStart: 0,
         rawEnd: 56,
       },
-      { speakable: "Done.", rawStart: 56, rawEnd: 79 },
+    ]);
+    expect(assembler.flushTail()).toEqual([
+      { speakable: "Done.", rawStart: 56, rawEnd: 86 },
     ]);
   });
 

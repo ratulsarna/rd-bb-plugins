@@ -5,11 +5,6 @@ export interface VoiceEventRow {
   data: unknown;
 }
 
-type EventPageLoader = (
-  afterSeq: string,
-  limit: string,
-) => Promise<readonly VoiceEventRow[]>;
-
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object"
     ? (value as Record<string, unknown>)
@@ -81,23 +76,4 @@ export function findTurnAnswer(
     }
   }
   return { turnId: accepted.scope.turnId, itemId, text };
-}
-
-export async function loadEventsAfter(
-  baselineSeq: string,
-  loadPage: EventPageLoader,
-): Promise<VoiceEventRow[]> {
-  const rows: VoiceEventRow[] = [];
-  let afterSeq = baselineSeq;
-
-  while (true) {
-    const page = await loadPage(afterSeq, "100");
-    rows.push(...page);
-    if (page.length < 100) return rows;
-    const lastSeq = page.at(-1)?.seq;
-    if (lastSeq === undefined || lastSeq <= Number(afterSeq)) {
-      throw new Error("thread event pagination did not advance");
-    }
-    afterSeq = String(lastSeq);
-  }
 }

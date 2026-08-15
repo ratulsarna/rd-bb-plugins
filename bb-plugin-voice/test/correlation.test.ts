@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   findTurnAnswer,
   findVoiceRequestId,
-  loadEventsAfter,
   type VoiceEventRow,
 } from "../lib/correlation";
 
@@ -112,28 +111,5 @@ describe("turn correlation", () => {
       itemId: "root",
       text: "  Root answer.  ",
     });
-  });
-
-  it("loads every event page before correlating a long turn", async () => {
-    const events = Array.from({ length: 101 }, (_, index) =>
-      row(index + 1, "item/completed", turnScope("voice-turn"), {
-        item: { type: "commandExecution" },
-      }),
-    );
-    events.push(
-      row(102, "item/completed", turnScope("voice-turn"), {
-        item: { type: "agentMessage", id: "page-two", text: "Answer after page one" },
-      }),
-    );
-    const calls: string[] = [];
-    const loaded = await loadEventsAfter("0", async (afterSeq) => {
-      calls.push(afterSeq);
-      return events
-        .filter((event) => event.seq > Number(afterSeq))
-        .slice(0, 100);
-    });
-
-    expect(calls).toEqual(["0", "100"]);
-    expect(loaded).toHaveLength(102);
   });
 });

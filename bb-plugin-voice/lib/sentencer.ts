@@ -59,6 +59,7 @@ export class SentenceAssembler {
   private raw = "";
   private emitCursor = 0;
   private scanCursor = 0;
+  private pendingBoundaryIndex: number | null = null;
   private state = newMarkdownState();
 
   push(delta: string): Sentence[] {
@@ -69,6 +70,7 @@ export class SentenceAssembler {
 
   flushTail(): Sentence[] {
     const sentences: Sentence[] = [];
+    this.pendingBoundaryIndex = null;
     while (this.emitCursor < this.raw.length) {
       const remaining = this.raw.length - this.emitCursor;
       let end = this.raw.length;
@@ -97,6 +99,7 @@ export class SentenceAssembler {
     clone.raw = this.raw;
     clone.emitCursor = this.emitCursor;
     clone.scanCursor = this.scanCursor;
+    clone.pendingBoundaryIndex = this.pendingBoundaryIndex;
     clone.state = cloneMarkdownState(this.state);
     return clone;
   }
@@ -105,6 +108,19 @@ export class SentenceAssembler {
     const sentences: Sentence[] = [];
 
     while (this.scanCursor < this.raw.length) {
+      if (this.pendingBoundaryIndex !== null) {
+        const next = this.raw[this.pendingBoundaryIndex + 1];
+        if (next === undefined) return sentences;
+        const boundary = /\s/.test(next);
+        this.pendingBoundaryIndex = null;
+        if (boundary) {
+          const sentence = this.makeSentence(this.emitCursor, this.scanCursor);
+          this.emitCursor = this.scanCursor;
+          if (sentence) sentences.push(sentence);
+        }
+        continue;
+      }
+
       const index = this.scanCursor;
 
       if (this.state.fence) {
@@ -235,9 +251,16 @@ export class SentenceAssembler {
       this.consumeCharacter(character);
       this.scanCursor += 1;
       if (character === "." || character === "!" || character === "?") {
-        const sentence = this.makeSentence(this.emitCursor, this.scanCursor);
-        this.emitCursor = this.scanCursor;
-        if (sentence) sentences.push(sentence);
+        const next = this.raw[this.scanCursor];
+        if (next === undefined) {
+          this.pendingBoundaryIndex = index;
+          return sentences;
+        }
+        if (/\s/.test(next)) {
+          const sentence = this.makeSentence(this.emitCursor, this.scanCursor);
+          this.emitCursor = this.scanCursor;
+          if (sentence) sentences.push(sentence);
+        }
       }
     }
 

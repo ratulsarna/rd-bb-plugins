@@ -390,6 +390,52 @@ describe("voice backend state machine", () => {
     await harness.dispose();
   });
 
+  it("keeps the exchange alive when an early pump runs before send resolves", async () => {
+    let releaseSend!: () => void;
+    let sendResolved = false;
+    const sendWindow = new Promise<void>((resolve) => {
+      releaseSend = () => {
+        sendResolved = true;
+        resolve();
+      };
+    });
+    const laterEvents = [
+      row(12, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(13, "turn/input/accepted", turnScope, {
+        clientRequestId: "request-voice",
+      }),
+      row(14, "item/completed", turnScope, {
+        item: { type: "agentMessage", id: "answer-1", text: "Voice answer" },
+      }),
+    ];
+    const harness = createHarness();
+    harness.setEventLoader((afterSeq) => {
+      const after = Number(afterSeq);
+      if (!sendResolved) {
+        return Promise.resolve([row(11, "test/unrelated", threadScope, {})]);
+      }
+      return Promise.resolve(laterEvents.filter((event) => event.seq > after));
+    });
+    harness.setOnSend(() => {
+      harness.changeThread(["status-changed"]);
+      return sendWindow;
+    });
+
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.eventListCalls).toEqual(["10"]));
+    expect((await state(harness)).phase).toBe("working");
+    expect((await state(harness)).error).toBeNull();
+
+    releaseSend();
+    await waitForPhase(harness, "speaking");
+    expect(harness.eventListCalls).toEqual(["10", "11"]);
+    await harness.dispose();
+  });
+
   it("fails before send when transcription errors or times out", async () => {
     const errorHarness = createHarness();
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({}, 503));
@@ -780,7 +826,7 @@ describe("voice backend state machine", () => {
       }),
       row(14, "item/agentMessage/delta", turnScope, {
         itemId: "live-answer",
-        delta: "First sentence. Second sentence.",
+        delta: "First sentence. Second sentence. ",
       }),
     ]);
 
@@ -829,7 +875,7 @@ describe("voice backend state machine", () => {
       }),
       row(14, "item/agentMessage/delta", turnScope, {
         itemId: "answer",
-        delta: "Only once.",
+        delta: "Only once. ",
       }),
     ]);
 
@@ -904,7 +950,7 @@ describe("voice backend state machine", () => {
       }),
       row(14, "item/agentMessage/delta", turnScope, {
         itemId: "first",
-        delta: "Old sentence.",
+        delta: "Old sentence. ",
       }),
     ]);
     await beginUpload(harness);
@@ -922,7 +968,7 @@ describe("voice backend state machine", () => {
       }),
       row(14, "item/agentMessage/delta", turnScope, {
         itemId: "first",
-        delta: "Old sentence.",
+        delta: "Old sentence. ",
       }),
       row(15, "item/started", turnScope, {
         item: { type: "commandExecution", id: "tool-1", command: "pwd" },
@@ -932,7 +978,7 @@ describe("voice backend state machine", () => {
       }),
       row(17, "item/agentMessage/delta", turnScope, {
         itemId: "second",
-        delta: "New sentence.",
+        delta: "New sentence. ",
       }),
     ]);
     harness.changeThread(["events-appended"], ["item/started", "item/agentMessage/delta"]);

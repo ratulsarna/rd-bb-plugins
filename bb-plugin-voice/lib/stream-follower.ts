@@ -6,7 +6,6 @@ export interface StreamState {
   turnId: string | null;
   epoch: number;
   speakingItemId: string | null;
-  suppressed: boolean;
   emittedChars: number;
   /** Internal state carried between pure reducer calls. */
   assembler?: SentenceAssembler;
@@ -59,7 +58,6 @@ export function initialStreamState(
     turnId,
     epoch: 0,
     speakingItemId: null,
-    suppressed: false,
     emittedChars: 0,
     assembler: new SentenceAssembler(),
     requestId,
@@ -103,7 +101,6 @@ export function processEvents(
     next.emittedChars = 0;
     next.assembler = new SentenceAssembler();
     next.speakingItemId = assistant ? itemId : null;
-    next.suppressed = assistant ? false : Boolean(previousAssistant || next.suppressed);
     liveSentences = [];
     invalidatePriorAudio = true;
   };

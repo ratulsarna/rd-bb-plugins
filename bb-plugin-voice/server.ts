@@ -62,6 +62,7 @@ interface Exchange {
   phase: Phase;
   stage: Stage;
   baselineSeq: string | null;
+  sendResolved: boolean;
   requestId: string | null;
   transcript: string | null;
   stream: StreamState;
@@ -619,6 +620,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
     if (!exchange || exchange.exchangeId !== exchangeId || exchange.baselineSeq === null) return;
     const controller = currentController(exchange);
     if (!controller) return;
+    const sendResolvedAtStart = exchange.sendResolved;
 
     while (
       active?.exchangeId === exchangeId &&
@@ -649,6 +651,8 @@ export default function voicePlugin(bb: BbPluginApi): void {
     }
     if (
       active?.exchangeId === exchangeId &&
+      sendResolvedAtStart &&
+      exchange.sendResolved &&
       exchange.requestId === null
     ) {
       fail(exchangeId, "sent voice message could not be found");
@@ -854,6 +858,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
     });
     if (active?.exchangeId !== exchangeId || exchange.stage !== "transcribing") return;
     exchange.baselineSeq = String(timeline.maxSeq);
+    exchange.sendResolved = false;
     exchange.transcript = transcript;
     exchange.stream = initialStreamState(exchange.baselineSeq);
     exchange.eventRows = [];
@@ -865,6 +870,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
       mode: "start",
       input: [{ type: "text", text: transcript, mentions: [] }],
     });
+    exchange.sendResolved = true;
     if (active?.exchangeId !== exchangeId || exchange.stage !== "sending") return;
     wake(exchangeId);
   };
@@ -909,6 +915,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
         phase: "listening",
         stage: null,
         baselineSeq: null,
+        sendResolved: false,
         requestId: null,
         transcript: null,
         stream: initialStreamState(),

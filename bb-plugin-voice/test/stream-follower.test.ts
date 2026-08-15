@@ -26,7 +26,7 @@ describe("stream follower", () => {
       }),
       row(4, "item/agentMessage/delta", turn("voice"), {
         itemId: "root",
-        delta: "Say this.",
+        delta: "Say this. ",
       }),
       row(5, "item/agentMessage/delta", thread, {
         itemId: "unrelated",
@@ -38,7 +38,7 @@ describe("stream follower", () => {
     expect(result.live?.sentences).toEqual([
       { speakable: "Say this.", rawStart: 0, rawEnd: 9 },
     ]);
-    expect(result.state.emittedChars).toBe("Say this.".length);
+    expect(result.state.emittedChars).toBe("Say this. ".length);
   });
 
   it("bumps the epoch for every new root and returns only the final live batch", () => {
@@ -51,7 +51,7 @@ describe("stream follower", () => {
       }),
       row(2, "item/agentMessage/delta", turn("voice"), {
         itemId: "first",
-        delta: "First answer.",
+        delta: "First answer. ",
       }),
       row(3, "item/started", turn("voice"), {
         item: { type: "commandExecution", id: "tool-1", command: "ls" },
@@ -61,13 +61,12 @@ describe("stream follower", () => {
       }),
       row(5, "item/agentMessage/delta", turn("voice"), {
         itemId: "second",
-        delta: "Second answer.",
+        delta: "Second answer. ",
       }),
     ]);
 
     expect(result.state.epoch).toBe(3);
     expect(result.state.speakingItemId).toBe("second");
-    expect(result.state.suppressed).toBe(false);
     expect(result.invalidatePriorAudio).toBe(true);
     expect(result.live).toEqual({
       epoch: 3,
@@ -76,7 +75,7 @@ describe("stream follower", () => {
     });
   });
 
-  it("marks suppression when a non-assistant root takes over", () => {
+  it("stops speaking when a non-assistant root takes over", () => {
     const state = initialStreamState("0", null, "voice");
     const result = processEvents(state, [
       row(1, "item/agentMessage/delta", turn("voice"), {
@@ -89,7 +88,6 @@ describe("stream follower", () => {
     ]);
 
     expect(result.state.speakingItemId).toBeNull();
-    expect(result.state.suppressed).toBe(true);
     expect(result.state.invalidatedItemIds).toEqual(["answer"]);
     expect(result.live).toBeNull();
   });
@@ -98,7 +96,7 @@ describe("stream follower", () => {
     const first = processEvents(initialStreamState("0", null, "voice"), [
       row(1, "item/agentMessage/delta", turn("voice"), {
         itemId: "answer",
-        delta: "One.",
+        delta: "One. ",
       }),
     ]);
     const second = processEvents(first.state, [
@@ -111,7 +109,7 @@ describe("stream follower", () => {
     expect(first.live?.sentences).toHaveLength(1);
     expect(second.live).toBeNull();
     expect(second.state.cursorSeq).toBe("1");
-    expect(second.state.emittedChars).toBe(4);
+    expect(second.state.emittedChars).toBe(5);
   });
 
   it("recognizes turn completion only inside the stored turn", () => {
