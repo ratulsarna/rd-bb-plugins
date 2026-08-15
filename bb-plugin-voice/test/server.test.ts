@@ -1056,6 +1056,53 @@ describe("voice backend state machine", () => {
     await harness.dispose();
   });
 
+  it("drains answer rows after idle before reconciling", async () => {
+    const firstPage = [
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(12, "turn/input/accepted", turnScope, {
+        clientRequestId: "request-voice",
+      }),
+    ];
+    const finalPage = [
+      row(13, "item/completed", turnScope, {
+        item: { type: "agentMessage", id: "final-answer", text: "Final answer." },
+      }),
+      row(14, "turn/completed", turnScope, { status: "completed" }),
+    ];
+    let finalRowsVisible = false;
+    const harness = createHarness();
+    harness.setEventLoader((afterSeq) => Promise.resolve(
+      afterSeq === "10"
+        ? firstPage
+        : finalRowsVisible
+          ? finalPage
+          : [],
+    ));
+
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.eventListCalls).toEqual(["10"]));
+
+    finalRowsVisible = true;
+    harness.setThreadStatus("idle");
+    harness.emit("thread.idle", { thread: { id: owner.threadId } });
+
+    const speaking = await waitForPhase(harness, "speaking");
+    expect(harness.eventListCalls).toEqual(["10", "12"]);
+    expect(speaking.streamComplete).toBe(true);
+    expect(speaking.chunks).toHaveLength(1);
+    expect(harness.api.finishPlayback({
+      ...owner,
+      exchangeId: speaking.exchangeId!,
+      playedThroughIndex: speaking.chunks[0]!.index,
+    })).toEqual({ ok: true });
+    expect((await state(harness)).phase).toBe("ready");
+    await harness.dispose();
+  });
+
   it("aborts stale epoch synthesis and streams the next assistant item", async () => {
     let speechCalls = 0;
     let firstSignal: AbortSignal | undefined;

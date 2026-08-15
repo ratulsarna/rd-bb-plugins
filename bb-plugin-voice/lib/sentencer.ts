@@ -44,6 +44,19 @@ function runLength(text: string, start: number, character: string): number {
   return end - start;
 }
 
+function markerTouchesBufferEnd(
+  text: string,
+  start: number,
+  length: number,
+): boolean {
+  return start + length >= text.length;
+}
+
+function incompleteFenceLine(line: string): boolean {
+  return /^[ \t]{0,3}(?:`{1,2}|~{1,2})$/.test(line) ||
+    /^[ \t]{0,3}(?:`{3,}|~{3,})/.test(line);
+}
+
 function cloneMarkdownState(state: MarkdownState): MarkdownState {
   return {
     ...state,
@@ -169,7 +182,7 @@ function markdownSafeSpaces(text: string): number[] {
           state.linePrefixLength = 0;
           continue;
         }
-      } else if (/^[ \t]{0,3}(`{3,}|~{3,})/.test(text.slice(index))) {
+      } else if (incompleteFenceLine(text.slice(index))) {
         break;
       }
     }
@@ -384,6 +397,10 @@ export class SentenceAssembler {
       if (this.state.inlineCodeLength !== null) {
         if (this.raw[index] === "`") {
           const length = runLength(this.raw, index, "`");
+          if (markerTouchesBufferEnd(this.raw, index, length)) {
+            this.scanCursor = index;
+            return sentences;
+          }
           if (length === this.state.inlineCodeLength) {
             this.scanCursor += length;
             this.state.inlineCodeLength = null;
@@ -445,7 +462,7 @@ export class SentenceAssembler {
             this.state.linePrefixLength = 0;
             continue;
           }
-        } else if (/^[ \t]{0,3}(`{3,}|~{3,})/.test(this.raw.slice(index))) {
+        } else if (incompleteFenceLine(this.raw.slice(index))) {
           // A fence line may be split between deltas. Wait for its newline so
           // punctuation in the fence info cannot be mistaken for prose.
           return sentences;
@@ -454,12 +471,12 @@ export class SentenceAssembler {
 
       const character = this.raw[index]!;
 
-      if (character === "`" && this.raw[index + 1] === undefined) {
-        return sentences;
-      }
-
       if (character === "`") {
         const length = runLength(this.raw, index, "`");
+        if (markerTouchesBufferEnd(this.raw, index, length)) {
+          this.scanCursor = index;
+          return sentences;
+        }
         this.state.inlineCodeLength = length;
         this.scanCursor += length;
         continue;
@@ -492,6 +509,15 @@ export class SentenceAssembler {
           this.scanCursor += 1;
           continue;
         }
+      }
+
+      if (
+        character === "\n" &&
+        (this.raw[index + 1] === undefined ||
+          (this.raw[index + 1] === "\r" && this.raw[index + 2] === undefined))
+      ) {
+        this.scanCursor = index;
+        return sentences;
       }
 
       if (

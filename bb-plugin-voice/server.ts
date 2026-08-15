@@ -1073,13 +1073,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
       return;
     }
     rememberTerminal(exchange, { kind: "idle" });
-    if (exchange.stage === "resolving") {
-      exchange.reconcileAgain = true;
-    } else if (exchange.requestId) {
-      requestReconcile(exchange.exchangeId);
-    } else {
-      wake(exchange.exchangeId);
-    }
+    wake(exchange.exchangeId);
   });
 
   bb.events.on("thread.failed", ({ thread, error }) => {

@@ -6,7 +6,7 @@ export function mdToSpeakable(markdown: string): string {
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/<https?:\/\/[^>]+>/g, "")
-    .replace(/`([^`]+)`/g, "$1")
+    .replace(/(`+)([^`]*?)\1/g, "$2")
     .replace(HTML_TAG, "")
     .replace(/^\s{0,3}#{1,6}\s+/gm, "")
     .replace(/^\s*>\s?/gm, "")

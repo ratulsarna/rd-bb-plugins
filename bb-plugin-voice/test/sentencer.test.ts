@@ -28,6 +28,19 @@ describe("SentenceAssembler", () => {
     ]);
   });
 
+  it("waits when both fence markers straddle delta boundaries", () => {
+    const assembler = new SentenceAssembler();
+
+    expect(assembler.push("Before.\n\n``")).toEqual([
+      { speakable: "Before.", rawStart: 0, rawEnd: 7 },
+    ]);
+    expect(assembler.push("`ts\nconst answer = 1.")).toEqual([]);
+    expect(assembler.push("\n``")).toEqual([]);
+    expect(assembler.push("`\nAfter. ").map((sentence) => sentence.speakable)).toEqual([
+      "code omitted\nAfter.",
+    ]);
+  });
+
   it("keeps decimals, versions, and domains in the same sentence", () => {
     const assembler = new SentenceAssembler();
 
@@ -49,6 +62,25 @@ describe("SentenceAssembler", () => {
     expect(assembler.push("A sentence.")).toEqual([]);
     expect(assembler.push(" ")).toEqual([
       { speakable: "A sentence.", rawStart: 0, rawEnd: 11 },
+    ]);
+  });
+
+  it("waits for a split inline-code closing run", () => {
+    const assembler = new SentenceAssembler();
+
+    expect(assembler.push("Read ``code`")).toEqual([]);
+    expect(assembler.push("` done. ").map((sentence) => sentence.speakable)).toEqual([
+      "Read code done.",
+    ]);
+  });
+
+  it("waits for the second newline when a paragraph marker ends a delta", () => {
+    const assembler = new SentenceAssembler();
+
+    expect(assembler.push("Line one\n")).toEqual([]);
+    expect(assembler.push("\nLine two. ").map((sentence) => sentence.speakable)).toEqual([
+      "Line one",
+      "Line two.",
     ]);
   });
 
