@@ -478,13 +478,36 @@ describe("voice backend state machine", () => {
 
     vi.mocked(fetch).mockClear();
     const noAnswerHarness = createHarness();
-    noAnswerHarness.setEvents(voiceRows({ answer: null }));
+    noAnswerHarness.setEvents([
+      ...voiceRows({ answer: null }),
+      row(13, "turn/completed", turnScope, { status: "completed" }),
+    ]);
     noAnswerHarness.setOnSend(() => noAnswerHarness.setThreadStatus("idle"));
     await beginUpload(noAnswerHarness);
     await waitForPhase(noAnswerHarness, "ready");
     expect(noAnswerHarness.sends).toHaveLength(1);
     expect(fetch).toHaveBeenCalledTimes(1);
     await noAnswerHarness.dispose();
+  });
+
+  it("waits for turn completion before releasing an idle turn with no answer", async () => {
+    const harness = createHarness();
+    harness.setEvents(voiceRows({ answer: null }));
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.sends).toHaveLength(1));
+    await vi.waitFor(async () => expect((await state(harness)).phase).toBe("working"));
+
+    harness.setEvents([
+      ...voiceRows({ answer: null }),
+      row(13, "turn/completed", turnScope, { status: "completed" }),
+    ]);
+    harness.changeThread(["events-appended"], ["turn/completed"]);
+
+    await waitForPhase(harness, "ready");
+    expect(harness.sends).toHaveLength(1);
+    await harness.dispose();
   });
 
   it("fails on thread.failed after request resolution", async () => {
