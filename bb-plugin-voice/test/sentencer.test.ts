@@ -168,20 +168,21 @@ describe("SentenceAssembler", () => {
     ]);
   });
 
-  it("does not hard-split live text, but splits a completed tail at raw word boundaries", () => {
+  it("hard-splits long live text at raw word boundaries", () => {
     const text = "word ".repeat(150).trimEnd();
     const assembler = new SentenceAssembler();
 
-    expect(assembler.push(text)).toEqual([]);
+    const live = assembler.push(text);
     const tail = assembler.flushTail();
+    const sentences = [...live, ...tail];
 
-    expect(tail.length).toBeGreaterThan(1);
-    expect(tail[0]!.rawStart).toBe(0);
-    expect(tail.at(-1)!.rawEnd).toBe(text.length);
-    for (let index = 1; index < tail.length; index += 1) {
-      expect(tail[index]!.rawStart).toBe(tail[index - 1]!.rawEnd);
+    expect(live.length).toBeGreaterThan(0);
+    expect(sentences[0]!.rawStart).toBe(0);
+    expect(sentences.at(-1)!.rawEnd).toBe(text.length);
+    for (let index = 1; index < sentences.length; index += 1) {
+      expect(sentences[index]!.rawStart).toBe(sentences[index - 1]!.rawEnd);
     }
-    expect(tail.every((sentence) => sentence.rawEnd - sentence.rawStart <= 500)).toBe(true);
+    expect(sentences.every((sentence) => sentence.rawEnd - sentence.rawStart <= 500)).toBe(true);
   });
 
   it("keeps a fenced block whole when hard-splitting a long tail", () => {
@@ -190,8 +191,7 @@ describe("SentenceAssembler", () => {
       "```ts\n" + code + "```\nClosing words";
     const assembler = new SentenceAssembler();
 
-    expect(assembler.push(text)).toEqual([]);
-    const tail = assembler.flushTail();
+    const tail = [...assembler.push(text), ...assembler.flushTail()];
 
     expect(tail.length).toBeGreaterThan(1);
     expect(tail.every((sentence) => !sentence.speakable.includes("const answer"))).toBe(true);
@@ -199,6 +199,24 @@ describe("SentenceAssembler", () => {
     expect(tail.every(
       (sentence) => (sentence.speakable.match(/code omitted/g) ?? []).length <= 1,
     )).toBe(true);
+  });
+
+  it("keeps a punctuation-free live stream under the chunk cap", () => {
+    const text = "word ".repeat(1_800).trimEnd();
+    const assembler = new SentenceAssembler();
+
+    const live = assembler.push(text);
+    const sentences = [...live, ...assembler.flushTail()];
+
+    expect(live.length).toBeGreaterThan(1);
+    expect(sentences.at(-1)!.rawEnd).toBe(text.length);
+    for (let index = 0; index < sentences.length; index += 1) {
+      const sentence = sentences[index]!;
+      expect(sentence.rawEnd - sentence.rawStart).toBeLessThanOrEqual(500);
+      if (index > 0) {
+        expect(sentence.rawStart).toBe(sentences[index - 1]!.rawEnd);
+      }
+    }
   });
 
   it("flushes a punctuation-free tail once the message completes", () => {

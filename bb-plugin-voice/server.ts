@@ -75,6 +75,8 @@ interface Exchange {
   reconcilePrepared: boolean;
   streamComplete: boolean;
   ledger: Map<number, ChunkLedgerEntry>;
+  /** Coverage retained when invalidated ledger entries are discarded. */
+  coveredOffsets: Map<string, number>;
   queuedIndexes: number[];
   nextChunkIndex: number;
   ttsJob: TtsJob | null;
@@ -84,6 +86,7 @@ interface Exchange {
   expiresAt: number;
   pumpRunning: boolean;
   pumpAgain: boolean;
+  expiryCheckRunning: boolean;
 }
 
 const identitySchema = z.object({
@@ -258,11 +261,14 @@ function sentenceFromOffset(
 function coveredThrough(
   ledger: Iterable<ChunkLedgerEntry>,
   itemId: string,
-  epoch: number,
+  epoch: number | null,
 ): number {
   let covered = 0;
   for (const entry of ledger) {
-    if (entry.itemId === itemId && entry.epoch === epoch) {
+    if (
+      entry.itemId === itemId &&
+      (epoch === null || entry.epoch === epoch)
+    ) {
       covered = Math.max(covered, entry.span.rawEnd);
     }
   }
@@ -551,6 +557,10 @@ export default function voicePlugin(bb: BbPluginApi): void {
     const liveItemId = exchange.stream.speakingItemId;
     for (const [index, entry] of exchange.ledger) {
       if (entry.state === "played") continue;
+      exchange.coveredOffsets.set(
+        entry.itemId,
+        Math.max(exchange.coveredOffsets.get(entry.itemId) ?? 0, entry.span.rawEnd),
+      );
       if (entry.state === "stashed") exchange.audioBytes -= entry.audio?.byteLength ?? 0;
       exchange.ledger.delete(index);
     }
@@ -706,13 +716,24 @@ export default function voicePlugin(bb: BbPluginApi): void {
     ) {
       exchange.expiresAt = Date.now() + LISTENING_TTL_MS;
     }
+    const resumeOffset = result.invalidatePriorAudio && result.live
+      ? Math.max(
+          coveredThrough(exchange.ledger.values(), result.live.itemId, null),
+          exchange.coveredOffsets.get(result.live.itemId) ?? 0,
+          result.state.epochStartOffset ?? 0,
+        )
+      : 0;
     if (result.invalidatePriorAudio) invalidatePriorAudio(exchange);
     if (result.live) {
       enqueueSentences(
         exchange,
         result.live.itemId,
         result.live.epoch,
-        result.live.sentences,
+        result.live.sentences.map((sentence) => ({
+          ...sentence,
+          rawStart: sentence.rawStart + resumeOffset,
+          rawEnd: sentence.rawEnd + resumeOffset,
+        })),
       );
     }
     for (const row of fresh) {
@@ -1099,6 +1120,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
         reconcilePrepared: false,
         streamComplete: false,
         ledger: new Map(),
+        coveredOffsets: new Map(),
         queuedIndexes: [],
         nextChunkIndex: 0,
         ttsJob: null,
@@ -1108,6 +1130,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
         expiresAt: Date.now() + LISTENING_TTL_MS,
         pumpRunning: false,
         pumpAgain: false,
+        expiryCheckRunning: false,
       };
       publishChanged(input.threadId);
       return { ok: true, exchangeId };
@@ -1283,16 +1306,58 @@ export default function voicePlugin(bb: BbPluginApi): void {
     },
   });
 
+  const confirmWorkingExchangeAlive = async (exchangeId: string): Promise<void> => {
+    const exchange = active;
+    if (
+      !exchange ||
+      exchange.exchangeId !== exchangeId ||
+      exchange.phase !== "working" ||
+      exchange.expiresAt > Date.now() ||
+      exchange.expiryCheckRunning
+    ) return;
+    exchange.expiryCheckRunning = true;
+    try {
+      const thread = await bb.sdk.threads.get({
+        threadId: exchange.threadId,
+        signal: currentController(exchange)?.signal,
+      });
+      const current = active;
+      if (
+        !current ||
+        current.exchangeId !== exchangeId ||
+        current.phase !== "working" ||
+        current.expiresAt > Date.now()
+      ) return;
+      if (thread.status === "active") {
+        current.expiresAt = Date.now() + LISTENING_TTL_MS;
+      } else {
+        release(exchangeId);
+      }
+    } catch {
+      const current = active;
+      if (current?.exchangeId === exchangeId && current.phase === "working") {
+        current.expiresAt = Date.now() + LISTENING_TTL_MS;
+      }
+    } finally {
+      if (active?.exchangeId === exchangeId) {
+        active.expiryCheckRunning = false;
+      }
+    }
+  };
+
   const expirySweep = setInterval(() => {
     const exchange = active;
     if (exchange?.interactionPending) {
       exchange.expiresAt = Date.now() + LISTENING_TTL_MS;
     }
     const speakingExpired = exchange?.phase === "speaking" && exchange.streamComplete;
-    const workingExpired = exchange?.phase === "working";
+    if (exchange?.phase === "working" && exchange.expiresAt <= Date.now()) {
+      void confirmWorkingExchangeAlive(exchange.exchangeId);
+      return;
+    }
     if (
       exchange &&
-      (exchange.phase === "listening" || workingExpired || speakingExpired) &&
+      (exchange.phase === "listening" || speakingExpired) &&
       exchange.expiresAt <= Date.now()
     ) {
       release(exchange.exchangeId);

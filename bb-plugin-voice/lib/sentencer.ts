@@ -221,6 +221,18 @@ function markdownSafeSpaces(text: string): number[] {
   return spaces;
 }
 
+function safeSplitEnd(
+  text: string,
+  start: number,
+  maxLength: number,
+): number | null {
+  const hardEnd = start + maxLength;
+  const safeSpaces = markdownSafeSpaces(text);
+  return safeSpaces
+    .filter((space) => space > start && space <= hardEnd)
+    .at(-1) ?? safeSpaces.find((space) => space > hardEnd) ?? null;
+}
+
 /**
  * Turns a raw agent-message stream into one speakable sentence per chunk.
  * The raw buffer is intentional: Markdown is not reversible after stripping,
@@ -246,18 +258,16 @@ export class SentenceAssembler {
 
   flushTail(): Sentence[] {
     const sentences: Sentence[] = [];
-    const safeSpaces = markdownSafeSpaces(this.raw);
     this.pendingBoundaryIndex = null;
     while (this.emitCursor < this.raw.length) {
       const remaining = this.raw.length - this.emitCursor;
       let end = this.raw.length;
       if (remaining > TAIL_SPLIT_LENGTH) {
-        const hardEnd = this.emitCursor + TAIL_SPLIT_LENGTH;
-        const previousSpace = safeSpaces
-          .filter((space) => space > this.emitCursor && space <= hardEnd)
-          .at(-1);
-        const nextSpace = safeSpaces.find((space) => space > hardEnd);
-        end = previousSpace ?? nextSpace ?? this.raw.length;
+        end = safeSplitEnd(
+          this.raw,
+          this.emitCursor,
+          TAIL_SPLIT_LENGTH,
+        ) ?? this.raw.length;
       }
 
       const sentence = this.makeSentence(this.emitCursor, end);
@@ -555,6 +565,18 @@ export class SentenceAssembler {
           this.handleBoundary(index, sentences);
         }
       }
+    }
+
+    while (this.raw.length - this.emitCursor > TAIL_SPLIT_LENGTH) {
+      const end = safeSplitEnd(
+        this.raw,
+        this.emitCursor,
+        TAIL_SPLIT_LENGTH,
+      );
+      if (end === null || end <= this.emitCursor) break;
+      const sentence = this.makeSentence(this.emitCursor, end);
+      this.emitCursor = end;
+      if (sentence) sentences.push(sentence);
     }
 
     return sentences;

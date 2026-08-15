@@ -75,6 +75,34 @@ describe("stream follower", () => {
     });
   });
 
+  it("re-adopts a known assistant item after a tool root", () => {
+    const initial = processEvents(initialStreamState("0", null, "voice"), [
+      row(1, "item/agentMessage/delta", turn("voice"), {
+        itemId: "answer",
+        delta: "First sentence. ",
+      }),
+    ]);
+    const resumed = processEvents(initial.state, [
+      row(2, "item/started", turn("voice"), {
+        item: { type: "commandExecution", id: "tool-1", command: "test" },
+      }),
+      row(3, "item/agentMessage/delta", turn("voice"), {
+        itemId: "answer",
+        delta: "Second sentence. ",
+      }),
+    ]);
+
+    expect(resumed.state.speakingItemId).toBe("answer");
+    expect(resumed.state.epoch).toBe(initial.state.epoch + 2);
+    expect(resumed.state.epochStartOffset).toBe("First sentence. ".length);
+    expect(resumed.state.emittedChars).toBe("First sentence. Second sentence. ".length);
+    expect(resumed.state.invalidatedItemIds).toEqual([]);
+    expect(resumed.live?.sentences).toEqual([
+      { speakable: "Second sentence.", rawStart: 0, rawEnd: 16 },
+    ]);
+    expect(resumed.invalidatePriorAudio).toBe(true);
+  });
+
   it("stops speaking when a non-assistant root takes over", () => {
     const state = initialStreamState("0", null, "voice");
     const result = processEvents(state, [

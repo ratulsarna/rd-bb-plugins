@@ -873,6 +873,27 @@ describe("voice backend state machine", () => {
     await harness.dispose();
   });
 
+  it("keeps a quiet active turn alive after the clamp", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    harness.setEvents(voiceRows({ answer: null }));
+    harness.setOnSend(() => harness.setThreadStatus("active"));
+
+    const exchangeId = await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.threadGetCalls).toBeGreaterThanOrEqual(2));
+
+    harness.setThreadStatus("idle");
+    harness.emit("thread.idle", { thread: { id: owner.threadId } });
+    await vi.waitFor(() => expect(harness.threadGetCalls).toBeGreaterThanOrEqual(3));
+    harness.setThreadStatus("active");
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 5_000);
+
+    expect((await state(harness)).exchangeId).toBe(exchangeId);
+    expect((await state(harness)).phase).toBe("working");
+    await harness.dispose();
+  });
+
   it("fails on thread.failed after request resolution", async () => {
     const harness = createHarness();
     await beginUpload(harness);
@@ -1242,6 +1263,53 @@ describe("voice backend state machine", () => {
     await harness.dispose();
   });
 
+  it("hard-splits a long live sentence without losing its reconcile tail", async () => {
+    const text = "word ".repeat(1_800).trimEnd();
+    const initialRows = [
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(12, "turn/input/accepted", turnScope, {
+        clientRequestId: "request-voice",
+      }),
+      row(13, "item/started", turnScope, {
+        item: { type: "agentMessage", id: "long-answer", text: "" },
+      }),
+      row(14, "item/agentMessage/delta", turnScope, {
+        itemId: "long-answer",
+        delta: text,
+      }),
+    ];
+    const harness = createHarness();
+    harness.setEvents(initialRows);
+
+    const speechInputs = () => vi.mocked(fetch).mock.calls
+      .filter(([input]) => String(input).endsWith("/v1/audio/speech"))
+      .map(([, init]) => JSON.parse(String(init?.body)).input as string);
+
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(speechInputs().length).toBeGreaterThan(1));
+    expect(speechInputs().every((input) => input.length <= 500)).toBe(true);
+
+    harness.setThreadStatus("idle");
+    harness.setEvents([
+      ...initialRows,
+      row(15, "item/completed", turnScope, {
+        item: { type: "agentMessage", id: "long-answer", text },
+      }),
+      row(16, "turn/completed", turnScope, { status: "completed" }),
+    ]);
+    harness.changeThread(["events-appended"], ["item/completed", "turn/completed"]);
+
+    await vi.waitFor(async () => expect((await state(harness)).streamComplete).toBe(true));
+    const inputs = speechInputs();
+    expect(inputs.every((input) => input.length <= 500)).toBe(true);
+    expect(inputs.join(" ")).toBe(text);
+    await harness.dispose();
+  });
+
   it("keeps duplicate event pings and overlapping reads from duplicating TTS", async () => {
     let resolveEvents!: (rows: VoiceEventRow[]) => void;
     const pending = new Promise<VoiceEventRow[]>((resolve) => {
@@ -1432,6 +1500,75 @@ describe("voice backend state machine", () => {
     });
     expect(firstSignal?.aborted).toBe(true);
     expect(speechCalls).toBe(2);
+    await harness.dispose();
+  });
+
+  it("resumes the same assistant item after a tool event fetched separately", async () => {
+    const initialRows: VoiceEventRow[] = [
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(12, "turn/input/accepted", turnScope, { clientRequestId: "request-voice" }),
+      row(13, "item/started", turnScope, {
+        item: { type: "agentMessage", id: "answer", text: "" },
+      }),
+      row(14, "item/agentMessage/delta", turnScope, {
+        itemId: "answer",
+        delta: "First sentence. ",
+      }),
+    ];
+    const withTool = [
+      ...initialRows,
+      row(15, "item/started", turnScope, {
+        item: { type: "commandExecution", id: "tool-1", command: "test" },
+      }),
+    ];
+    const withResume = [
+      ...withTool,
+      row(16, "item/agentMessage/delta", turnScope, {
+        itemId: "answer",
+        delta: "Second sentence. ",
+      }),
+    ];
+    const complete = [
+      ...withResume,
+      row(17, "item/completed", turnScope, {
+        item: {
+          type: "agentMessage",
+          id: "answer",
+          text: "First sentence. Second sentence.",
+        },
+      }),
+      row(18, "turn/completed", turnScope, { status: "completed" }),
+    ];
+    const harness = createHarness();
+    harness.setEvents(initialRows);
+    const speechInputs = () => vi.mocked(fetch).mock.calls
+      .filter(([input]) => String(input).endsWith("/v1/audio/speech"))
+      .map(([, init]) => JSON.parse(String(init?.body)).input as string);
+
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(speechInputs()).toEqual(["First sentence."]));
+
+    harness.setEvents(withTool);
+    harness.changeThread(["events-appended"], ["item/started"]);
+    await vi.waitFor(() => expect(harness.eventListCalls).toContain("14"));
+
+    harness.setEvents(withResume);
+    harness.changeThread(["events-appended"], ["item/agentMessage/delta"]);
+    await vi.waitFor(() => expect(speechInputs()).toEqual([
+      "First sentence.",
+      "Second sentence.",
+    ]));
+
+    harness.setEvents(complete);
+    harness.setThreadStatus("idle");
+    harness.changeThread(["events-appended"], ["item/completed", "turn/completed"]);
+    await waitForPhase(harness, "speaking");
+    await vi.waitFor(async () => expect((await state(harness)).streamComplete).toBe(true));
+    expect(speechInputs()).toEqual(["First sentence.", "Second sentence."]);
     await harness.dispose();
   });
 

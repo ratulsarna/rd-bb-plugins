@@ -7,12 +7,16 @@ export interface StreamState {
   epoch: number;
   speakingItemId: string | null;
   emittedChars: number;
+  /** Raw offset at which the current assembler starts in its root item. */
+  epochStartOffset?: number;
   /** Internal state carried between pure reducer calls. */
   assembler?: SentenceAssembler;
   /** Set once the request row has been correlated. */
   requestId?: string | null;
   /** Internal root-item de-duplication. */
   rootItemIds?: readonly string[];
+  /** Raw characters already observed for each root item across epochs. */
+  itemEmittedChars?: Readonly<Record<string, number>>;
   /** Assistant items whose unplayed audio was invalidated by a later root. */
   invalidatedItemIds?: readonly string[];
 }
@@ -59,9 +63,11 @@ export function initialStreamState(
     epoch: 0,
     speakingItemId: null,
     emittedChars: 0,
+    epochStartOffset: 0,
     assembler: new SentenceAssembler(),
     requestId,
     rootItemIds: [],
+    itemEmittedChars: {},
     invalidatedItemIds: [],
   };
 }
@@ -81,6 +87,7 @@ export function processEvents(
     assembler: state.assembler?.clone() ?? new SentenceAssembler(),
     requestId,
     rootItemIds: [...(state.rootItemIds ?? [])],
+    itemEmittedChars: { ...(state.itemEmittedChars ?? {}) },
     invalidatedItemIds: [...(state.invalidatedItemIds ?? [])],
   };
   const ordered = [...rows].sort((left, right) => left.seq - right.seq);
@@ -90,17 +97,30 @@ export function processEvents(
   let turnCompleted = false;
 
   const bumpRoot = (itemId: string, assistant: boolean): void => {
-    if (next.rootItemIds!.includes(itemId)) return;
+    if (
+      next.rootItemIds!.includes(itemId) &&
+      next.speakingItemId === itemId
+    ) return;
 
     const previousAssistant = next.speakingItemId;
     if (previousAssistant && !next.invalidatedItemIds!.includes(previousAssistant)) {
       next.invalidatedItemIds = [...next.invalidatedItemIds!, previousAssistant];
     }
-    next.rootItemIds = [...next.rootItemIds!, itemId];
+    if (!next.rootItemIds!.includes(itemId)) {
+      next.rootItemIds = [...next.rootItemIds!, itemId];
+    }
     next.epoch += 1;
-    next.emittedChars = 0;
+    next.epochStartOffset = assistant
+      ? next.itemEmittedChars?.[itemId] ?? 0
+      : 0;
+    next.emittedChars = next.epochStartOffset;
     next.assembler = new SentenceAssembler();
     next.speakingItemId = assistant ? itemId : null;
+    if (assistant) {
+      next.invalidatedItemIds = next.invalidatedItemIds!.filter(
+        (invalidatedItemId) => invalidatedItemId !== itemId,
+      );
+    }
     liveSentences = [];
     invalidatePriorAudio = true;
   };
@@ -111,6 +131,10 @@ export function processEvents(
     next.assembler = assembler;
     liveSentences.push(...assembler.push(text));
     next.emittedChars += text.length;
+    next.itemEmittedChars = {
+      ...next.itemEmittedChars,
+      [itemId]: next.emittedChars,
+    };
   };
 
   for (const row of ordered) {
@@ -149,7 +173,9 @@ export function processEvents(
     const assistant = item.type === "agentMessage";
     const itemId = item.id;
     const wasKnown = next.rootItemIds!.includes(itemId);
-    if (!wasKnown) bumpRoot(itemId, assistant);
+    if (!wasKnown || (assistant && next.speakingItemId !== itemId)) {
+      bumpRoot(itemId, assistant);
+    }
 
     if (
       row.type === "item/completed" &&
