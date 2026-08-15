@@ -56,14 +56,33 @@ class FakeAudioBufferSource {
 }
 
 class FakeAudioContext {
-  state: "running" | "suspended" | "closed";
+  private stateValue: "running" | "suspended" | "closed";
   currentTime = 0;
   readonly destination = {} as AudioNode;
   readonly sources: FakeAudioBufferSource[] = [];
+  private readonly stateListeners = new Set<() => void>();
+
+  get state(): "running" | "suspended" | "closed" {
+    return this.stateValue;
+  }
+
+  set state(next: "running" | "suspended" | "closed") {
+    if (this.stateValue === next) return;
+    this.stateValue = next;
+    for (const listener of this.stateListeners) listener();
+  }
 
   constructor() {
-    this.state = fakes.audioContextState;
+    this.stateValue = fakes.audioContextState;
     fakes.audioContexts.push(this);
+  }
+
+  addEventListener(type: string, listener: () => void): void {
+    if (type === "statechange") this.stateListeners.add(listener);
+  }
+
+  removeEventListener(type: string, listener: () => void): void {
+    if (type === "statechange") this.stateListeners.delete(listener);
   }
 
   resume(): Promise<void> {

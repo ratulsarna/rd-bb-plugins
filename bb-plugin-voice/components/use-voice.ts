@@ -64,6 +64,7 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
   const exchangeIdRef = useRef<string | null>(null);
   const recorderRef = useRef<RecorderHandle | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const removeAudioContextListenerRef = useRef<(() => void) | null>(null);
   const queueRef = useRef<PlaybackQueue | null>(null);
   const queueExchangeIdRef = useRef<string | null>(null);
   const settlingExchangeIdRef = useRef<string | null>(null);
@@ -84,6 +85,11 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
     setStage(next);
   }, []);
 
+  const syncPlaybackState = useCallback((context: AudioContext) => {
+    if (!mountedRef.current) return;
+    setPlayback(context.state === "suspended" ? "blocked" : "idle");
+  }, []);
+
   const ensureAudioContext = useCallback((): AudioContext => {
     if (audioContextRef.current) return audioContextRef.current;
     if (typeof AudioContext === "undefined") {
@@ -91,13 +97,13 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
     }
     const context = new AudioContext();
     audioContextRef.current = context;
+    const onStateChange = () => syncPlaybackState(context);
+    context.addEventListener("statechange", onStateChange);
+    removeAudioContextListenerRef.current = () => {
+      context.removeEventListener("statechange", onStateChange);
+    };
     return context;
-  }, []);
-
-  const syncPlaybackState = useCallback((context: AudioContext) => {
-    if (!mountedRef.current) return;
-    setPlayback(context.state === "suspended" ? "blocked" : "idle");
-  }, []);
+  }, [syncPlaybackState]);
 
   const createQueue = useCallback(
     (context: AudioContext) =>
@@ -144,16 +150,18 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
       if (settlingExchangeIdRef.current) settlingExchangeIdRef.current = null;
 
       exchangeIdRef.current = next.exchangeId;
+      const context = ensureAudioContext();
       let queue = queueRef.current;
       if (!queue || queueExchangeIdRef.current !== next.exchangeId) {
         queue?.stop();
-        queue = createQueue(ensureAudioContext());
+        queue = createQueue(context);
         queueRef.current = queue;
         queueExchangeIdRef.current = next.exchangeId;
       }
       queue.applySnapshot(next.chunks, next.streamComplete);
+      syncPlaybackState(context);
     },
-    [createQueue, ensureAudioContext],
+    [createQueue, ensureAudioContext, syncPlaybackState],
   );
 
   const refresh = useCallback(async (): Promise<VoiceState | null> => {
@@ -462,6 +470,9 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
     queue?.stop();
     queueRef.current = null;
     queueExchangeIdRef.current = null;
+    const removeAudioContextListener = removeAudioContextListenerRef.current;
+    removeAudioContextListenerRef.current = null;
+    removeAudioContextListener?.();
     const context = audioContextRef.current;
     audioContextRef.current = null;
     if (context && context.state !== "closed") {

@@ -278,6 +278,56 @@ describe("voice header control", () => {
     expect(fakes.audioContexts[0]!.state).toBe("running");
   });
 
+  it("shows Play when a running context suspends during playback", async () => {
+    const backend = createBackend();
+    renderControl();
+
+    fireEvent.click(await micButton());
+    await stopRecordingButton();
+    fakes.onUpload = () => {
+      backend.current = owned({ phase: "working" });
+    };
+    fireEvent.click(await stopRecordingButton());
+    await waitFor(() => expect(fakes.uploads).toHaveLength(1));
+
+    await publish(
+      backend,
+      owned({
+        phase: "speaking",
+        chunks: [{ id: "aud_1", index: 0 }],
+        streamComplete: true,
+      }),
+    );
+    const context = fakes.audioContexts[0]!;
+    await waitFor(() => expect(context.sources).toHaveLength(1));
+    expect(context.state).toBe("running");
+    const source = context.sources[0]!;
+    expect(source.onended).not.toBeNull();
+
+    await act(async () => {
+      context.state = "suspended";
+    });
+    expect(
+      await screen.findByRole("button", { name: "Play the spoken answer" }),
+    ).toBeTruthy();
+    expect(source.onended).not.toBeNull();
+
+    fakes.resumeChangesState = true;
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Play the spoken answer" }),
+    );
+    await waitFor(() => expect(context.state).toBe("running"));
+    expect(await screen.findByText("Speaking")).toBeTruthy();
+    expect(context.sources[0]).toBe(source);
+
+    await act(async () => endAudio());
+    await waitFor(() =>
+      expect(rpcCalls.some((call) => call.method === "finishPlayback")).toBe(
+        true,
+      ),
+    );
+  });
+
   it("keeps the Play fallback after a suspended-context interruption", async () => {
     const backend = createBackend();
     fakes.audioContextState = "suspended";
