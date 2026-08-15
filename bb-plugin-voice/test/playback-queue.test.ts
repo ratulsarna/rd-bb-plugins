@@ -69,10 +69,15 @@ class FakeSourceNode {
 }
 
 class FakeAudioContext {
+  readonly state: "running" | "suspended";
   currentTime = 0;
   readonly destination = {} as AudioNode;
   readonly sources: FakeSourceNode[] = [];
   readonly decodes: Array<Deferred<AudioBuffer>> = [];
+
+  constructor(state: "running" | "suspended" = "running") {
+    this.state = state;
+  }
 
   createBufferSource(): AudioBufferSourceNode {
     const source = new FakeSourceNode(new FakeGainNode());
@@ -99,8 +104,8 @@ function chunk(id: string, index: number): PlaybackChunk {
   return { id, index };
 }
 
-function setup() {
-  const context = new FakeAudioContext();
+function setup(contextState: "running" | "suspended" = "running") {
+  const context = new FakeAudioContext(contextState);
   const fetches = new Map<string, Deferred<ArrayBuffer>>();
   const fetchCalls: Array<{ id: string; signal: AbortSignal }> = [];
   const events = {
@@ -108,6 +113,8 @@ function setup() {
     finished: 0,
     interrupted: 0,
     errors: [] as Error[],
+    blockedSurface:
+      context.state === "suspended" ? ("blocked" as const) : ("idle" as const),
   };
   const queue = new PlaybackQueue(context as unknown as AudioContext, {
     fetchChunk: (id, signal) => {
@@ -122,6 +129,8 @@ function setup() {
     },
     onInterrupted: () => {
       events.interrupted += 1;
+      events.blockedSurface =
+        context.state === "suspended" ? "blocked" : "idle";
     },
     onError: (error) => events.errors.push(error),
   });
@@ -139,6 +148,192 @@ function resolveFetch(
 ): void {
   fetches.get(id)?.resolve(new ArrayBuffer(1));
 }
+
+type TransitionChunk = "old" | "new" | "tail";
+
+const transitionIndexes: Record<TransitionChunk, number> = {
+  old: 0,
+  new: 1,
+  tail: 2,
+};
+
+function transitionChunks(ids: readonly TransitionChunk[]): PlaybackChunk[] {
+  return ids.map((id) => chunk(id, transitionIndexes[id]));
+}
+
+// Each row is one complete transition: change × stream completion × context.
+// `next` uses two replacement chunks for active streams so the startup policy
+// is exercised instead of making the matrix depend on its timeout.
+const transitionMatrix = [
+  {
+    change: "removed",
+    streamComplete: false,
+    context: "running",
+    next: ["new", "tail"],
+    expected: {
+      starts: [0, 0, 1],
+      stopped: true,
+      interrupted: 1,
+      finished: 0,
+      blockedSurface: "idle",
+      played: [1, 2],
+    },
+  },
+  {
+    change: "removed",
+    streamComplete: true,
+    context: "running",
+    next: ["new"],
+    expected: {
+      starts: [0, 0],
+      stopped: true,
+      interrupted: 1,
+      finished: 1,
+      blockedSurface: "idle",
+      played: [1],
+    },
+  },
+  {
+    change: "unchanged",
+    streamComplete: false,
+    context: "running",
+    next: ["old"],
+    expected: {
+      starts: [0],
+      stopped: false,
+      interrupted: 0,
+      finished: 0,
+      blockedSurface: "idle",
+      played: [0],
+    },
+  },
+  {
+    change: "unchanged",
+    streamComplete: true,
+    context: "running",
+    next: ["old"],
+    expected: {
+      starts: [0],
+      stopped: false,
+      interrupted: 0,
+      finished: 1,
+      blockedSurface: "idle",
+      played: [0],
+    },
+  },
+  {
+    change: "added",
+    streamComplete: false,
+    context: "running",
+    next: ["old", "new", "tail"],
+    expected: {
+      starts: [0, 1, 2],
+      stopped: false,
+      interrupted: 0,
+      finished: 0,
+      blockedSurface: "idle",
+      played: [0, 1, 2],
+    },
+  },
+  {
+    change: "added",
+    streamComplete: true,
+    context: "running",
+    next: ["old", "new"],
+    expected: {
+      starts: [0, 1],
+      stopped: false,
+      interrupted: 0,
+      finished: 1,
+      blockedSurface: "idle",
+      played: [0, 1],
+    },
+  },
+  {
+    change: "removed",
+    streamComplete: false,
+    context: "suspended",
+    next: ["new", "tail"],
+    expected: {
+      starts: [0, 0, 1],
+      stopped: true,
+      interrupted: 1,
+      finished: 0,
+      blockedSurface: "blocked",
+      played: [1, 2],
+    },
+  },
+  {
+    change: "removed",
+    streamComplete: true,
+    context: "suspended",
+    next: ["new"],
+    expected: {
+      starts: [0, 0],
+      stopped: true,
+      interrupted: 1,
+      finished: 1,
+      blockedSurface: "blocked",
+      played: [1],
+    },
+  },
+  {
+    change: "unchanged",
+    streamComplete: false,
+    context: "suspended",
+    next: ["old"],
+    expected: {
+      starts: [0],
+      stopped: false,
+      interrupted: 0,
+      finished: 0,
+      blockedSurface: "blocked",
+      played: [0],
+    },
+  },
+  {
+    change: "unchanged",
+    streamComplete: true,
+    context: "suspended",
+    next: ["old"],
+    expected: {
+      starts: [0],
+      stopped: false,
+      interrupted: 0,
+      finished: 1,
+      blockedSurface: "blocked",
+      played: [0],
+    },
+  },
+  {
+    change: "added",
+    streamComplete: false,
+    context: "suspended",
+    next: ["old", "new", "tail"],
+    expected: {
+      starts: [0, 1, 2],
+      stopped: false,
+      interrupted: 0,
+      finished: 0,
+      blockedSurface: "blocked",
+      played: [0, 1, 2],
+    },
+  },
+  {
+    change: "added",
+    streamComplete: true,
+    context: "suspended",
+    next: ["old", "new"],
+    expected: {
+      starts: [0, 1],
+      stopped: false,
+      interrupted: 0,
+      finished: 1,
+      blockedSurface: "blocked",
+      played: [0, 1],
+    },
+  },
+] as const;
 
 describe("PlaybackQueue", () => {
   afterEach(() => vi.useRealTimers());
@@ -341,6 +536,62 @@ describe("PlaybackQueue", () => {
     expect(events.interrupted).toBe(1);
     expect(events.errors).toHaveLength(0);
   });
+
+  it("interrupts a missing chunk when completion and replacement are coalesced", async () => {
+    const { context, fetches, events, queue } = setup();
+    queue.applySnapshot([chunk("old", 0)], false);
+    fetches.get("old")!.reject(
+      Object.assign(new Error("audio not found"), { status: 404 }),
+    );
+    await settle();
+
+    queue.applySnapshot([chunk("new", 1)], true);
+
+    expect(events.interrupted).toBe(1);
+    expect(events.errors).toHaveLength(0);
+    expect(fetches.has("new")).toBe(true);
+    resolveFetch(fetches, "new");
+    await settle();
+    context.decodes[0]!.resolve(context.buffer(1));
+    await settle();
+    expect(context.sources).toHaveLength(1);
+  });
+
+  it.each(transitionMatrix)(
+    "$change / complete=$streamComplete / context=$context",
+    async ({ context: contextState, next, expected, streamComplete }) => {
+      const { context, fetches, events, queue } = setup(contextState);
+
+      queue.applySnapshot([chunk("old", 0)], true);
+      resolveFetch(fetches, "old");
+      await settle();
+      context.decodes[0]!.resolve(context.buffer(1));
+      await settle();
+
+      const decodeStart = context.decodes.length;
+      queue.applySnapshot(transitionChunks(next), streamComplete);
+      for (const id of next) {
+        if (id !== "old") resolveFetch(fetches, id);
+      }
+      await settle();
+      for (const decode of context.decodes.slice(decodeStart)) {
+        decode.resolve(context.buffer(1));
+      }
+      await settle();
+
+      expect(context.sources.map((source) => source.startAt)).toEqual(
+        expected.starts,
+      );
+      expect(context.sources[0]!.stopAt !== null).toBe(expected.stopped);
+      expect(events.interrupted).toBe(expected.interrupted);
+      expect(events.errors).toHaveLength(0);
+      expect(events.blockedSurface).toBe(expected.blockedSurface);
+
+      for (const source of context.sources) source.finish();
+      expect(events.played).toEqual(expected.played);
+      expect(events.finished).toBe(expected.finished);
+    },
+  );
 
   it("schedules while playing without overlap and starts after a drained queue at now", async () => {
     const { context, fetches, queue } = setup();

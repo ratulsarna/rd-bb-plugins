@@ -278,6 +278,58 @@ describe("voice header control", () => {
     expect(fakes.audioContexts[0]!.state).toBe("running");
   });
 
+  it("keeps the Play fallback after a suspended-context interruption", async () => {
+    const backend = createBackend();
+    fakes.audioContextState = "suspended";
+    fakes.resumeChangesState = false;
+    renderControl();
+
+    fireEvent.click(await micButton());
+    await stopRecordingButton();
+    fakes.onUpload = () => {
+      backend.current = owned({ phase: "working" });
+    };
+    fireEvent.click(await stopRecordingButton());
+    await waitFor(() => expect(fakes.uploads).toHaveLength(1));
+
+    await publish(
+      backend,
+      owned({
+        phase: "speaking",
+        chunks: [{ id: "old", index: 0 }],
+        streamComplete: true,
+      }),
+    );
+    await waitFor(() => expect(fakes.audioDownloads).toEqual(["old"]));
+    expect(
+      await screen.findByRole("button", { name: "Play the spoken answer" }),
+    ).toBeTruthy();
+
+    await publish(
+      backend,
+      owned({
+        phase: "speaking",
+        chunks: [{ id: "new", index: 1 }],
+        streamComplete: true,
+      }),
+    );
+    await waitFor(() => expect(fakes.audioDownloads).toEqual(["old", "new"]));
+    expect(fakes.audioContexts[0]!.state).toBe("suspended");
+    expect(fakes.audioContexts[0]!.sources[0]!.stopAt).not.toBeNull();
+    expect(
+      await screen.findByRole("button", { name: "Play the spoken answer" }),
+    ).toBeTruthy();
+    expect(rpcCalls.some((call) => call.method === "cancel")).toBe(false);
+    expect(toasts).toHaveLength(0);
+
+    fakes.resumeChangesState = true;
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Play the spoken answer" }),
+    );
+    expect(await screen.findByText("Speaking")).toBeTruthy();
+    expect(fakes.audioContexts[0]!.state).toBe("running");
+  });
+
   it("does not cancel when a missing chunk is superseded by the next snapshot", async () => {
     const backend = createBackend();
     fakes.audioDownloadStatus = 404;

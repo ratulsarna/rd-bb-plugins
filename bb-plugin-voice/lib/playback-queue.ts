@@ -142,6 +142,9 @@ export class PlaybackQueue {
       if (!next.has(chunk.id)) next.set(chunk.id, chunk);
     }
 
+    const removedMissingChunk = [...this.missingChunkIds].some(
+      (id) => !next.has(id),
+    );
     if (streamComplete) {
       this.missingChunkIds.clear();
     } else {
@@ -150,10 +153,11 @@ export class PlaybackQueue {
       }
     }
 
-    const removedPrePlayed = [...this.lifecycle.values()].some(
-      (entry) => entry.state !== "played" && !next.has(entry.id),
-    ) || [...this.missingChunkIds].some((id) => !next.has(id));
-    if (removedPrePlayed && !streamComplete) {
+    const removedPrePlayed =
+      [...this.lifecycle.values()].some(
+        (entry) => entry.state !== "played" && !next.has(entry.id),
+      ) || removedMissingChunk;
+    if (removedPrePlayed) {
       this.interrupt();
     } else {
       for (const [id, entry] of this.lifecycle) {

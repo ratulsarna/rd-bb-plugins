@@ -94,7 +94,7 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
     return context;
   }, []);
 
-  const updatePlaybackAfterResume = useCallback((context: AudioContext) => {
+  const syncPlaybackState = useCallback((context: AudioContext) => {
     if (!mountedRef.current) return;
     setPlayback(context.state === "suspended" ? "blocked" : "idle");
   }, []);
@@ -205,17 +205,17 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
   const primeAudio = useCallback(() => {
     try {
       const context = ensureAudioContext();
-      updatePlaybackAfterResume(context);
+      syncPlaybackState(context);
       void context
         .resume()
-        .then(() => updatePlaybackAfterResume(context))
+        .then(() => syncPlaybackState(context))
         .catch(() => {
           if (mountedRef.current) setPlayback("blocked");
         });
     } catch {
       if (mountedRef.current) setPlayback("blocked");
     }
-  }, [ensureAudioContext, updatePlaybackAfterResume]);
+  }, [ensureAudioContext, syncPlaybackState]);
 
   const submit = useCallback(
     async (exchangeId: string, recording: Recording | null) => {
@@ -350,17 +350,17 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
   const play = useCallback(() => {
     const context = audioContextRef.current;
     if (!context) return;
-    updatePlaybackAfterResume(context);
+    syncPlaybackState(context);
     void context
       .resume()
-      .then(() => updatePlaybackAfterResume(context))
+      .then(() => syncPlaybackState(context))
       .catch((error: unknown) => {
         if (mountedRef.current) setPlayback("blocked");
         toast.error("Could not play the answer", {
           description: messageOf(error),
         });
       });
-  }, [updatePlaybackAfterResume]);
+  }, [syncPlaybackState]);
 
   const dismiss = useCallback(() => {
     const exchangeId = state?.exchangeId;
@@ -396,7 +396,8 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
       void finishPlayback(exchangeId, playedThroughIndex);
     },
     onInterrupted: () => {
-      if (mountedRef.current) setPlayback("idle");
+      const context = audioContextRef.current;
+      if (context) syncPlaybackState(context);
     },
     onError: (error) => {
       const exchangeId = exchangeIdRef.current;
