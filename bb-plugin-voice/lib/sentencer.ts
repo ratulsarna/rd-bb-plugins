@@ -50,6 +50,163 @@ function cloneMarkdownState(state: MarkdownState): MarkdownState {
   };
 }
 
+function consumeMarkdownCharacter(
+  state: MarkdownState,
+  character: string,
+): void {
+  if (character === "\n") {
+    state.lineStart = true;
+    state.linePrefixLength = 0;
+    return;
+  }
+  if (
+    state.lineStart &&
+    (character === " " || character === "\t") &&
+    state.linePrefixLength < 3
+  ) {
+    state.linePrefixLength += 1;
+    return;
+  }
+  state.lineStart = false;
+  state.linePrefixLength = 0;
+}
+
+function markdownSafeSpaces(text: string): number[] {
+  const spaces: number[] = [];
+  const state = newMarkdownState();
+  let linkLabelDepth = 0;
+  let index = 0;
+
+  while (index < text.length) {
+    if (state.fence) {
+      if (state.lineStart) {
+        const lineEnd = text.indexOf("\n", index);
+        if (lineEnd < 0) break;
+        const closing = isFenceLine(text.slice(index, lineEnd));
+        if (
+          closing &&
+          closing.marker === state.fence.marker &&
+          closing.length >= state.fence.length
+        ) {
+          index = lineEnd + 1;
+          state.fence = null;
+          state.lineStart = true;
+          state.linePrefixLength = 0;
+          continue;
+        }
+      }
+      consumeMarkdownCharacter(state, text[index]!);
+      index += 1;
+      continue;
+    }
+
+    if (state.inlineCodeLength !== null) {
+      if (text[index] === "`") {
+        const length = runLength(text, index, "`");
+        if (length === state.inlineCodeLength) state.inlineCodeLength = null;
+        index += length;
+        continue;
+      }
+      consumeMarkdownCharacter(state, text[index]!);
+      index += 1;
+      continue;
+    }
+
+    if (state.linkDestinationDepth > 0) {
+      const character = text[index]!;
+      if (character === "\\") {
+        index += Math.min(2, text.length - index);
+        continue;
+      }
+      if (character === "(") state.linkDestinationDepth += 1;
+      if (character === ")") state.linkDestinationDepth -= 1;
+      index += 1;
+      continue;
+    }
+
+    if (linkLabelDepth > 0) {
+      const character = text[index]!;
+      if (character === "\\") {
+        consumeMarkdownCharacter(state, character);
+        index += 1;
+        if (index < text.length) {
+          consumeMarkdownCharacter(state, text[index]!);
+          index += 1;
+        }
+        continue;
+      }
+      if (character === "[") linkLabelDepth += 1;
+      if (character === "]") {
+        if (linkLabelDepth === 1 && text[index + 1] === "(") {
+          linkLabelDepth = 0;
+          state.linkDestinationDepth = 1;
+          consumeMarkdownCharacter(state, character);
+          index += 2;
+          continue;
+        }
+        linkLabelDepth -= 1;
+      }
+      consumeMarkdownCharacter(state, character);
+      index += 1;
+      continue;
+    }
+
+    if (state.htmlTag) {
+      if (text[index] === ">") state.htmlTag = false;
+      index += 1;
+      continue;
+    }
+
+    if (state.lineStart) {
+      const lineEnd = text.indexOf("\n", index);
+      if (lineEnd >= 0) {
+        const opening = isFenceLine(text.slice(index, lineEnd));
+        if (opening) {
+          state.fence = opening;
+          index = lineEnd + 1;
+          state.lineStart = true;
+          state.linePrefixLength = 0;
+          continue;
+        }
+      } else if (/^[ \t]{0,3}(`{3,}|~{3,})/.test(text.slice(index))) {
+        break;
+      }
+    }
+
+    const character = text[index]!;
+    if (character === "`") {
+      state.inlineCodeLength = runLength(text, index, "`");
+      index += state.inlineCodeLength;
+      continue;
+    }
+    if (character === "[") {
+      linkLabelDepth = 1;
+      consumeMarkdownCharacter(state, character);
+      index += 1;
+      continue;
+    }
+    if (character === "]" && text[index + 1] === "(") {
+      state.linkDestinationDepth = 1;
+      index += 2;
+      continue;
+    }
+    if (character === "<") {
+      const next = text[index + 1];
+      if (next === "/" || (next !== undefined && /[A-Za-z!]/.test(next))) {
+        state.htmlTag = true;
+        index += 1;
+        continue;
+      }
+    }
+
+    if (character === " ") spaces.push(index);
+    consumeMarkdownCharacter(state, character);
+    index += 1;
+  }
+
+  return spaces;
+}
+
 /**
  * Turns a raw agent-message stream into one speakable sentence per chunk.
  * The raw buffer is intentional: Markdown is not reversible after stripping,
@@ -70,19 +227,18 @@ export class SentenceAssembler {
 
   flushTail(): Sentence[] {
     const sentences: Sentence[] = [];
+    const safeSpaces = markdownSafeSpaces(this.raw);
     this.pendingBoundaryIndex = null;
     while (this.emitCursor < this.raw.length) {
       const remaining = this.raw.length - this.emitCursor;
       let end = this.raw.length;
       if (remaining > TAIL_SPLIT_LENGTH) {
         const hardEnd = this.emitCursor + TAIL_SPLIT_LENGTH;
-        const whitespace = this.raw.lastIndexOf(" ", hardEnd);
-        if (whitespace > this.emitCursor) {
-          end = whitespace;
-        } else {
-          const nextWhitespace = this.raw.indexOf(" ", hardEnd);
-          end = nextWhitespace > this.emitCursor ? nextWhitespace : hardEnd;
-        }
+        const previousSpace = safeSpaces
+          .filter((space) => space > this.emitCursor && space <= hardEnd)
+          .at(-1);
+        const nextSpace = safeSpaces.find((space) => space > hardEnd);
+        end = previousSpace ?? nextSpace ?? this.raw.length;
       }
 
       const sentence = this.makeSentence(this.emitCursor, end);
@@ -268,21 +424,7 @@ export class SentenceAssembler {
   }
 
   private consumeCharacter(character: string): void {
-    if (character === "\n") {
-      this.state.lineStart = true;
-      this.state.linePrefixLength = 0;
-      return;
-    }
-    if (
-      this.state.lineStart &&
-      (character === " " || character === "\t") &&
-      this.state.linePrefixLength < 3
-    ) {
-      this.state.linePrefixLength += 1;
-      return;
-    }
-    this.state.lineStart = false;
-    this.state.linePrefixLength = 0;
+    consumeMarkdownCharacter(this.state, character);
   }
 
   private makeSentence(rawStart: number, rawEnd: number): Sentence | null {

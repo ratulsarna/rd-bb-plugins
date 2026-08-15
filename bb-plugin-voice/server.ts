@@ -290,10 +290,12 @@ export default function voicePlugin(bb: BbPluginApi): void {
 
   const updatePhase = (exchange: Exchange): void => {
     if (exchange.phase === "listening" || exchange.phase === "failed") return;
-    const hasUnplayedAudio = [...exchange.ledger.values()].some(
-      (entry) => entry.state === "stashed",
+    const hasStartedCurrentEpoch = [...exchange.ledger.values()].some(
+      (entry) =>
+        entry.epoch === exchange.stream.epoch &&
+        (entry.state === "stashed" || entry.state === "played"),
     );
-    exchange.phase = hasUnplayedAudio || exchange.streamComplete
+    exchange.phase = hasStartedCurrentEpoch || exchange.streamComplete
       ? "speaking"
       : "working";
   };
@@ -474,7 +476,6 @@ export default function voicePlugin(bb: BbPluginApi): void {
           entry.audio = audio;
           entry.state = "stashed";
           exchange.audioBytes += audio.byteLength;
-          exchange.expiresAt = Date.now() + SPEAKING_TTL_MS;
           publishChanged(exchange.threadId);
         } catch (error) {
           const stale =
@@ -556,7 +557,9 @@ export default function voicePlugin(bb: BbPluginApi): void {
       }
     }
     exchange.lastAckIndex = index;
-    exchange.expiresAt = Date.now() + SPEAKING_TTL_MS;
+    if (exchange.streamComplete) {
+      exchange.expiresAt = Date.now() + SPEAKING_TTL_MS;
+    }
     publishChanged(exchange.threadId);
     return true;
   };
@@ -1128,9 +1131,10 @@ export default function voicePlugin(bb: BbPluginApi): void {
 
   const expirySweep = setInterval(() => {
     const exchange = active;
+    const speakingExpired = exchange?.phase === "speaking" && exchange.streamComplete;
     if (
       exchange &&
-      (exchange.phase === "listening" || exchange.phase === "speaking") &&
+      (exchange.phase === "listening" || speakingExpired) &&
       exchange.expiresAt <= Date.now()
     ) {
       release(exchange.exchangeId);

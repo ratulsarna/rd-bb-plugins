@@ -841,6 +841,69 @@ describe("voice backend state machine", () => {
     await speakingHarness.dispose();
   });
 
+  it("does not expire live speaking audio until the turn completes", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    harness.setEvents([
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(12, "turn/input/accepted", turnScope, {
+        clientRequestId: "request-voice",
+      }),
+      row(13, "item/started", turnScope, {
+        item: { type: "agentMessage", id: "live-answer", text: "" },
+      }),
+      row(14, "item/agentMessage/delta", turnScope, {
+        itemId: "live-answer",
+        delta: "First sentence. ",
+      }),
+      row(15, "item/completed", turnScope, {
+        item: { type: "agentMessage", id: "live-answer", text: "First sentence." },
+      }),
+    ]);
+    await beginUpload(harness);
+    const speaking = await waitForPhase(harness, "speaking");
+    const audioId = speaking.chunks[0]?.id;
+    if (!audioId) throw new Error("speaking state has no chunk id");
+
+    await vi.advanceTimersByTimeAsync(15 * 60_000 + 5_000);
+    expect((await state(harness)).phase).toBe("speaking");
+    expect((await harness.getAudio(audioId)).status).toBe(200);
+
+    harness.setEvents([
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(12, "turn/input/accepted", turnScope, {
+        clientRequestId: "request-voice",
+      }),
+      row(13, "item/started", turnScope, {
+        item: { type: "agentMessage", id: "live-answer", text: "" },
+      }),
+      row(14, "item/agentMessage/delta", turnScope, {
+        itemId: "live-answer",
+        delta: "First sentence. ",
+      }),
+      row(15, "item/completed", turnScope, {
+        item: { type: "agentMessage", id: "live-answer", text: "First sentence." },
+      }),
+      row(16, "turn/completed", turnScope, { status: "completed" }),
+    ]);
+    harness.setThreadStatus("idle");
+    harness.changeThread(["events-appended"], ["turn/completed"]);
+    await vi.waitFor(async () => expect((await state(harness)).streamComplete).toBe(true));
+
+    await vi.advanceTimersByTimeAsync(15 * 60_000 + 5_000);
+    expect((await state(harness)).phase).toBe("ready");
+    expect((await harness.getAudio(audioId)).status).toBe(404);
+    await harness.dispose();
+  });
+
   it("finishPlayback releases the slot and invalidates the chunk id", async () => {
     const harness = createHarness();
     harness.setOnSend(() => harness.setThreadStatus("idle"));
@@ -892,6 +955,13 @@ describe("voice backend state machine", () => {
     for (const chunk of speaking.chunks) {
       expect((await harness.getAudio(chunk.id)).status).toBe(200);
     }
+    expect(harness.api.ackPlayback({
+      ...owner,
+      exchangeId,
+      playedThroughIndex: speaking.chunks[0]!.index,
+    })).toEqual({ ok: true });
+    expect((await state(harness)).phase).toBe("speaking");
+    expect((await state(harness)).streamComplete).toBe(false);
     expect(exchangeId).toBeTruthy();
     await harness.dispose();
   });

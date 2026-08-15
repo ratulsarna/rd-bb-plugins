@@ -85,6 +85,23 @@ describe("SentenceAssembler", () => {
     expect(tail.every((sentence) => sentence.rawEnd - sentence.rawStart <= 500)).toBe(true);
   });
 
+  it("keeps a fenced block whole when hard-splitting a long tail", () => {
+    const code = "const answer = 42;\n".repeat(40);
+    const text = `${"Opening words ".repeat(45)}\n` +
+      "```ts\n" + code + "```\nClosing words";
+    const assembler = new SentenceAssembler();
+
+    expect(assembler.push(text)).toEqual([]);
+    const tail = assembler.flushTail();
+
+    expect(tail.length).toBeGreaterThan(1);
+    expect(tail.every((sentence) => !sentence.speakable.includes("const answer"))).toBe(true);
+    expect(tail.filter((sentence) => sentence.speakable.includes("code omitted"))).toHaveLength(1);
+    expect(tail.every(
+      (sentence) => (sentence.speakable.match(/code omitted/g) ?? []).length <= 1,
+    )).toBe(true);
+  });
+
   it("flushes a punctuation-free tail once the message completes", () => {
     const assembler = new SentenceAssembler();
 
