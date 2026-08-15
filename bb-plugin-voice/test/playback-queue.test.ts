@@ -107,6 +107,7 @@ function chunk(id: string, index: number): PlaybackChunk {
 function setup(contextState: "running" | "suspended" = "running") {
   const context = new FakeAudioContext(contextState);
   const fetches = new Map<string, Deferred<ArrayBuffer>>();
+  const fetchAttempts = new Map<string, Deferred<ArrayBuffer>[]>();
   const fetchCalls: Array<{ id: string; signal: AbortSignal }> = [];
   const events = {
     played: [] as number[],
@@ -120,6 +121,9 @@ function setup(contextState: "running" | "suspended" = "running") {
     fetchChunk: (id, signal) => {
       const pending = deferred<ArrayBuffer>();
       fetches.set(id, pending);
+      const attempts = fetchAttempts.get(id) ?? [];
+      attempts.push(pending);
+      fetchAttempts.set(id, attempts);
       fetchCalls.push({ id, signal });
       return pending.promise;
     },
@@ -134,7 +138,7 @@ function setup(contextState: "running" | "suspended" = "running") {
     },
     onError: (error) => events.errors.push(error),
   });
-  return { context, fetches, fetchCalls, events, queue };
+  return { context, fetches, fetchAttempts, fetchCalls, events, queue };
 }
 
 async function settle(): Promise<void> {
@@ -147,6 +151,23 @@ function resolveFetch(
   id: string,
 ): void {
   fetches.get(id)?.resolve(new ArrayBuffer(1));
+}
+
+function rejectFetchAttempt(
+  fetchAttempts: Map<string, Deferred<ArrayBuffer>[]>,
+  id: string,
+  attempt: number,
+  error: unknown,
+): void {
+  fetchAttempts.get(id)?.[attempt]?.reject(error);
+}
+
+function resolveFetchAttempt(
+  fetchAttempts: Map<string, Deferred<ArrayBuffer>[]>,
+  id: string,
+  attempt: number,
+): void {
+  fetchAttempts.get(id)?.[attempt]?.resolve(new ArrayBuffer(1));
 }
 
 type TransitionChunk = "old" | "new" | "tail";
@@ -483,29 +504,92 @@ describe("PlaybackQueue", () => {
   });
 
   it("latches a current-epoch fetch failure and tears down once", async () => {
-    const { context, fetches, events, queue } = setup();
+    const { context, fetches, fetchAttempts, events, queue } = setup();
     queue.applySnapshot([chunk("a", 0), chunk("b", 1)], true);
-    fetches.get("a")!.reject(new Error("fetch failed"));
+    rejectFetchAttempt(fetchAttempts, "a", 0, new Error("first failure"));
     await settle();
 
-    expect(events.errors).toHaveLength(1);
-    expect(events.errors[0]!.message).toBe("fetch failed");
-    expect(fetches.get("b")!.promise).toBeDefined();
-    fetches.get("b")!.reject(new Error("second failure"));
+    expect(events.errors).toHaveLength(0);
+    expect(fetchAttempts.get("a")).toHaveLength(2);
+    rejectFetchAttempt(fetchAttempts, "a", 1, new Error("second failure"));
     await settle();
     expect(events.errors).toHaveLength(1);
+    expect(events.errors[0]!.message).toBe("second failure");
     expect(context.sources).toHaveLength(0);
   });
 
   it("latches a current-epoch decode failure and tears down once", async () => {
-    const { context, fetches, events, queue } = setup();
+    const { context, fetches, fetchAttempts, events, queue } = setup();
     queue.applySnapshot([chunk("a", 0)], true);
     resolveFetch(fetches, "a");
     await settle();
     context.decodes[0]!.reject(new Error("decode failed"));
     await settle();
+    resolveFetchAttempt(fetchAttempts, "a", 1);
+    await settle();
+    context.decodes[1]!.reject(new Error("decode failed twice"));
+    await settle();
 
-    expect(events.errors.map((error) => error.message)).toEqual(["decode failed"]);
+    expect(events.errors.map((error) => error.message)).toEqual([
+      "decode failed twice",
+    ]);
+    expect(context.sources).toHaveLength(0);
+  });
+
+  it("retries a transient fetch failure and plays normally", async () => {
+    const { context, fetchAttempts, events, queue } = setup();
+    queue.applySnapshot([chunk("a", 0)], true);
+    rejectFetchAttempt(fetchAttempts, "a", 0, new Error("temporary failure"));
+    await settle();
+
+    expect(events.errors).toHaveLength(0);
+    expect(fetchAttempts.get("a")).toHaveLength(2);
+    resolveFetchAttempt(fetchAttempts, "a", 1);
+    await settle();
+    context.decodes[0]!.resolve(context.buffer(0.5));
+    await settle();
+
+    expect(context.sources).toHaveLength(1);
+    expect(events.errors).toHaveLength(0);
+    context.sources[0]!.finish();
+    expect(events.played).toEqual([0]);
+    expect(events.finished).toBe(1);
+  });
+
+  it("retries a transient decode failure and plays normally", async () => {
+    const { context, fetchAttempts, events, queue } = setup();
+    queue.applySnapshot([chunk("a", 0)], true);
+    resolveFetchAttempt(fetchAttempts, "a", 0);
+    await settle();
+
+    context.decodes[0]!.reject(new Error("temporary decode failure"));
+    await settle();
+    expect(fetchAttempts.get("a")).toHaveLength(2);
+    resolveFetchAttempt(fetchAttempts, "a", 1);
+    await settle();
+    context.decodes[1]!.resolve(context.buffer(0.5));
+    await settle();
+
+    expect(context.sources).toHaveLength(1);
+    expect(events.errors).toHaveLength(0);
+    context.sources[0]!.finish();
+    expect(events.played).toEqual([0]);
+    expect(events.finished).toBe(1);
+  });
+
+  it("discards a retry that resolves after interruption", async () => {
+    const { context, fetchAttempts, events, queue } = setup();
+    queue.applySnapshot([chunk("old", 0)], true);
+    rejectFetchAttempt(fetchAttempts, "old", 0, new Error("temporary failure"));
+    await settle();
+    expect(fetchAttempts.get("old")).toHaveLength(2);
+
+    queue.applySnapshot([], false);
+    resolveFetchAttempt(fetchAttempts, "old", 1);
+    await settle();
+
+    expect(events.interrupted).toBe(1);
+    expect(events.errors).toHaveLength(0);
     expect(context.sources).toHaveLength(0);
   });
 

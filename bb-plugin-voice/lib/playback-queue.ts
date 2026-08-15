@@ -219,26 +219,38 @@ export class PlaybackQueue {
   }
 
   private async fetchAndDecode(entry: QueueEntry): Promise<void> {
-    try {
-      const bytes = await this.io.fetchChunk(entry.id, entry.controller!.signal);
-      if (!this.isCurrent(entry)) return;
+    let retried = false;
+    while (true) {
+      try {
+        if (!entry.controller) entry.controller = new AbortController();
+        const bytes = await this.io.fetchChunk(entry.id, entry.controller.signal);
+        if (!this.isCurrent(entry)) return;
 
-      entry.state = "decoding";
-      const buffer = await this.context.decodeAudioData(bytes);
-      if (!this.isCurrent(entry)) return;
+        entry.state = "decoding";
+        const buffer = await this.context.decodeAudioData(bytes);
+        if (!this.isCurrent(entry)) return;
 
-      entry.buffer = buffer;
-      entry.controller = null;
-      entry.state = "buffered";
-      this.maybeSchedule();
-    } catch (error) {
-      if (!this.isCurrent(entry)) return;
-      if (isNotFoundError(error)) {
-        this.dropEntry(entry);
-        this.missingChunkIds.add(entry.id);
+        entry.buffer = buffer;
+        entry.controller = null;
+        entry.state = "buffered";
+        this.maybeSchedule();
         return;
+      } catch (error) {
+        if (!this.isCurrent(entry)) return;
+        if (isNotFoundError(error)) {
+          this.dropEntry(entry);
+          this.missingChunkIds.add(entry.id);
+          return;
+        }
+        if (retried) {
+          this.fail(error);
+          return;
+        }
+
+        retried = true;
+        entry.controller = null;
+        entry.state = "fetching";
       }
-      this.fail(error);
     }
   }
 
