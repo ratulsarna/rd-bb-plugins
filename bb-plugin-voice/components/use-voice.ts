@@ -94,6 +94,11 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
     return context;
   }, []);
 
+  const updatePlaybackAfterResume = useCallback((context: AudioContext) => {
+    if (!mountedRef.current) return;
+    setPlayback(context.state === "suspended" ? "blocked" : "idle");
+  }, []);
+
   const createQueue = useCallback(
     (context: AudioContext) =>
       new PlaybackQueue(context, {
@@ -200,18 +205,17 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
   const primeAudio = useCallback(() => {
     try {
       const context = ensureAudioContext();
+      updatePlaybackAfterResume(context);
       void context
         .resume()
-        .then(() => {
-          if (mountedRef.current) setPlayback("idle");
-        })
+        .then(() => updatePlaybackAfterResume(context))
         .catch(() => {
           if (mountedRef.current) setPlayback("blocked");
         });
     } catch {
       if (mountedRef.current) setPlayback("blocked");
     }
-  }, [ensureAudioContext]);
+  }, [ensureAudioContext, updatePlaybackAfterResume]);
 
   const submit = useCallback(
     async (exchangeId: string, recording: Recording | null) => {
@@ -346,17 +350,17 @@ export function useVoice(threadId: string, isCompact: boolean): VoiceControlApi 
   const play = useCallback(() => {
     const context = audioContextRef.current;
     if (!context) return;
+    updatePlaybackAfterResume(context);
     void context
       .resume()
-      .then(() => {
-        if (mountedRef.current) setPlayback("idle");
-      })
+      .then(() => updatePlaybackAfterResume(context))
       .catch((error: unknown) => {
+        if (mountedRef.current) setPlayback("blocked");
         toast.error("Could not play the answer", {
           description: messageOf(error),
         });
       });
-  }, []);
+  }, [updatePlaybackAfterResume]);
 
   const dismiss = useCallback(() => {
     const exchangeId = state?.exchangeId;

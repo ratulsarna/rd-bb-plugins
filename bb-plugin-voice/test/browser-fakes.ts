@@ -56,19 +56,24 @@ class FakeAudioBufferSource {
 }
 
 class FakeAudioContext {
-  state: "running" | "closed" = "running";
+  state: "running" | "suspended" | "closed";
   currentTime = 0;
   readonly destination = {} as AudioNode;
   readonly sources: FakeAudioBufferSource[] = [];
 
   constructor() {
+    this.state = fakes.audioContextState;
     fakes.audioContexts.push(this);
   }
 
   resume(): Promise<void> {
-    return fakes.resumeResult === "resolve"
-      ? Promise.resolve()
-      : Promise.reject(new DOMException("blocked", "NotAllowedError"));
+    if (fakes.resumeResult !== "resolve") {
+      return Promise.reject(new DOMException("blocked", "NotAllowedError"));
+    }
+    if (fakes.resumeChangesState && this.state === "suspended") {
+      this.state = "running";
+    }
+    return Promise.resolve();
   }
 
   close(): Promise<void> {
@@ -94,11 +99,14 @@ class FakeAudioContext {
 export const fakes = {
   uploads: [] as UploadRecord[],
   audioDownloads: [] as string[],
+  audioDownloadStatus: 200,
   tracksStopped: 0,
   recorders: [] as FakeMediaRecorder[],
   audioContexts: [] as FakeAudioContext[],
   /** How the next `AudioContext.resume()` resolves. */
   resumeResult: "resolve" as "resolve" | "reject",
+  audioContextState: "running" as "running" | "suspended",
+  resumeChangesState: true,
   micError: null as unknown,
   /** Thrown by `MediaRecorder.start()`, after the mic is already open. */
   recorderStartError: null as unknown,
@@ -108,10 +116,13 @@ export const fakes = {
 export function resetFakes() {
   fakes.uploads.length = 0;
   fakes.audioDownloads.length = 0;
+  fakes.audioDownloadStatus = 200;
   fakes.recorders.length = 0;
   fakes.audioContexts.length = 0;
   fakes.tracksStopped = 0;
   fakes.resumeResult = "resolve";
+  fakes.audioContextState = "running";
+  fakes.resumeChangesState = true;
   fakes.micError = null;
   fakes.recorderStartError = null;
   fakes.onUpload = () => {};
@@ -203,8 +214,8 @@ export function installBrowserFakes(): void {
     if (url.includes("/http/audio?id=")) {
       fakes.audioDownloads.push(parseQuery(url).id ?? "");
       return {
-        ok: true,
-        status: 200,
+        ok: fakes.audioDownloadStatus < 400,
+        status: fakes.audioDownloadStatus,
         arrayBuffer: async () => new TextEncoder().encode("wav-bytes").buffer,
         json: async () => ({}),
       } as unknown as Response;

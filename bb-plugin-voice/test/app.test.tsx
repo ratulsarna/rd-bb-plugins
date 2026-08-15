@@ -248,7 +248,8 @@ describe("voice header control", () => {
 
   it("offers an explicit play control when autoplay is refused", async () => {
     const backend = createBackend();
-    fakes.resumeResult = "reject";
+    fakes.audioContextState = "suspended";
+    fakes.resumeChangesState = false;
     renderControl();
     fireEvent.click(await micButton());
     await stopRecordingButton();
@@ -269,10 +270,37 @@ describe("voice header control", () => {
     const play = await screen.findByRole("button", {
       name: "Play the spoken answer",
     });
+    expect(fakes.audioContexts[0]!.state).toBe("suspended");
 
-    fakes.resumeResult = "resolve";
+    fakes.resumeChangesState = true;
     fireEvent.click(play);
     expect(await screen.findByText("Speaking")).toBeTruthy();
+    expect(fakes.audioContexts[0]!.state).toBe("running");
+  });
+
+  it("does not cancel when a missing chunk is superseded by the next snapshot", async () => {
+    const backend = createBackend();
+    fakes.audioDownloadStatus = 404;
+    renderControl();
+
+    await publish(
+      backend,
+      owned({
+        phase: "speaking",
+        chunks: [{ id: "gone", index: 0 }],
+        streamComplete: false,
+      }),
+    );
+    await waitFor(() => expect(fakes.audioDownloads).toEqual(["gone"]));
+    expect(rpcCalls.some((call) => call.method === "cancel")).toBe(false);
+    expect(toasts).toHaveLength(0);
+
+    await publish(
+      backend,
+      owned({ phase: "working", chunks: [], streamComplete: false }),
+    );
+    expect(rpcCalls.some((call) => call.method === "cancel")).toBe(false);
+    expect(toasts).toHaveLength(0);
   });
 
   it("shows status only, and never fetches audio, for a pane it does not own", async () => {

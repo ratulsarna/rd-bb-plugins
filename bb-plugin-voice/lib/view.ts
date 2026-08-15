@@ -5,7 +5,7 @@ export type VoiceState = PluginRpcResult<(typeof rpcContract)["getState"]>;
 
 /** What this control is doing locally, ahead of what the backend has published. */
 export type LocalStage = "idle" | "starting" | "recording" | "uploading";
-export type PlaybackStage = "idle" | "loading" | "playing" | "blocked";
+export type PlaybackStage = "idle" | "blocked";
 
 export type VoiceTone = "idle" | "recording" | "busy" | "speaking" | "failed";
 /** `none` renders a status glyph instead of a button. */
@@ -145,12 +145,11 @@ export function resolveView(input: {
           showStopPlayback: true,
         };
       }
-      const text = playback === "loading" ? "Loading" : "Speaking";
       return {
         ...NO_ACTION,
         tone: "speaking",
-        label: isCompact ? "" : text,
-        statusLabel: text,
+        label: isCompact ? "" : "Speaking",
+        statusLabel: "Speaking",
         showStopPlayback: true,
       };
     }

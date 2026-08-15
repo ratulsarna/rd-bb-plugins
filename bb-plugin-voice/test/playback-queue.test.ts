@@ -325,6 +325,23 @@ describe("PlaybackQueue", () => {
     expect(events.errors).toHaveLength(0);
   });
 
+  it("waits for the snapshot before interrupting after a current 404", async () => {
+    const { fetches, events, queue } = setup();
+    queue.applySnapshot([chunk("old", 0)], false);
+    fetches.get("old")!.reject(
+      Object.assign(new Error("audio not found"), { status: 404 }),
+    );
+    await settle();
+
+    expect(events.interrupted).toBe(0);
+    expect(events.errors).toHaveLength(0);
+
+    queue.applySnapshot([], false);
+
+    expect(events.interrupted).toBe(1);
+    expect(events.errors).toHaveLength(0);
+  });
+
   it("schedules while playing without overlap and starts after a drained queue at now", async () => {
     const { context, fetches, queue } = setup();
     context.currentTime = 10;

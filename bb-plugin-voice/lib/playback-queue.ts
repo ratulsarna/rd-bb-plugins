@@ -31,6 +31,15 @@ interface ScheduledChunk {
   gain: GainNode;
 }
 
+function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    (error as { status?: unknown }).status === 404
+  );
+}
+
 /** Owns the Web Audio timeline. PlaybackQueue is the only caller. */
 class ChunkScheduler {
   private readonly scheduled = new Map<number, ScheduledChunk>();
@@ -97,6 +106,8 @@ class ChunkScheduler {
 export class PlaybackQueue {
   private readonly scheduler: ChunkScheduler;
   private readonly lifecycle = new Map<string, QueueEntry>();
+  /** A 404 may arrive before the snapshot that removes its chunk. */
+  private readonly missingChunkIds = new Set<string>();
   private epoch = 0;
   private streamComplete = false;
   private startupReady = false;
@@ -131,9 +142,17 @@ export class PlaybackQueue {
       if (!next.has(chunk.id)) next.set(chunk.id, chunk);
     }
 
+    if (streamComplete) {
+      this.missingChunkIds.clear();
+    } else {
+      for (const id of this.missingChunkIds) {
+        if (next.has(id)) this.missingChunkIds.delete(id);
+      }
+    }
+
     const removedPrePlayed = [...this.lifecycle.values()].some(
       (entry) => entry.state !== "played" && !next.has(entry.id),
-    );
+    ) || [...this.missingChunkIds].some((id) => !next.has(id));
     if (removedPrePlayed && !streamComplete) {
       this.interrupt();
     } else {
@@ -168,6 +187,7 @@ export class PlaybackQueue {
     this.abortFetches();
     this.scheduler.fadeStop();
     this.lifecycle.clear();
+    this.missingChunkIds.clear();
     this.clearStartupTimer();
     this.streamComplete = false;
     this.startupReady = false;
@@ -209,6 +229,11 @@ export class PlaybackQueue {
       this.maybeSchedule();
     } catch (error) {
       if (!this.isCurrent(entry)) return;
+      if (isNotFoundError(error)) {
+        this.dropEntry(entry);
+        this.missingChunkIds.add(entry.id);
+        return;
+      }
       this.fail(error);
     }
   }
@@ -223,7 +248,7 @@ export class PlaybackQueue {
   }
 
   private maybeSchedule(): void {
-    if (this.failureLatched) return;
+    if (this.failureLatched || this.missingChunkIds.size > 0) return;
 
     const bufferedCount = [...this.lifecycle.values()].filter(
       (entry) => entry.state === "buffered",
@@ -279,7 +304,12 @@ export class PlaybackQueue {
   }
 
   private checkFinished(): void {
-    if (this.failureLatched || !this.streamComplete || this.finishedNotified) {
+    if (
+      this.failureLatched ||
+      this.missingChunkIds.size > 0 ||
+      !this.streamComplete ||
+      this.finishedNotified
+    ) {
       return;
     }
     if ([...this.lifecycle.values()].some((entry) => entry.state !== "played")) {
@@ -313,6 +343,7 @@ export class PlaybackQueue {
     this.abortFetches();
     this.scheduler.fadeStop();
     this.lifecycle.clear();
+    this.missingChunkIds.clear();
     this.clearStartupTimer();
     this.startupReady = false;
     this.finishedNotified = false;
@@ -342,6 +373,7 @@ export class PlaybackQueue {
     this.abortFetches();
     this.scheduler.fadeStop();
     this.lifecycle.clear();
+    this.missingChunkIds.clear();
     this.clearStartupTimer();
     this.streamComplete = false;
     this.startupReady = false;
