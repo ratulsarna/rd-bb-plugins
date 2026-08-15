@@ -777,6 +777,51 @@ describe("voice backend state machine", () => {
     await harness.dispose();
   });
 
+  it("refreshes the dead-turn deadline while a long turn emits tool events", async () => {
+    vi.useFakeTimers();
+    const initialRows = voiceRows({ answer: null });
+    const harness = createHarness();
+    harness.setEvents(initialRows);
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.threadGetCalls).toBeGreaterThanOrEqual(2));
+
+    for (let index = 0; index < 3; index += 1) {
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      const seq = 13 + index;
+      harness.setEvents([
+        ...initialRows,
+        ...Array.from({ length: index + 1 }, (_, offset) =>
+          row(13 + offset, "item/started", turnScope, {
+            item: { type: "commandExecution", id: `tool-${offset}`, command: "work" },
+          }),
+        ),
+      ]);
+      harness.changeThread(["events-appended"], ["item/started"]);
+      await vi.waitFor(() => expect(harness.eventListCalls).toContain(String(seq - 1)));
+    }
+
+    harness.setEvents([
+      ...initialRows,
+      ...Array.from({ length: 3 }, (_, index) =>
+        row(13 + index, "item/started", turnScope, {
+          item: { type: "commandExecution", id: `tool-${index}`, command: "work" },
+        }),
+      ),
+      row(16, "item/completed", turnScope, {
+        item: { type: "agentMessage", id: "final-answer", text: "Final answer." },
+      }),
+      row(17, "turn/completed", turnScope, { status: "completed" }),
+    ]);
+    harness.changeThread(["events-appended"], ["item/completed", "turn/completed"]);
+
+    const speaking = await waitForPhase(harness, "speaking");
+    expect(speaking.streamComplete).toBe(true);
+    expect(speaking.chunks).toHaveLength(1);
+    await harness.dispose();
+  });
+
   it("fails on thread.failed after request resolution", async () => {
     const harness = createHarness();
     await beginUpload(harness);

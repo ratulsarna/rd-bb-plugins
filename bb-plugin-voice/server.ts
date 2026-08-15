@@ -671,6 +671,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
   };
 
   const applyEventPage = (exchange: Exchange, rows: readonly VoiceEventRow[]): void => {
+    const previousCursor = Number(exchange.stream.cursorSeq);
     const fresh = appendEventRows(exchange, rows);
     let correlated = false;
     if (exchange.requestId === null && exchange.transcript !== null) {
@@ -692,6 +693,18 @@ export default function voicePlugin(bb: BbPluginApi): void {
 
     const result = processEvents(exchange.stream, fresh, exchange.requestId);
     exchange.stream = result.state;
+    if (
+      exchange.expiresAt < Number.MAX_SAFE_INTEGER &&
+      exchange.stream.turnId !== null &&
+      fresh.some(
+        (row) =>
+          row.seq > previousCursor &&
+          row.scope.kind === "turn" &&
+          row.scope.turnId === exchange.stream.turnId,
+      )
+    ) {
+      exchange.expiresAt = Date.now() + LISTENING_TTL_MS;
+    }
     if (result.invalidatePriorAudio) invalidatePriorAudio(exchange);
     if (result.live) {
       enqueueSentences(
