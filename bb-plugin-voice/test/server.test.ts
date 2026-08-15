@@ -584,6 +584,25 @@ describe("voice backend state machine", () => {
     await noAnswerHarness.dispose();
   });
 
+  it("releases an unaccepted turn after its terminal signal is consumed", async () => {
+    const harness = createHarness();
+    harness.setEvents([
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+    ]);
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.sends).toHaveLength(1));
+
+    harness.setThreadStatus("idle");
+    harness.emit("thread.idle", { thread: { id: owner.threadId } });
+
+    expect((await waitForPhase(harness, "ready")).exchangeId).toBeNull();
+    await harness.dispose();
+  });
+
   it("waits for turn completion before releasing an idle turn with no answer", async () => {
     const harness = createHarness();
     harness.setEvents(voiceRows({ answer: null }));

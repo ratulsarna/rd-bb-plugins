@@ -52,6 +52,38 @@ describe("SentenceAssembler", () => {
     ]);
   });
 
+  it("keeps sentence punctuation inside a link label in one chunk", () => {
+    const assembler = new SentenceAssembler();
+
+    expect(assembler.push("[Read this. Then continue]")).toEqual([]);
+    expect(assembler.push("(url). Next sentence. ").map(
+      (sentence) => sentence.speakable,
+    )).toEqual([
+      "Read this. Then continue.",
+      "Next sentence.",
+    ]);
+  });
+
+  it("replays plain bracket text with normal sentence boundaries", () => {
+    const assembler = new SentenceAssembler();
+
+    expect(
+      assembler.push("[note] rest. More. ").map((sentence) => sentence.speakable),
+    ).toEqual(["[note] rest.", "More."]);
+  });
+
+  it("falls back at a held boundary for an unclosed bracket", () => {
+    const assembler = new SentenceAssembler();
+    const prefix = "[" + "word ".repeat(100);
+
+    const sentences = assembler.push(`${prefix}First. Second. `);
+
+    expect(sentences.map((sentence) => sentence.speakable)).toEqual([
+      `${prefix}First.`,
+      "Second.",
+    ]);
+  });
+
   it("holds inline code, link destinations, and HTML tag attributes", () => {
     const assembler = new SentenceAssembler();
 

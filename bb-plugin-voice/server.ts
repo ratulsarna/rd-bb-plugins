@@ -726,6 +726,10 @@ export default function voicePlugin(bb: BbPluginApi): void {
     }
 
     const answer = findTurnAnswer(exchange.eventRows, exchange.requestId);
+    if (answer === null) {
+      release(exchangeId);
+      return;
+    }
     if (!answer?.text || !answer.itemId) {
       const turnCompleted = answer !== null && exchange.eventRows.some(
         (row) =>

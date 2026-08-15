@@ -16,6 +16,7 @@ interface MarkdownState {
 }
 
 const TAIL_SPLIT_LENGTH = 500;
+const LINK_LABEL_HOLD_LENGTH = 500;
 
 function newMarkdownState(): MarkdownState {
   return {
@@ -217,6 +218,11 @@ export class SentenceAssembler {
   private emitCursor = 0;
   private scanCursor = 0;
   private pendingBoundaryIndex: number | null = null;
+  private linkLabelStart: number | null = null;
+  private linkLabelDepth = 0;
+  private linkLabelState: MarkdownState | null = null;
+  private heldLinkBoundaryIndex: number | null = null;
+  private replayPlainBracketAt: number | null = null;
   private state = newMarkdownState();
 
   push(delta: string): Sentence[] {
@@ -256,24 +262,95 @@ export class SentenceAssembler {
     clone.emitCursor = this.emitCursor;
     clone.scanCursor = this.scanCursor;
     clone.pendingBoundaryIndex = this.pendingBoundaryIndex;
+    clone.linkLabelStart = this.linkLabelStart;
+    clone.linkLabelDepth = this.linkLabelDepth;
+    clone.linkLabelState = this.linkLabelState
+      ? cloneMarkdownState(this.linkLabelState)
+      : null;
+    clone.heldLinkBoundaryIndex = this.heldLinkBoundaryIndex;
+    clone.replayPlainBracketAt = this.replayPlainBracketAt;
     clone.state = cloneMarkdownState(this.state);
     return clone;
+  }
+
+  private emitBoundary(boundaryIndex: number, sentences: Sentence[]): void {
+    const sentence = this.makeSentence(this.emitCursor, boundaryIndex + 1);
+    this.emitCursor = boundaryIndex + 1;
+    if (sentence) sentences.push(sentence);
+  }
+
+  private clearLinkLabel(): void {
+    this.linkLabelStart = null;
+    this.linkLabelDepth = 0;
+    this.linkLabelState = null;
+    this.heldLinkBoundaryIndex = null;
+  }
+
+  private startLinkLabel(index: number): void {
+    this.linkLabelStart = index;
+    this.linkLabelDepth = 1;
+    this.linkLabelState = cloneMarkdownState(this.state);
+    this.heldLinkBoundaryIndex = null;
+  }
+
+  private resolvePlainLinkLabel(): void {
+    const start = this.linkLabelStart;
+    const state = this.linkLabelState;
+    if (start === null || state === null) {
+      this.clearLinkLabel();
+      return;
+    }
+    this.clearLinkLabel();
+    this.replayPlainBracketAt = start;
+    this.state = state;
+    this.scanCursor = start;
+    this.pendingBoundaryIndex = null;
+  }
+
+  private handleBoundary(
+    boundaryIndex: number,
+    sentences: Sentence[],
+  ): void {
+    if (this.linkLabelStart === null) {
+      this.emitBoundary(boundaryIndex, sentences);
+      return;
+    }
+
+    this.heldLinkBoundaryIndex ??= boundaryIndex;
+    if (boundaryIndex - this.linkLabelStart < LINK_LABEL_HOLD_LENGTH) return;
+
+    this.resolvePlainLinkLabel();
+  }
+
+  private releaseHeldLinkBoundary(): boolean {
+    if (
+      this.linkLabelStart === null ||
+      this.heldLinkBoundaryIndex === null ||
+      this.raw.length - this.linkLabelStart < LINK_LABEL_HOLD_LENGTH
+    ) return false;
+
+    this.resolvePlainLinkLabel();
+    return true;
   }
 
   private scan(): Sentence[] {
     const sentences: Sentence[] = [];
 
-    while (this.scanCursor < this.raw.length) {
+    while (
+      this.scanCursor < this.raw.length ||
+      (this.linkLabelStart !== null &&
+        this.heldLinkBoundaryIndex !== null &&
+        this.raw.length - this.linkLabelStart >= LINK_LABEL_HOLD_LENGTH)
+    ) {
+      if (this.releaseHeldLinkBoundary()) continue;
+
       if (this.pendingBoundaryIndex !== null) {
         const next = this.raw[this.pendingBoundaryIndex + 1];
         if (next === undefined) return sentences;
         const boundary = /\s/.test(next);
+        const boundaryIndex = this.pendingBoundaryIndex;
         this.pendingBoundaryIndex = null;
-        if (boundary) {
-          const sentence = this.makeSentence(this.emitCursor, this.scanCursor);
-          this.emitCursor = this.scanCursor;
-          if (sentence) sentences.push(sentence);
-        }
+        if (boundary) this.handleBoundary(boundaryIndex, sentences);
         continue;
       }
 
@@ -338,6 +415,25 @@ export class SentenceAssembler {
         continue;
       }
 
+      if (this.linkLabelStart !== null && this.raw[index] === "]") {
+        if (this.linkLabelDepth > 1) {
+          this.linkLabelDepth -= 1;
+          this.consumeCharacter(this.raw[index]!);
+          this.scanCursor += 1;
+          continue;
+        }
+        const next = this.raw[index + 1];
+        if (next === undefined) return sentences;
+        if (next === "(") {
+          this.clearLinkLabel();
+          this.state.linkDestinationDepth = 1;
+          this.scanCursor += 2;
+          continue;
+        }
+        this.resolvePlainLinkLabel();
+        continue;
+      }
+
       if (this.state.lineStart) {
         const lineEnd = this.raw.indexOf("\n", index);
         if (lineEnd >= 0) {
@@ -367,6 +463,16 @@ export class SentenceAssembler {
         this.state.inlineCodeLength = length;
         this.scanCursor += length;
         continue;
+      }
+
+      if (character === "[") {
+        if (this.replayPlainBracketAt === index) {
+          this.replayPlainBracketAt = null;
+        } else if (this.linkLabelStart !== null) {
+          this.linkLabelDepth += 1;
+        } else {
+          this.startLinkLabel(index);
+        }
       }
 
       if (character === "]") {
@@ -413,9 +519,7 @@ export class SentenceAssembler {
           return sentences;
         }
         if (/\s/.test(next)) {
-          const sentence = this.makeSentence(this.emitCursor, this.scanCursor);
-          this.emitCursor = this.scanCursor;
-          if (sentence) sentences.push(sentence);
+          this.handleBoundary(index, sentences);
         }
       }
     }
