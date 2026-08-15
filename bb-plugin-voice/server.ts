@@ -7,6 +7,7 @@ import { z } from "zod";
 import {
   findTurnAnswer,
   findVoiceRequestId,
+  isRootAgentCompletion,
   type VoiceEventRow,
 } from "./lib/correlation";
 import {
@@ -179,22 +180,29 @@ async function readAudioBody(request: Request): Promise<Buffer> {
   return Buffer.concat(chunks, size);
 }
 
-async function fetchWithTimeout(
+async function fetchWithTimeout<T>(
   url: string,
   init: RequestInit,
   parentSignal: AbortSignal,
   timeoutMs: number,
-): Promise<Response> {
+  readBody: (response: Response) => Promise<T>,
+): Promise<T> {
   const controller = new AbortController();
   const abort = () => controller.abort(parentSignal.reason);
   if (parentSignal.aborted) abort();
   else parentSignal.addEventListener("abort", abort, { once: true });
-  const timeout = setTimeout(
-    () => controller.abort(new Error("speech service request timed out")),
-    timeoutMs,
-  );
+  let timedOut = false;
+  const timeoutReason = new Error("speech service request timed out");
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort(timeoutReason);
+  }, timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    return await readBody(response);
+  } catch (error) {
+    if (timedOut) throw timeoutReason;
+    throw error;
   } finally {
     clearTimeout(timeout);
     parentSignal.removeEventListener("abort", abort);
@@ -460,7 +468,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
 
       void (async () => {
         try {
-          const response = await fetchWithTimeout(
+          const audio = await fetchWithTimeout(
             `${serviceUrl}/v1/audio/speech`,
             {
               method: "POST",
@@ -472,11 +480,13 @@ export default function voicePlugin(bb: BbPluginApi): void {
             },
             controller.signal,
             180_000,
+            async (response) => {
+              if (!response.ok) {
+                throw new Error(`speech synthesis failed (HTTP ${response.status})`);
+              }
+              return Buffer.from(await response.arrayBuffer());
+            },
           );
-          if (!response.ok) {
-            throw new Error(`speech synthesis failed (HTTP ${response.status})`);
-          }
-          const audio = Buffer.from(await response.arrayBuffer());
           if (!isCurrentTts(exchange, job, entry)) return;
           if (audio.byteLength === 0) {
             throw new Error("speech synthesis returned no audio");
@@ -579,12 +589,85 @@ export default function voicePlugin(bb: BbPluginApi): void {
   const appendEventRows = (exchange: Exchange, rows: readonly VoiceEventRow[]): VoiceEventRow[] => {
     const fresh: VoiceEventRow[] = [];
     for (const row of rows) {
-      if (exchange.eventSeqs.has(row.seq)) continue;
-      exchange.eventSeqs.add(row.seq);
-      exchange.eventRows.push(row);
+      const retain = row.type === "client/turn/requested"
+        ? exchange.transcript !== null && findVoiceRequestId([row], exchange.transcript) !== null
+        : row.type === "turn/input/accepted" ||
+          row.type === "turn/completed" ||
+          isRootAgentCompletion(row);
+      if (retain && !exchange.eventSeqs.has(row.seq)) {
+        exchange.eventSeqs.add(row.seq);
+        exchange.eventRows.push(row);
+      }
       fresh.push(row);
     }
     return fresh;
+  };
+
+  const latestRow = (
+    rows: readonly VoiceEventRow[],
+    predicate: (row: VoiceEventRow) => boolean,
+  ): VoiceEventRow | null => {
+    let latest: VoiceEventRow | null = null;
+    for (const row of rows) {
+      if (predicate(row) && (latest === null || row.seq > latest.seq)) latest = row;
+    }
+    return latest;
+  };
+
+  const firstRow = (
+    rows: readonly VoiceEventRow[],
+    predicate: (row: VoiceEventRow) => boolean,
+  ): VoiceEventRow | null => {
+    let first: VoiceEventRow | null = null;
+    for (const row of rows) {
+      if (predicate(row) && (first === null || row.seq < first.seq)) first = row;
+    }
+    return first;
+  };
+
+  const pruneEventRows = (exchange: Exchange): void => {
+    const rows = exchange.eventRows;
+    const matchingRequest = firstRow(
+      rows,
+      (row) => row.type === "client/turn/requested" &&
+        exchange.transcript !== null &&
+        findVoiceRequestId([row], exchange.transcript) !== null,
+    );
+    const matchingRequestId = exchange.requestId ?? record(matchingRequest?.data)?.requestId;
+    const accepted = firstRow(
+      rows,
+      (row) => row.type === "turn/input/accepted" &&
+        row.scope.kind === "turn" &&
+        typeof matchingRequestId === "string" &&
+        record(row.data)?.clientRequestId === matchingRequestId,
+    );
+    const turnId = exchange.stream.turnId;
+    const answer = latestRow(
+      rows,
+      (row) => {
+        const text = record(record(row.data)?.item)?.text;
+        return isRootAgentCompletion(row) &&
+          turnId !== null &&
+          row.scope.kind === "turn" &&
+          row.scope.turnId === turnId &&
+          typeof text === "string" &&
+          Boolean(text.trim());
+      },
+    );
+    const terminal = latestRow(
+      rows,
+      (row) => row.type === "turn/completed" &&
+        turnId !== null &&
+        row.scope.kind === "turn" &&
+        row.scope.turnId === turnId,
+    );
+    const retained = exchange.requestId === null
+      ? [matchingRequest, accepted, latestRow(rows, (row) => row.type === "turn/completed")]
+      : [accepted, answer, terminal];
+    exchange.eventRows = retained
+      .filter((row): row is VoiceEventRow => row !== null)
+      .sort((left, right) => left.seq - right.seq);
+    exchange.eventSeqs = new Set(exchange.eventRows.map((row) => row.seq));
   };
 
   const applyEventPage = (exchange: Exchange, rows: readonly VoiceEventRow[]): void => {
@@ -602,7 +685,10 @@ export default function voicePlugin(bb: BbPluginApi): void {
         exchange.stage = "waiting";
       }
     }
-    if (exchange.requestId === null) return;
+    if (exchange.requestId === null) {
+      pruneEventRows(exchange);
+      return;
+    }
 
     const result = processEvents(exchange.stream, fresh, exchange.requestId);
     exchange.stream = result.state;
@@ -631,6 +717,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
         rememberTerminal(exchange, { kind: "idle" });
       }
     }
+    pruneEventRows(exchange);
     if ((correlated || result.turnCompleted) && exchange.stage === "waiting") {
       requestReconcile(exchange.exchangeId);
     }
@@ -738,9 +825,13 @@ export default function voicePlugin(bb: BbPluginApi): void {
     }
 
     const answer = findTurnAnswer(exchange.eventRows, exchange.requestId);
+    const waitForMoreEvents = (): void => {
+      exchange.stage = "waiting";
+      if (exchange.reconcileAgain) requestReconcile(exchangeId);
+    };
     if (answer === null) {
       if (!turnCompleted(exchange.eventRows, exchange.stream.turnId)) {
-        exchange.stage = "waiting";
+        waitForMoreEvents();
         exchange.expiresAt = Math.min(
           exchange.expiresAt,
           Date.now() + LISTENING_TTL_MS,
@@ -752,7 +843,7 @@ export default function voicePlugin(bb: BbPluginApi): void {
     }
     if (!answer?.text || !answer.itemId) {
       if (!turnCompleted(exchange.eventRows, answer.turnId)) {
-        exchange.stage = "waiting";
+        waitForMoreEvents();
         return;
       }
       release(exchangeId);
@@ -861,14 +952,16 @@ export default function voicePlugin(bb: BbPluginApi): void {
       new Blob([new Uint8Array(audio)], { type: mimeType }),
       recordingName(mimeType),
     );
-    const response = await fetchWithTimeout(
+    const payload: unknown = await fetchWithTimeout(
       `${url}/v1/audio/transcriptions`,
       { method: "POST", body: form },
       controller.signal,
       60_000,
+      async (response) => {
+        if (!response.ok) throw new Error(`transcription failed (HTTP ${response.status})`);
+        return response.json() as Promise<unknown>;
+      },
     );
-    if (!response.ok) throw new Error(`transcription failed (HTTP ${response.status})`);
-    const payload: unknown = await response.json();
     if (active?.exchangeId !== exchangeId || exchange.stage !== "transcribing") return;
     const transcript =
       payload &&

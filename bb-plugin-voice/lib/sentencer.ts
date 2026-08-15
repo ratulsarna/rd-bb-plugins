@@ -533,6 +533,10 @@ export class SentenceAssembler {
         const sentence = this.makeSentence(this.emitCursor, end);
         this.emitCursor = end;
         if (sentence) sentences.push(sentence);
+        if (this.linkLabelStart !== null) {
+          this.clearLinkLabel();
+          this.replayPlainBracketAt = null;
+        }
         this.scanCursor = end;
         this.state.lineStart = true;
         this.state.linePrefixLength = 0;

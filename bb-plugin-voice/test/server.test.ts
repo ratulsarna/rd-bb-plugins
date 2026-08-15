@@ -118,6 +118,7 @@ function createHarness() {
   };
   let eventLoader: ((afterSeq: string) => Promise<VoiceEventRow[]>) | null = null;
   let threadLoader: ((call: number) => Promise<ThreadStatus>) | null = null;
+  let interactionLoader: ((call: number) => Promise<Interaction[]>) | null = null;
   const eventHandlers = new Map<string, EventHandler>();
   const subscriptions = new Map<string, SubscriptionHandler>();
   const routes = new Map<string, HttpHandler>();
@@ -168,7 +169,9 @@ function createHarness() {
         interactions: {
           async list() {
             interactionListCalls += 1;
-            return interactions;
+            return interactionLoader
+              ? await interactionLoader(interactionListCalls)
+              : interactions;
           },
         },
         async timeline() {
@@ -254,6 +257,9 @@ function createHarness() {
     },
     setThreadLoader(loader: (call: number) => Promise<ThreadStatus>) {
       threadLoader = loader;
+    },
+    setInteractionLoader(loader: (call: number) => Promise<Interaction[]>) {
+      interactionLoader = loader;
     },
     setSendError(error: Error | null) {
       sendError = error;
@@ -390,6 +396,35 @@ describe("voice backend state machine", () => {
     await harness.dispose();
   });
 
+  it("keeps reconciliation rows bounded while draining large tool output pages", async () => {
+    const rows: VoiceEventRow[] = [
+      ...voiceRows({ answer: null }),
+      ...Array.from({ length: 1_000 }, (_, index) =>
+        row(13 + index, "item/completed", turnScope, {
+          item: {
+            type: "commandExecution",
+            id: `tool-${index}`,
+            output: "x".repeat(10_000),
+          },
+        }),
+      ),
+      row(1_013, "item/completed", turnScope, {
+        item: { type: "agentMessage", id: "answer-1", text: "Final answer." },
+      }),
+      row(1_014, "turn/completed", turnScope, { status: "completed" }),
+    ];
+    const harness = createHarness();
+    harness.setEvents(rows);
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+
+    await beginUpload(harness);
+
+    const speaking = await waitForPhase(harness, "speaking");
+    expect(speaking.streamComplete).toBe(true);
+    expect(speaking.chunks).toHaveLength(1);
+    await harness.dispose();
+  });
+
   it("keeps the exchange alive when an early pump runs before send resolves", async () => {
     let releaseSend!: () => void;
     let sendResolved = false;
@@ -492,6 +527,27 @@ describe("voice backend state machine", () => {
     await timeoutHarness.dispose();
   });
 
+  it("times out while reading a transcription response body", async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetch).mockImplementationOnce((_input, init) => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => new Promise<unknown>((_, reject) => {
+        const signal = init?.signal;
+        const abort = () => reject(signal?.reason ?? new Error("aborted"));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+      }),
+    } as Response));
+    const harness = createHarness();
+
+    await beginUpload(harness);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect((await waitForPhase(harness, "failed")).error).toContain("timed out");
+    await harness.dispose();
+  });
+
   it("records a mode:start rejection as a failed exchange", async () => {
     const harness = createHarness();
     harness.setSendError(new Error("thread is active"));
@@ -534,6 +590,38 @@ describe("voice backend state machine", () => {
     );
     expect(timeoutHarness.sends).toHaveLength(1);
     await timeoutHarness.dispose();
+  });
+
+  it("times out while reading a speech response body", async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/v1/audio/transcriptions")) {
+        return jsonResponse({ text: "voice transcript" });
+      }
+      if (url.endsWith("/v1/audio/speech")) {
+        return {
+          ok: true,
+          status: 200,
+          arrayBuffer: () => new Promise<ArrayBuffer>((_, reject) => {
+            const signal = init?.signal;
+            const abort = () => reject(signal?.reason ?? new Error("aborted"));
+            if (signal?.aborted) abort();
+            else signal?.addEventListener("abort", abort, { once: true });
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    const harness = createHarness();
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(180_000);
+
+    expect((await waitForPhase(harness, "failed")).error).toContain("timed out");
+    await harness.dispose();
   });
 
   it("publishes ready state while disposing a working exchange", async () => {
@@ -743,6 +831,33 @@ describe("voice backend state machine", () => {
 
     await waitForPhase(harness, "speaking");
     expect(fetch).toHaveBeenCalledTimes(2);
+    await harness.dispose();
+  });
+
+  it("retries reconciliation requested while resolving", async () => {
+    let resolveStatus!: (status: ThreadStatus) => void;
+    const delayedStatus = new Promise<ThreadStatus>((resolve) => {
+      resolveStatus = resolve;
+    });
+    const harness = createHarness();
+    harness.setEvents(voiceRows({ answer: null }));
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+    harness.setThreadLoader((call) =>
+      call === 1 ? Promise.resolve("idle") : delayedStatus,
+    );
+    harness.setInteractionLoader((call) => Promise.resolve(
+      call <= 2
+        ? []
+        : [{ status: "pending", turnId: null, payload: { kind: "plugin" } }],
+    ));
+
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.threadGetCalls).toBe(2));
+    harness.changeThread(["interactions-changed"]);
+    resolveStatus("idle");
+
+    await waitForPhase(harness, "ready");
+    expect(harness.interactionListCalls).toBe(3);
     await harness.dispose();
   });
 

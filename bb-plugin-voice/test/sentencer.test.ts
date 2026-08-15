@@ -135,6 +135,22 @@ describe("SentenceAssembler", () => {
     }
   });
 
+  it("releases an unfinished link label at a paragraph boundary", () => {
+    const assembler = new SentenceAssembler();
+
+    const sentences = [
+      ...assembler.push("Start [note\n\n"),
+      ...assembler.push("First sentence. Second sentence. Third sentence. "),
+    ];
+
+    expect(sentences.map((sentence) => sentence.speakable)).toEqual([
+      "Start [note",
+      "First sentence.",
+      "Second sentence.",
+      "Third sentence.",
+    ]);
+  });
+
   it("holds inline code, link destinations, and HTML tag attributes", () => {
     const assembler = new SentenceAssembler();
 

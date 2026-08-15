@@ -35,6 +35,11 @@ After`),
       ),
     ).toBe("Use x < 10 and y > 2 with Map<string, number>. Done.");
   });
+
+  it("keeps identifier underscores as word breaks while stripping emphasis", () => {
+    expect(mdToSpeakable("get_user_name and __init__. *bold* _emphasis_"))
+      .toBe("get user name and init. bold emphasis");
+  });
 });
 
 describe("truncateSpeakable", () => {

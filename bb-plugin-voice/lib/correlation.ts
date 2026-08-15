@@ -24,6 +24,15 @@ function requestedText(row: VoiceEventRow): string | null {
     : null;
 }
 
+export function isRootAgentCompletion(row: VoiceEventRow): boolean {
+  if (row.type !== "item/completed" || row.scope.kind !== "turn") return false;
+  const item = record(record(row.data)?.item);
+  return item?.type === "agentMessage" &&
+    item.parentToolCallId == null &&
+    typeof item.id === "string" &&
+    typeof item.text === "string";
+}
+
 export function findVoiceRequestId(
   rows: readonly VoiceEventRow[],
   transcript: string,
@@ -54,21 +63,14 @@ export function findTurnAnswer(
   let text: string | null = null;
   for (const row of [...rows].sort((left, right) => left.seq - right.seq)) {
     if (
-      row.type !== "item/completed" ||
+      !isRootAgentCompletion(row) ||
       row.scope.kind !== "turn" ||
       row.scope.turnId !== accepted.scope.turnId
     ) {
       continue;
     }
     const item = record(record(row.data)?.item);
-    if (
-      item?.type !== "agentMessage" ||
-      item.parentToolCallId != null ||
-      typeof item.id !== "string" ||
-      typeof item.text !== "string"
-    ) {
-      continue;
-    }
+    if (!item || typeof item.id !== "string" || typeof item.text !== "string") continue;
     const candidate = item.text.trim();
     if (candidate) {
       itemId = item.id;
