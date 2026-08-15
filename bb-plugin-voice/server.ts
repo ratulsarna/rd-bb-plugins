@@ -844,6 +844,10 @@ export default function voicePlugin(bb: BbPluginApi): void {
     if (!answer?.text || !answer.itemId) {
       if (!turnCompleted(exchange.eventRows, answer.turnId)) {
         waitForMoreEvents();
+        exchange.expiresAt = Math.min(
+          exchange.expiresAt,
+          Date.now() + LISTENING_TTL_MS,
+        );
         return;
       }
       release(exchangeId);

@@ -758,6 +758,25 @@ describe("voice backend state machine", () => {
     await harness.dispose();
   });
 
+  it("expires an idle accepted turn with no answer or terminal row", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    harness.setEvents([
+      ...voiceRows({ answer: null }),
+      row(13, "item/completed", turnScope, {
+        item: { type: "agentMessage", id: "blank-answer", text: "   " },
+      }),
+    ]);
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+
+    await beginUpload(harness);
+    await vi.waitFor(async () => expect((await state(harness)).phase).toBe("working"));
+    await vi.advanceTimersByTimeAsync(3 * 60_000 + 5_000);
+
+    expect((await waitForPhase(harness, "ready")).exchangeId).toBeNull();
+    await harness.dispose();
+  });
+
   it("fails on thread.failed after request resolution", async () => {
     const harness = createHarness();
     await beginUpload(harness);
