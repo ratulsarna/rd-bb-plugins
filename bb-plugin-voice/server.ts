@@ -550,6 +550,8 @@ export default function voicePlugin(bb: BbPluginApi): void {
     if (!entry || entry.state !== "stashed") return false;
     for (const candidate of exchange.ledger.values()) {
       if (candidate.index <= index && candidate.state === "stashed") {
+        exchange.audioBytes -= candidate.audio?.byteLength ?? 0;
+        candidate.audio = null;
         candidate.state = "played";
       }
     }
@@ -599,7 +601,11 @@ export default function voicePlugin(bb: BbPluginApi): void {
       );
     }
     for (const row of fresh) {
-      if (row.type !== "turn/completed") continue;
+      if (
+        row.type !== "turn/completed" ||
+        row.scope.kind !== "turn" ||
+        row.scope.turnId !== exchange.stream.turnId
+      ) continue;
       const status = turnStatus(row);
       if (status === "failed" || status === "interrupted") {
         rememberTerminal(exchange, {
@@ -711,6 +717,8 @@ export default function voicePlugin(bb: BbPluginApi): void {
     ) return;
     if (exchange.reconcilePrepared) {
       maybeCompleteStream(exchange);
+      exchange.stage = null;
+      exchange.reconcileAgain = false;
       return;
     }
 
@@ -748,6 +756,8 @@ export default function voicePlugin(bb: BbPluginApi): void {
       exchange.stream.epoch,
       sentenceFromOffset(answer.text, Math.min(start, answer.text.length)),
     );
+    exchange.stage = null;
+    exchange.reconcileAgain = false;
     maybeCompleteStream(exchange);
   };
 

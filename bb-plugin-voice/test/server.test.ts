@@ -436,6 +436,40 @@ describe("voice backend state machine", () => {
     await harness.dispose();
   });
 
+  it("ignores terminal events from a different turn", async () => {
+    const firstPage = [
+      row(11, "client/turn/requested", threadScope, {
+        requestId: "request-voice",
+        initiator: "user",
+        input: [{ type: "text", text: "voice transcript" }],
+      }),
+      row(12, "turn/input/accepted", turnScope, {
+        clientRequestId: "request-voice",
+      }),
+    ];
+    const foreignTurn = { kind: "turn", turnId: "other-turn" } as const;
+    const harness = createHarness();
+    harness.setEventLoader((afterSeq) => Promise.resolve(
+      afterSeq === "10"
+        ? firstPage
+        : [row(13, "turn/completed", foreignTurn, {
+            status: "failed",
+            error: { message: "foreign turn failed" },
+          })],
+    ));
+
+    await beginUpload(harness);
+    await vi.waitFor(() => expect(harness.threadGetCalls).toBe(2));
+    harness.changeThread(["events-appended"], ["turn/completed"]);
+    await vi.waitFor(() => expect(harness.eventListCalls).toEqual(["10", "12"]));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect((await state(harness)).phase).toBe("working");
+    expect((await state(harness)).error).toBeNull();
+    expect(harness.threadGetCalls).toBe(2);
+    await harness.dispose();
+  });
+
   it("fails before send when transcription errors or times out", async () => {
     const errorHarness = createHarness();
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({}, 503));
@@ -711,6 +745,21 @@ describe("voice backend state machine", () => {
     await waitForPhase(reconnectHarness, "speaking");
     expect(fetch).toHaveBeenCalledTimes(2);
     await reconnectHarness.dispose();
+  });
+
+  it("stops pumping after successful completion", async () => {
+    const harness = createHarness();
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+    await beginUpload(harness);
+    await waitForPhase(harness, "speaking");
+    await vi.waitFor(async () => expect((await state(harness)).streamComplete).toBe(true));
+    const eventListCalls = [...harness.eventListCalls];
+
+    harness.changeThread(["status-changed"]);
+    harness.reconnect();
+
+    expect(harness.eventListCalls).toEqual(eventListCalls);
+    await harness.dispose();
   });
 
   it("truncates long answers before requesting speech", async () => {
@@ -1004,10 +1053,66 @@ describe("voice backend state machine", () => {
 
     expect(harness.api.ackPlayback({ ...owner, exchangeId, playedThroughIndex: 2 })).toEqual({ ok: true });
     expect((await state(harness)).chunks).toEqual([]);
-    expect((await harness.getAudio(chunk.id)).status).toBe(200);
+    expect((await harness.getAudio(chunk.id)).status).toBe(404);
     expect(harness.api.ackPlayback({ ...owner, exchangeId, playedThroughIndex: 2 })).toEqual({ ok: false });
     expect(harness.api.finishPlayback({ ...owner, exchangeId, playedThroughIndex: 2 })).toEqual({ ok: true });
     expect((await state(harness)).phase).toBe("ready");
+    await harness.dispose();
+  });
+
+  it("frees played audio before stashing the next chunk", async () => {
+    const largeAudio = new ArrayBuffer(40 * 1024 * 1024);
+    let speechCalls = 0;
+    let releaseSecond!: () => void;
+    const secondSpeech = new Promise<Response>((resolve) => {
+      releaseSecond = () => resolve({
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => largeAudio,
+      } as Response);
+    });
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/v1/audio/transcriptions")) {
+        return jsonResponse({ text: "voice transcript" });
+      }
+      if (url.endsWith("/v1/audio/speech")) {
+        speechCalls += 1;
+        if (speechCalls === 1) {
+          return {
+            ok: true,
+            status: 200,
+            arrayBuffer: async () => largeAudio,
+          } as Response;
+        }
+        return secondSpeech;
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+
+    const harness = createHarness();
+    harness.setEvents(voiceRows({ answer: "First sentence. Second sentence." }));
+    harness.setOnSend(() => harness.setThreadStatus("idle"));
+    const exchangeId = await beginUpload(harness);
+    await vi.waitFor(async () => expect((await state(harness)).chunks).toHaveLength(1));
+    await vi.waitFor(() => expect(speechCalls).toBe(2));
+
+    const first = (await state(harness)).chunks[0]!;
+    expect(harness.api.ackPlayback({
+      ...owner,
+      exchangeId,
+      playedThroughIndex: first.index,
+    })).toEqual({ ok: true });
+    expect((await state(harness)).chunks).toEqual([]);
+    expect((await harness.getAudio(first.id)).status).toBe(404);
+
+    releaseSecond();
+    await vi.waitFor(async () => {
+      const next = await state(harness);
+      expect(next.chunks).toEqual([{ id: expect.any(String), index: 1 }]);
+      expect(next.phase).toBe("speaking");
+    });
+    expect((await state(harness)).error).toBeNull();
     await harness.dispose();
   });
 
