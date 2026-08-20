@@ -52,13 +52,17 @@ permission is only requested after you tap **Enable** in the plugin settings.
 
 | Source             | Trigger                               | Opens                                                     |
 | ------------------ | ------------------------------------- | --------------------------------------------------------- |
-| `thread.idle`      | A thread finished its turn            | That thread                                               |
+| `thread.idle`      | A thread finished its final turn       | That thread                                               |
 | `thread.failed`    | A thread errored                      | That thread                                               |
 | `notify_user` tool | An agent decides you need to know now | The agent's thread                                        |
 | `bb notify send`   | You or a script                       | The thread the command ran in — `--thread <id>` overrides |
 
 A successful turn does not spend a line saying "finished". Only a failure earns
 words, as `Failed — <error>`.
+
+If a parent thread goes idle while delegated agents are still running, Notify
+waits. It sends the completion notification after the last agent reports back
+and the parent finishes its final turn.
 
 ## Commands
 

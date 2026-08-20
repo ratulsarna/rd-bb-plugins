@@ -23,16 +23,16 @@ import {
   plainText,
   suppressionReason,
   threadLabel,
-} from "./format";
-import { latestRunWasManuallyStopped } from "./lifecycle";
-import { NotificationQueue, QUEUE_MAX, type NotificationInput } from "./queue";
-import { SERVICE_WORKER_SOURCE } from "./service-worker";
-import { playSound, resolveSound, SOUND_OFF, SOUND_OPTIONS } from "./sound";
+} from "./format.ts";
+import { latestRunWasManuallyStopped } from "./lifecycle.ts";
+import { NotificationQueue, QUEUE_MAX, type NotificationInput } from "./queue.ts";
+import { SERVICE_WORKER_SOURCE } from "./service-worker.ts";
+import { playSound, resolveSound, SOUND_OFF, SOUND_OPTIONS } from "./sound.ts";
 import {
   createWebPushOwner,
   createWebPushPayload,
   InvalidSubscriptionError,
-} from "./web-push";
+} from "./web-push.ts";
 
 const BODY_MAX_CHARS = 160;
 /** How long a long-poll is held open before returning an empty batch. */
@@ -441,6 +441,12 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.events.on("thread.idle", ({ thread, lastAssistantText }) => {
     if (!current.notifyOnIdle) {
+      startedAt.delete(thread.id);
+      return;
+    }
+    // A parent can go idle while delegated agents are still running. Their
+    // completion wakes it for the final turn, which is the one worth showing.
+    if (thread.activeBackgroundAgentCount > 0) {
       startedAt.delete(thread.id);
       return;
     }

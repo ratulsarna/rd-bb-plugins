@@ -1,5 +1,9 @@
 # bb-plugin-notify
 
+## Unreleased
+
+- Wait for a parent thread's background agents to finish before sending its completion notification.
+
 ## 0.3.0
 
 ### Minor Changes
