@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Wait for a parent thread's background agents to finish before sending its completion notification.
+- Skip desktop and phone alerts while either the BB desktop app or iPhone Home Screen app is in the foreground.
 
 ## 0.3.0
 

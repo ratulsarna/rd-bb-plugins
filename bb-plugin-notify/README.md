@@ -80,6 +80,7 @@ id.
 ```console
 $ bb notify status
 window:     listening (1 polling)
+foreground: no
 phones:     0 subscribed
 held:       0
 on idle:    true
@@ -155,6 +156,10 @@ uses its system sound instead.
 - **Phones are independent.** Web Push sends the same formatted alert to every
   subscribed phone. One failed phone does not block another phone or desktop
   delivery.
+- **A focused BB app stays quiet.** While the desktop app or iPhone Home Screen
+  app is in the foreground, neither desktop nor phone alerts are sent. Alerts
+  resume when both apps leave the foreground. The iPhone **Test** button always
+  sends its alert.
 - **Every completed turn can alert.** Notifications use a unique system tag, so
   a later turn from the same thread does not become a history-only replacement
   for an earlier macOS notification.

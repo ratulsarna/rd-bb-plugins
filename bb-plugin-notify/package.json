@@ -62,6 +62,7 @@
     "app.tsx",
     "format.ts",
     "lifecycle.ts",
+    "presence.ts",
     "queue.ts",
     "service-worker.ts",
     "sound.ts",

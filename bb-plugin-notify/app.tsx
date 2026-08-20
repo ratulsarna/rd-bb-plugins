@@ -6,8 +6,9 @@
 // the notification BB's own: BB's icon, BB's name, and a click that opens the
 // thread.
 //
-// A content script stays mounted everywhere for the desktop queue and service
-// worker click bridge. The settings slot owns phone subscription controls.
+// A content script stays mounted everywhere for foreground presence, the
+// desktop queue, and the service worker click bridge. The settings slot owns
+// phone subscription controls.
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useState } from "react";
 
@@ -20,6 +21,7 @@ import {
 
 const PENDING_URL = "/api/v1/plugins/notify/http/pending";
 const ACK_URL = "/api/v1/plugins/notify/http/ack";
+const FOREGROUND_URL = "/api/v1/plugins/notify/http/foreground";
 /** Only one window may poll; the rest wait behind this lock. */
 const POLL_LOCK = "bb-plugin-notify:poller";
 /** Backoff after a failed poll, so a server restart is not hammered. */
@@ -32,6 +34,7 @@ const RETRY_DELAY_MS = 3_000;
  */
 const MIN_EMPTY_POLL_MS = 1_000;
 const WORKER_START_TIMEOUT_MS = 10_000;
+const FOREGROUND_HEARTBEAT_MS = 10_000;
 
 interface PendingNotification {
   id: number;
@@ -118,6 +121,84 @@ function updateInstalledServiceWorker(): void {
     .catch(() => undefined);
 }
 
+async function postForeground(
+  pageId: string,
+  foreground: boolean,
+  keepalive = false,
+): Promise<void> {
+  const response = await fetch(FOREGROUND_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pageId, foreground }),
+    credentials: "same-origin",
+    keepalive,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+
+function isStandaloneWebApp(): boolean {
+  const standalone = navigator as Navigator & { readonly standalone?: boolean };
+  return (
+    standalone.standalone === true ||
+    window.matchMedia?.("(display-mode: standalone)").matches === true
+  );
+}
+
+function watchForeground(signal: AbortSignal): void {
+  const desktopBridge = (window as Window & { readonly bbDesktop?: unknown }).bbDesktop;
+  const desktop = isDesktopNotificationHost(desktopBridge);
+  const iosHomeScreen =
+    (navigator as Navigator & { readonly standalone?: boolean }).standalone === true;
+  if (!desktop && !isStandaloneWebApp()) return;
+
+  const pageId = crypto.randomUUID();
+  let timer: number | null = null;
+  let reported = false;
+
+  const isForeground = () =>
+    document.visibilityState === "visible" &&
+    (iosHomeScreen || document.hasFocus());
+
+  const report = (foreground: boolean, keepalive = false) => {
+    reported = foreground;
+    void postForeground(pageId, foreground, keepalive).catch(() => undefined);
+  };
+
+  const stopTimer = () => {
+    if (timer === null) return;
+    window.clearInterval(timer);
+    timer = null;
+  };
+
+  const sync = () => {
+    if (isForeground()) {
+      if (timer === null) {
+        timer = window.setInterval(
+          () => report(true),
+          FOREGROUND_HEARTBEAT_MS,
+        );
+      }
+      report(true);
+      return;
+    }
+    stopTimer();
+    if (reported) report(false, true);
+  };
+
+  const leave = () => {
+    stopTimer();
+    if (reported) report(false, true);
+  };
+
+  document.addEventListener("visibilitychange", sync, { signal });
+  window.addEventListener("focus", sync, { signal });
+  window.addEventListener("blur", sync, { signal });
+  window.addEventListener("pageshow", sync, { signal });
+  window.addEventListener("pagehide", leave, { signal });
+  signal.addEventListener("abort", leave, { once: true });
+  sync();
+}
+
 function present(item: PendingNotification): void {
   // A stable per-thread tag makes Chromium replace an earlier delivered alert.
   // macOS keeps that replacement in Notification Center but can skip its banner,
@@ -139,12 +220,13 @@ function present(item: PendingNotification): void {
 async function acknowledge(
   leaseId: string,
   notificationIds: readonly number[],
+  displayed: boolean,
   signal: AbortSignal,
 ): Promise<void> {
   const response = await fetch(ACK_URL, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ leaseId, notificationIds }),
+    body: JSON.stringify({ leaseId, notificationIds, displayed }),
     credentials: "same-origin",
     signal,
   });
@@ -171,20 +253,24 @@ async function poll(signal: AbortSignal): Promise<void> {
         throw new Error("notification batch has no lease");
       }
       let shown = 0;
-      const shownIds: number[] = [];
+      const handledIds: number[] = [];
       for (const item of list) {
         if (!isPending(item)) continue;
+        if (document.visibilityState === "visible" && document.hasFocus()) {
+          handledIds.push(item.id);
+          continue;
+        }
         try {
           present(item);
           shown += 1;
-          shownIds.push(item.id);
+          handledIds.push(item.id);
         } catch {
           // A failed item remains leased and is retried later; the rest of the
           // batch can still be acknowledged independently.
         }
       }
-      if (leaseId !== null && shownIds.length > 0) {
-        await acknowledge(leaseId, shownIds, signal);
+      if (leaseId !== null && handledIds.length > 0) {
+        await acknowledge(leaseId, handledIds, shown > 0, signal);
       }
       if (shown === 0 && Date.now() - startedAt < MIN_EMPTY_POLL_MS) {
         await sleep(MIN_EMPTY_POLL_MS, signal);
@@ -501,6 +587,7 @@ export default definePluginApp((app) => {
     mount({ signal }) {
       listenForServiceWorkerClicks(signal);
       updateInstalledServiceWorker();
+      watchForeground(signal);
       // Detached on purpose: the host time-boxes awaited mount work, and this
       // bridge runs for the lifetime of the window.
       void bridge(signal).catch(() => {

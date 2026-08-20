@@ -8,8 +8,8 @@
 //
 // One formatter feeds two delivery transports. The BB app window posts the
 // desktop alert so macOS credits BB, while standards-based Web Push sends the
-// same alert to each subscribed Home Screen app. When no desktop window is
-// open, that copy waits in a short queue and arrives when one opens.
+// same alert to each subscribed Home Screen app. When neither app is in the
+// foreground and no desktop window is open, that copy waits in a short queue.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { Context } from "hono";
 import { z } from "zod";
@@ -25,7 +25,13 @@ import {
   threadLabel,
 } from "./format.ts";
 import { latestRunWasManuallyStopped } from "./lifecycle.ts";
-import { NotificationQueue, QUEUE_MAX, type NotificationInput } from "./queue.ts";
+import { ForegroundPresence, InvalidPresenceError } from "./presence.ts";
+import {
+  NotificationQueue,
+  QUEUE_MAX,
+  type LeaseResult,
+  type NotificationInput,
+} from "./queue.ts";
 import { SERVICE_WORKER_SOURCE } from "./service-worker.ts";
 import { playSound, resolveSound, SOUND_OFF, SOUND_OPTIONS } from "./sound.ts";
 import {
@@ -45,6 +51,8 @@ const DEDUPE_WINDOW_MS = 3_000;
 const MAX_TRACKED_THREADS = 500;
 /** How long a cached project name is trusted before it is read again. */
 const PROJECT_NAME_TTL_MS = 5 * 60_000;
+
+type DeliveryResult = "skipped" | "queued" | "held";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -111,6 +119,7 @@ export default async function plugin(bb: BbPluginApi) {
   // persisted under a lease until the renderer acknowledges the notifications
   // it constructed. A dropped response therefore retries instead of vanishing.
   const notifications = new NotificationQueue(bb.storage.kv);
+  const foreground = new ForegroundPresence();
   const webPush = createWebPushOwner(bb);
   const pushDeliveries = new Set<Promise<void>>();
   const waiters = new Set<() => void>();
@@ -132,6 +141,20 @@ export default async function plugin(bb: BbPluginApi) {
     wakeWaiters();
     bb.log.debug(`${listening ? "queued" : "held"} — opens ${item.threadId ?? "nothing"}`);
     return listening;
+  }
+
+  async function leaseForRenderer(): Promise<LeaseResult> {
+    const delivery = await notifications.lease();
+    if (delivery.lease === null || !foreground.isForeground()) return delivery;
+
+    await notifications.acknowledge(
+      delivery.lease.id,
+      delivery.lease.notifications.map((item) => item.id),
+    );
+    bb.log.debug(
+      `skipped ${delivery.lease.notifications.length} held desktop notification${delivery.lease.notifications.length === 1 ? "" : "s"}; BB is foreground`,
+    );
+    return { lease: null, retryAfterMs: 0 };
   }
 
   function sendWebPush(item: NotificationInput, silent: boolean): void {
@@ -176,7 +199,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.http.route("GET", "/pending", async (context) => {
     const { signal } = context.req.raw;
     lastPollAt = Date.now();
-    let delivery = await notifications.lease();
+    let delivery = await leaseForRenderer();
     if (delivery.lease === null) {
       const holdMs = Math.min(POLL_HOLD_MS, delivery.retryAfterMs ?? POLL_HOLD_MS);
       await waitForQueue(signal, holdMs);
@@ -184,7 +207,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (signal.aborted) {
         return context.json({ leaseId: null, notifications: [] });
       }
-      delivery = await notifications.lease();
+      delivery = await leaseForRenderer();
     }
     lastPollAt = Date.now();
     return context.json({
@@ -197,24 +220,43 @@ export default async function plugin(bb: BbPluginApi) {
     const body: unknown = await context.req.json().catch(() => null);
     const leaseId = isRecord(body) ? body.leaseId : undefined;
     const notificationIds = isRecord(body) ? body.notificationIds : undefined;
+    const displayed = isRecord(body) ? body.displayed : undefined;
     if (
       typeof leaseId !== "string" ||
       leaseId === "" ||
       leaseId.length > 128 ||
       !Array.isArray(notificationIds) ||
       notificationIds.length > QUEUE_MAX ||
-      notificationIds.some((id) => !Number.isSafeInteger(id) || (id as number) < 1)
+      notificationIds.some((id) => !Number.isSafeInteger(id) || (id as number) < 1) ||
+      (displayed !== undefined && typeof displayed !== "boolean")
     ) {
       return context.json({ ok: false, error: "invalid acknowledgement" }, 400);
     }
     const result = await notifications.acknowledge(leaseId, notificationIds as number[]);
     const sound = result.play;
-    if (sound !== null) {
+    if (sound !== null && displayed !== false) {
       // One tone per acknowledged batch, serialized so a group of completed
       // threads does not launch overlapping afplay processes.
       soundPlayback = soundPlayback.then(() => playSound(sound));
     }
     return context.json({ ok: true, acknowledged: result.acknowledged });
+  });
+
+  bb.http.route("POST", "/foreground", async (context) => {
+    const body: unknown = await context.req.json().catch(() => null);
+    try {
+      const active = foreground.update(
+        isRecord(body) ? body.pageId : undefined,
+        isRecord(body) ? body.foreground : undefined,
+      );
+      if (active) wakeWaiters();
+      return context.json({ ok: true, foreground: active });
+    } catch (error) {
+      if (error instanceof InvalidPresenceError) {
+        return context.json({ ok: false, error: error.message }, 400);
+      }
+      throw error;
+    }
   });
 
   bb.http.route("GET", "/web-push/service-worker.js", () =>
@@ -296,7 +338,11 @@ export default async function plugin(bb: BbPluginApi) {
     threadName: string,
     message: string,
     threadId: string | null,
-  ): Promise<boolean> {
+  ): Promise<DeliveryResult> {
+    if (foreground.isForeground()) {
+      bb.log.debug(`skipped notification; BB is foreground; opens ${threadId ?? "nothing"}`);
+      return "skipped";
+    }
     const { desktopSilent, pushSilent, play } = resolveSound(current.sound);
     const { title, body } = notificationLines(project, oneLine(threadName, 90), message);
     const item = {
@@ -309,7 +355,7 @@ export default async function plugin(bb: BbPluginApi) {
     };
     const listening = await enqueue(item);
     sendWebPush(item, pushSilent);
-    return listening;
+    return listening ? "queued" : "held";
   }
 
   // Bounded by the number of projects, which is small — the TTL is here for
@@ -493,14 +539,17 @@ export default async function plugin(bb: BbPluginApi) {
       } catch {
         // Thread lookup is decoration only — still send the notification.
       }
-      const listening = await post(
+      const delivery = await post(
         project,
         projectId,
         heading,
         oneLine(plainText(message), BODY_MAX_CHARS),
         ctx.threadId,
       );
-      return listening
+      if (delivery === "skipped") {
+        return "Notification skipped because BB is in the foreground.";
+      }
+      return delivery === "queued"
         ? "Notification queued; a BB window is listening."
         : "No BB window is open; the notification will appear when one is.";
     },
@@ -536,19 +585,24 @@ export default async function plugin(bb: BbPluginApi) {
       // An agent running `bb notify send` from inside a thread should get a
       // notification that opens that thread, without naming it.
       const invokingThread = ctx.threadId ?? null;
-      const sent = (listening: boolean) =>
-        listening
+      const sent = (delivery: DeliveryResult) => {
+        if (delivery === "skipped") {
+          return { exitCode: 0, stdout: "Skipped. BB is in the foreground.\n" };
+        }
+        return delivery === "queued"
           ? { exitCode: 0, stdout: "Queued — a BB window is listening.\n" }
           : {
               exitCode: 0,
               stdout: "Held — no BB window is open. It will appear when one is.\n",
             };
+      };
 
       if (command === "status") {
         const held = await notifications.count();
         const phones = webPush.status(null).subscriptionCount;
         const lines = [
           `window:     ${windowIsListening() ? `listening (${waiters.size} polling)` : "none open — notifications will wait"}`,
+          `foreground: ${foreground.count() > 0 ? "yes" : "no"}`,
           `phones:     ${phones} subscribed`,
           `held:       ${held}`,
           `on idle:    ${current.notifyOnIdle}`,
