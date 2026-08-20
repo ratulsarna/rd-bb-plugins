@@ -1,0 +1,91 @@
+{
+  "name": "bb-plugin-notify",
+  "version": "0.3.0",
+  "description": "Native macOS and iPhone Home Screen notifications for BB threads, agents, and scripts.",
+  "license": "MIT",
+  "author": "Scott Sunarto",
+  "contributors": [
+    "Ratul Sarna"
+  ],
+  "homepage": "https://github.com/ratulsarna/rd-bb-plugins/tree/main/bb-plugin-notify",
+  "bugs": {
+    "url": "https://github.com/ratulsarna/rd-bb-plugins/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ratulsarna/rd-bb-plugins.git",
+    "directory": "bb-plugin-notify"
+  },
+  "keywords": [
+    "bb",
+    "bb-plugin",
+    "notifications",
+    "desktop-notifications",
+    "macos",
+    "ios",
+    "pwa",
+    "web-push"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "bb": ">=0.39.0 <1.0.0",
+    "bbPluginSdk": ">=0.4.8"
+  },
+  "bb": {
+    "name": "Notify",
+    "description": "Native macOS and iPhone Home Screen notifications for BB threads, agents, and scripts.",
+    "branding": {
+      "icon": "./assets/icon.svg",
+      "logo": {
+        "light": "./assets/logo.svg",
+        "dark": "./assets/logo-dark.svg"
+      }
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": []
+  },
+  "files": [
+    "dist/server.js",
+    "dist/server.meta.json",
+    "dist/app.js",
+    "dist/app.meta.json",
+    "dist/app.css",
+    "assets/",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "server.ts",
+    "app.tsx",
+    "format.ts",
+    "lifecycle.ts",
+    "queue.ts",
+    "service-worker.ts",
+    "sound.ts",
+    "web-push.ts"
+  ],
+  "dependencies": {
+    "web-push": "^3.6.7",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.8",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/web-push": "^3.6.4",
+    "better-sqlite3": "^12.0.0",
+    "hono": "^4.11.9",
+    "typescript": "^7.0.0"
+  },
+  "scripts": {
+    "dev": "bb plugin dev .",
+    "build": "bb plugin build .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "clean": "rm -rf dist"
+  }
+}

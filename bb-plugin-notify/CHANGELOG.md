@@ -1,0 +1,45 @@
+# bb-plugin-notify
+
+## 0.3.0
+
+### Minor Changes
+
+- Add encrypted Web Push for iOS 16.4+ Home Screen apps.
+- Add per-device Enable, Test, Disable, and status controls.
+- Persist one VAPID key pair and multiple device subscriptions in the plugin database.
+- Remove expired push endpoints after 404 and 410 responses.
+- Keep the existing desktop queue, filters, dedupe, CLI, and agent tool as the shared path.
+- Open notification clicks with BB's project-aware thread route.
+
+## 0.2.2
+
+### Patch Changes
+
+- 1432728: Support bb 0.39. The engines range is no longer pinned to one minor: it now floors at the tested bb release and excludes only the next major (`>=0.39.0 <1.0.0`), so future bb minors load without a plugin update. Built against plugin SDK 0.4.8.
+
+## 0.2.1
+
+### Patch Changes
+
+- 186c131: Make the release tag installable. Every import the server bundle pulls in at
+  runtime is now a real `dependencies` entry, so `bb plugin install` from a git
+  tag resolves it. The previous tags built only inside this workspace, where a
+  hoisted `node_modules` supplied what the manifests had left out as devDependencies —
+  a fresh checkout of the tag failed the build with `Could not resolve "zod"`.
+
+## 0.2.0
+
+### Minor Changes
+
+- b3ed493: Require bb 0.38 and take the SDK types from the published `@get-bb/plugin-sdk`
+  package. `engines.bb` is now `>=0.38.0 <0.39.0`, so an older bb no longer
+  installs these plugins.
+
+  Agent Proxy gains a `routingStrategy` setting (`round-robin`, `fill-first`, or
+  `weighted-round-robin`) that it writes to the core `config.yaml`. Pick
+  `fill-first` to keep several Claude OAuth accounts from rotating away the
+  upstream prompt cache.
+
+### Patch Changes
+
+- 65ececd: Release the runtime, presentation, notification, theme, and thread workflow updates.
