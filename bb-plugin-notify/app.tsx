@@ -6,13 +6,12 @@
 // the notification BB's own: BB's icon, BB's name, and a click that opens the
 // thread.
 //
-// A content script stays mounted everywhere for foreground presence, the
-// desktop queue, and the service worker click bridge. The settings slot owns
-// phone subscription controls.
+// A content script stays mounted everywhere for foreground presence and the
+// desktop queue. The settings slot owns phone subscription controls.
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useState } from "react";
 
-import { isDesktopNotificationHost, isThreadId, notificationTag } from "./format";
+import { isDesktopNotificationHost, notificationTag } from "./format";
 import {
   SERVICE_WORKER_SCOPE,
   SERVICE_WORKER_URL,
@@ -77,40 +76,6 @@ function localPath(value: unknown): string {
   return typeof value === "string" && value.startsWith("/") && !value.startsWith("//")
     ? value
     : "/";
-}
-
-function navigateToThreadLocally(threadId: string, url: unknown): void {
-  const row = document.querySelector<HTMLElement>(
-    `[data-sidebar-thread-id="${CSS.escape(threadId)}"]`,
-  );
-  if (row !== null) {
-    row.click();
-    return;
-  }
-  window.location.assign(localPath(url));
-}
-
-function listenForServiceWorkerClicks(signal: AbortSignal): void {
-  if (!("serviceWorker" in navigator)) return;
-  navigator.serviceWorker.addEventListener(
-    "message",
-    (event) => {
-      const value: unknown = event.data;
-      if (
-        typeof value === "object" &&
-        value !== null &&
-        (value as { type?: unknown }).type === "bb-notify-open-thread"
-      ) {
-        const threadId = (value as { threadId?: unknown }).threadId;
-        if (typeof threadId === "string" && isThreadId(threadId)) {
-          // The worker already focused this window. Navigate it directly so a
-          // waking PWA does not depend on its WebSocket reconnecting first.
-          navigateToThreadLocally(threadId, (value as { url?: unknown }).url);
-        }
-      }
-    },
-    { signal },
-  );
 }
 
 function updateInstalledServiceWorker(): void {
@@ -211,9 +176,9 @@ function present(item: PendingNotification): void {
     silent: item.silent,
   });
   notification.addEventListener("click", () => {
-    window.focus();
-    if (item.threadId !== null) navigateToThreadLocally(item.threadId, item.url);
     notification.close();
+    window.focus();
+    if (item.threadId !== null) window.location.assign(localPath(item.url));
   });
 }
 
@@ -585,7 +550,6 @@ export default definePluginApp((app) => {
   app.contentScripts.register({
     id: "notification-bridge",
     mount({ signal }) {
-      listenForServiceWorkerClicks(signal);
       updateInstalledServiceWorker();
       watchForeground(signal);
       // Detached on purpose: the host time-boxes awaited mount work, and this

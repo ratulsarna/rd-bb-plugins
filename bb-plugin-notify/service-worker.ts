@@ -8,7 +8,6 @@ const fallback = {
   body: 'A BB notification arrived.',
   tag: 'bb-notify-push',
   url: '/',
-  threadId: null,
   silent: false,
 };
 
@@ -27,12 +26,11 @@ function pushPayload(event) {
     body: typeof value.body === 'string' ? value.body : fallback.body,
     tag: typeof value.tag === 'string' && value.tag ? value.tag : fallback.tag,
     url,
-    threadId: typeof value.threadId === 'string' ? value.threadId : null,
     silent: typeof value.silent === 'boolean' ? value.silent : fallback.silent,
   };
 }
 
-async function openThread(url, threadId) {
+async function openThread(url) {
   const path =
     typeof url === 'string' && url.startsWith('/') && !url.startsWith('//') ? url : '/';
   const target = new URL(path, self.location.origin);
@@ -48,11 +46,10 @@ async function openThread(url, threadId) {
   }
 
   const app = windows.find((client) => new URL(client.url).origin === target.origin);
-  if (app) {
+  if (app && typeof app.navigate === 'function') {
     try {
-      await app.focus();
-      app.postMessage({ type: 'bb-notify-open-thread', threadId, url: path });
-      return;
+      const navigated = await app.navigate(target.href);
+      return await (navigated || app).focus();
     } catch {}
   }
   return self.clients.openWindow(target.href);
@@ -66,7 +63,7 @@ self.addEventListener('push', (event) => {
       tag: payload.tag,
       renotify: true,
       silent: payload.silent,
-      data: { url: payload.url, threadId: payload.threadId },
+      data: { url: payload.url },
     }),
   );
 });
@@ -74,8 +71,7 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data;
-  const threadId = data && typeof data.threadId === 'string' ? data.threadId : null;
   const url = data && typeof data.url === 'string' ? data.url : '/';
-  event.waitUntil(openThread(url, threadId));
+  event.waitUntil(openThread(url));
 });
 `;

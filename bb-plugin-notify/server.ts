@@ -164,7 +164,6 @@ export default async function plugin(bb: BbPluginApi) {
           title: item.title,
           body: item.body,
           url: item.url,
-          threadId: item.threadId,
           silent,
         }),
       )

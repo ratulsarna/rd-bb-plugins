@@ -13,7 +13,7 @@ type WorkerListener = (event: {
 interface FakeWindowClient {
   url: string;
   focus(): Promise<FakeWindowClient>;
-  postMessage(value: unknown): void;
+  navigate(url: string): Promise<FakeWindowClient | null>;
 }
 
 function plain<T>(value: T): T {
@@ -72,7 +72,6 @@ test("push displays the supplied payload immediately", async () => {
         body: "Tests passed.",
         tag: "notice-7",
         url: "/projects/proj_1/threads/thr_7",
-        threadId: "thr_7",
         silent: true,
       }),
     },
@@ -86,7 +85,7 @@ test("push displays the supplied payload immediately", async () => {
         tag: "notice-7",
         renotify: true,
         silent: true,
-        data: { url: "/projects/proj_1/threads/thr_7", threadId: "thr_7" },
+        data: { url: "/projects/proj_1/threads/thr_7" },
       },
     },
   ]);
@@ -105,22 +104,21 @@ test("invalid push data still shows a visible fallback", async () => {
 
 test("click focuses a window already showing the matching thread", async () => {
   let focused = 0;
-  const messages: unknown[] = [];
   const client: FakeWindowClient = {
     url: "https://bb.example/projects/proj_1/threads/thr_7",
     async focus() {
       focused += 1;
       return this;
     },
-    postMessage(value) {
-      messages.push(value);
+    async navigate() {
+      throw new Error("matching clients must not navigate");
     },
   };
   const harness = workerHarness([client]);
   let closed = false;
   await dispatch(harness.listeners.get("notificationclick")!, {
     notification: {
-      data: { url: "/projects/proj_1/threads/thr_7", threadId: "thr_7" },
+      data: { url: "/projects/proj_1/threads/thr_7" },
       close() {
         closed = true;
       },
@@ -129,44 +127,67 @@ test("click focuses a window already showing the matching thread", async () => {
 
   assert.equal(closed, true);
   assert.equal(focused, 1);
-  assert.deepEqual(messages, []);
   assert.deepEqual(harness.opened, []);
 });
 
-test("click asks an existing uncontrolled BB page to open the thread", async () => {
-  const messages: unknown[] = [];
+test("click navigates an existing BB page before focusing it", async () => {
+  const navigated: string[] = [];
+  let focused = 0;
   const client: FakeWindowClient = {
     url: "https://bb.example/threads/another",
     async focus() {
+      focused += 1;
       return this;
     },
-    postMessage(value) {
-      messages.push(value);
+    async navigate(url) {
+      navigated.push(url);
+      this.url = url;
+      return this;
     },
   };
   const harness = workerHarness([client]);
   await dispatch(harness.listeners.get("notificationclick")!, {
     notification: {
-      data: { url: "/projects/proj_1/threads/thr_7", threadId: "thr_7" },
+      data: { url: "/projects/proj_1/threads/thr_7" },
       close() {},
     },
   });
 
-  assert.deepEqual(plain(messages), [
-    {
-      type: "bb-notify-open-thread",
-      threadId: "thr_7",
-      url: "/projects/proj_1/threads/thr_7",
-    },
+  assert.deepEqual(navigated, [
+    "https://bb.example/projects/proj_1/threads/thr_7",
   ]);
+  assert.equal(focused, 1);
   assert.deepEqual(harness.opened, []);
+});
+
+test("click opens the thread directly when an existing page cannot navigate", async () => {
+  const client: FakeWindowClient = {
+    url: "https://bb.example/threads/another",
+    async focus() {
+      return this;
+    },
+    async navigate() {
+      throw new Error("page is closing");
+    },
+  };
+  const harness = workerHarness([client]);
+  await dispatch(harness.listeners.get("notificationclick")!, {
+    notification: {
+      data: { url: "/projects/proj_1/threads/thr_7" },
+      close() {},
+    },
+  });
+
+  assert.deepEqual(harness.opened, [
+    "https://bb.example/projects/proj_1/threads/thr_7",
+  ]);
 });
 
 test("click opens a same-origin thread URL when no BB page is open", async () => {
   const harness = workerHarness();
   await dispatch(harness.listeners.get("notificationclick")!, {
     notification: {
-      data: { url: "/projects/proj_1/threads/thr_7", threadId: "thr_7" },
+      data: { url: "/projects/proj_1/threads/thr_7" },
       close() {},
     },
   });
@@ -177,7 +198,7 @@ test("click opens a same-origin thread URL when no BB page is open", async () =>
   const invalid = workerHarness();
   await dispatch(invalid.listeners.get("notificationclick")!, {
     notification: {
-      data: { url: "https://evil.example", threadId: "https://evil.example" },
+      data: { url: "https://evil.example" },
       close() {},
     },
   });

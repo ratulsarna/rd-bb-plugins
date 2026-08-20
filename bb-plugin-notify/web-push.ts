@@ -43,7 +43,6 @@ export interface WebPushPayload {
   body: string;
   tag: string;
   url: string;
-  threadId: string | null;
   silent: boolean;
 }
 
@@ -381,7 +380,6 @@ export class WebPushOwner {
           title: "bb notify",
           body: "Web Push is working on this device.",
           url: "/",
-          threadId: null,
           silent,
         },
         this.dependencies.createNotificationId(),
