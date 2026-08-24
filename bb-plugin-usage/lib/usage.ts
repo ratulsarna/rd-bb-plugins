@@ -52,10 +52,7 @@ export interface RawUsageProvider {
   windows?: readonly RawUsageWindow[];
 }
 
-export interface RawUsageResponse {
-  codex: RawUsageProvider;
-  claudeCode: RawUsageProvider;
-}
+export type RawUsageResponse = Partial<Record<string, RawUsageProvider>>;
 
 export const USAGE_CACHE_TTL_MS = 60_000;
 export const USAGE_REQUEST_TIMEOUT_MS = 35_000;
@@ -92,12 +89,13 @@ function normalizeResetTime(value: unknown): string | null {
 
 function normalizeProvider<Id extends ProviderId>(
   id: Id,
-  raw: RawUsageProvider,
+  rawValue: RawUsageProvider | undefined,
   clock: Clock,
 ): UsageProvider & {
   id: Id;
   name: (typeof PROVIDER_NAMES)[Id];
 } {
+  const raw = rawValue ?? { status: "not_installed" };
   const status = PROVIDER_STATUSES.has(raw.status as ProviderStatus)
     ? (raw.status as ProviderStatus)
     : "error";
@@ -145,7 +143,7 @@ export function normalizeUsage(
       codex: normalizeProvider("codex", raw.codex, fixedClock),
       claudeCode: normalizeProvider(
         "claudeCode",
-        raw.claudeCode,
+        raw["claude-code"],
         fixedClock,
       ),
     },
@@ -196,7 +194,8 @@ export function createUsageService(options: {
     request.promise = options.fetchUsage().then(async (firstRaw) => {
       let raw = firstRaw;
       const shouldRecover =
-        request.refreshRequested && firstRaw.claudeCode.status === "expired";
+        request.refreshRequested &&
+        firstRaw["claude-code"]?.status === "expired";
 
       if (shouldRecover) {
         try {

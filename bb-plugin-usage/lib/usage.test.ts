@@ -20,7 +20,7 @@ const rawUsage = (): RawUsageResponse => ({
       },
     ],
   },
-  claudeCode: {
+  "claude-code": {
     status: "ok",
     accountEmail: "claude@example.com",
     planLabel: "Max",
@@ -36,7 +36,7 @@ const rawUsage = (): RawUsageResponse => ({
 
 const expiredClaudeUsage = (): RawUsageResponse => ({
   ...rawUsage(),
-  claudeCode: { status: "expired" },
+  "claude-code": { status: "expired" },
 });
 
 describe("remainingPercent", () => {
@@ -56,15 +56,15 @@ describe("normalizeUsage", () => {
       ...rawUsage(),
       cursor: { status: "ok", accountEmail: "cursor@example.com" },
       codex: {
-        ...rawUsage().codex,
+        ...rawUsage().codex!,
         windows: [
           {
-            ...rawUsage().codex.windows![0]!,
+            ...rawUsage().codex!.windows![0]!,
             cost: { usedUsdCents: 12_00, limitUsdCents: 20_00 },
           },
         ],
       },
-      claudeCode: {
+      "claude-code": {
         status: "error",
         message: "private provider failure",
         accountEmail: "claude@example.com",
@@ -97,7 +97,7 @@ describe("normalizeUsage", () => {
   it("isolates provider failures and nulls malformed reset times", () => {
     const raw = rawUsage();
     raw.codex = { status: "unauthenticated" };
-    raw.claudeCode.windows![0]!.resetsAt = "tomorrow-ish";
+    raw["claude-code"]!.windows![0]!.resetsAt = "tomorrow-ish";
 
     const result = normalizeUsage(
       raw,
@@ -113,6 +113,13 @@ describe("normalizeUsage", () => {
       resetsAt: null,
       pace: null,
     });
+  });
+
+  it("marks absent supported providers as not installed", () => {
+    const result = normalizeUsage({});
+
+    expect(result.providers.codex.status).toBe("not_installed");
+    expect(result.providers.claudeCode.status).toBe("not_installed");
   });
 });
 
@@ -302,7 +309,7 @@ describe("createUsageService", () => {
 
   it("returns Codex data when recovery cannot restore Claude and no cache exists", async () => {
     const retry = expiredClaudeUsage();
-    retry.codex.windows![0]!.usedPercent = 12;
+    retry.codex!.windows![0]!.usedPercent = 12;
     const fetchUsage = vi
       .fn<() => Promise<RawUsageResponse>>()
       .mockResolvedValueOnce(expiredClaudeUsage())
