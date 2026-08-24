@@ -32,7 +32,7 @@
   },
   "engines": {
     "bb": ">=0.39.0 <1.0.0",
-    "bbPluginSdk": ">=0.4.8"
+    "bbPluginSdk": ">=0.4.16"
   },
   "bb": {
     "name": "Notify",
@@ -73,7 +73,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.4.8",
+    "@get-bb/plugin-sdk": "0.4.15",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",

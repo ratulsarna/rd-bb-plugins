@@ -509,16 +509,23 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.deleted", ({ thread }) => forget(thread.id));
   bb.events.on("thread.archived", ({ thread }) => forget(thread.id));
 
+  // Published SDK types do not yet include the runtime's presentation field.
+  const notifyUserPresentation = {
+    presentation: {
+      label: {
+        pending: "Notifying the user",
+        completed: "Notified the user",
+      },
+    },
+  };
+
   bb.agents.registerTool({
     name: "notify_user",
     description:
       "Post a notification on the user's desktop and subscribed phones. Use it when the user has likely walked away and something needs them now: a long job finished, or you are blocked on a decision. Do not use it for routine progress while they are watching.",
     instructions:
       "notify_user posts a notification titled with the project and thread. Keep the message under 120 characters, lead with what the user would act on, and write plain prose — markdown syntax is stripped, not rendered.",
-    experimental_statusLabels: {
-      pending: "Notifying the user",
-      completed: "Notified the user",
-    },
+    ...notifyUserPresentation,
     // No title parameter: the heading is always `<project> · <thread>`, the
     // same as an event notification. An agent-supplied headline would make
     // one row of the notification list look unlike all the others, and it is
