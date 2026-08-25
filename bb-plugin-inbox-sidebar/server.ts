@@ -79,6 +79,55 @@ export const boardRpcContract = defineRpcContract({
     }),
     output: pinnedOrderOutput,
   },
+  assistantSeeds: {
+    input: threadIdInput,
+    output: z.object({
+      title: z.string().nullable(),
+      projectId: z.string(),
+      environmentId: z.string(),
+      providerId: z.string(),
+      model: z.string().optional(),
+      reasoningLevel: z.string().optional(),
+      permissionMode: z.string().optional(),
+      serviceTier: z.string().optional(),
+      homePath: z.string().nullable(),
+      homes: z.array(z.object({ name: z.string(), path: z.string() })),
+    }),
+  },
+  listAssistantAvatars: {
+    input: z.object({
+      environmentIds: z.array(z.string().trim().min(1)).max(100),
+    }),
+    output: z.object({
+      rows: z.array(
+        z.object({ environmentId: z.string(), svg: z.string() }),
+      ),
+    }),
+  },
+  listAssistantSubtitles: {
+    input: z.object({}),
+    output: z.object({
+      rows: z.array(
+        z.object({ environmentId: z.string(), subtitle: z.string() }),
+      ),
+    }),
+  },
+  setAssistantSubtitle: {
+    input: z.object({
+      threadId: z.string().trim().min(1),
+      subtitle: z.string().trim().max(200),
+    }),
+    output: z.object({ ok: z.boolean() }),
+  },
+  createReplacementThread: {
+    input: z.object({
+      replaceThreadId: z.string().trim().min(1),
+      title: z.string().nullable(),
+      request: z.unknown(),
+      homePath: z.string().trim().min(1).optional(),
+    }),
+    output: z.object({ newThreadId: z.string() }),
+  },
 });
 
 /** Realtime channel the board re-reads overrides on. */
@@ -86,6 +135,9 @@ export const SETTLED_CHANNEL = "settled";
 
 /** Realtime channel the board re-reads the pinned order on. */
 export const PINNED_CHANNEL = "pinned-order";
+
+/** Realtime channel the assistant list re-reads subtitles on. */
+export const SUBTITLE_CHANNEL = "assistant-subtitles";
 
 interface OverrideDbRow {
   thread_id: string;
@@ -101,6 +153,13 @@ export default function plugin(bb: BbPluginApi) {
        override  TEXT NOT NULL CHECK (override IN ('settled', 'active')),
        at        INTEGER NOT NULL
      )`,
+    // Keyed by environment, not thread: an assistant is its home environment,
+    // and threads are disposable — a subtitle must survive a thread restart.
+    `CREATE TABLE IF NOT EXISTS assistant_subtitles (
+       environment_id TEXT PRIMARY KEY,
+       subtitle       TEXT NOT NULL,
+       at             INTEGER NOT NULL
+     )`,
   ]);
 
   const write = (threadId: string, override: "settled" | "active"): void => {
@@ -112,6 +171,138 @@ export default function plugin(bb: BbPluginApi) {
     ).run(threadId, override, Date.now());
     bb.realtime.publish(SETTLED_CHANNEL, { threadId });
   };
+
+  // Shared by the rpc (sidebar editor) and the CLI (agents). Resolves the
+  // thread to its home environment; empty subtitle clears.
+  const writeSubtitle = async (
+    threadId: string,
+    subtitle: string,
+  ): Promise<string> => {
+    const thread = await bb.sdk.threads.get({ threadId });
+    if (!thread.environmentId) {
+      throw new Error(
+        `thread ${threadId} has no environment — not an assistant home`,
+      );
+    }
+    if (subtitle === "") {
+      db.prepare(
+        `DELETE FROM assistant_subtitles WHERE environment_id = ?`,
+      ).run(thread.environmentId);
+    } else {
+      db.prepare(
+        `INSERT INTO assistant_subtitles (environment_id, subtitle, at) VALUES (?, ?, ?)
+         ON CONFLICT(environment_id) DO UPDATE SET
+           subtitle = excluded.subtitle,
+           at = excluded.at`,
+      ).run(thread.environmentId, subtitle, Date.now());
+    }
+    bb.realtime.publish(SUBTITLE_CHANNEL, {
+      environmentId: thread.environmentId,
+    });
+    return thread.environmentId;
+  };
+
+  // A directory is an assistant home when it carries its own identity file.
+  const isAssistantHome = async (
+    hostId: string,
+    path: string,
+  ): Promise<boolean> => {
+    try {
+      await bb.sdk.files.read({ hostId, path: `${path}/.pi/SYSTEM.md` });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Candidate homes for the ↻ dialog: the fleet root's subdirectories that
+  // are homes. The fleet root is the environment's parent when the
+  // environment is itself a home, else the environment directory — a
+  // mishomed thread sits directly on the fleet root.
+  const listAssistantHomes = async (
+    hostId: string,
+    environmentPath: string,
+  ): Promise<Array<{ name: string; path: string }>> => {
+    try {
+      const here = await bb.sdk.hosts.directory({
+        hostId,
+        path: environmentPath,
+      });
+      const root = (await isAssistantHome(hostId, environmentPath))
+        ? here.parent
+        : here.directory;
+      if (!root) return [];
+      const listing =
+        root === here.directory
+          ? here
+          : await bb.sdk.hosts.directory({ hostId, path: root });
+      const dirs = listing.entries.filter(
+        (entry) => entry.kind === "directory" && !entry.name.startsWith("."),
+      );
+      const flags = await Promise.all(
+        dirs.map((dir) => isAssistantHome(hostId, dir.path)),
+      );
+      return dirs
+        .filter((_, index) => flags[index])
+        .map(({ name, path }) => ({ name, path }));
+    } catch {
+      return [];
+    }
+  };
+
+  const SUBTITLE_USAGE =
+    "usage: bb assistants subtitle <thread-id> [text… | --clear]";
+  bb.cli.register({
+    name: "assistants",
+    summary: "Assistant sidebar helpers",
+    commands: [
+      {
+        name: "subtitle",
+        summary: "Show, set, or clear an assistant's sidebar subtitle",
+        usage: SUBTITLE_USAGE,
+      },
+    ],
+    run: async (argv) => {
+      const [command, threadId, ...rest] = argv;
+      if (command !== "subtitle" || !threadId) {
+        return { exitCode: 1, stderr: `${SUBTITLE_USAGE}\n` };
+      }
+      try {
+        if (rest.length === 0) {
+          const thread = await bb.sdk.threads.get({ threadId });
+          const row = thread.environmentId
+            ? (db
+                .prepare(
+                  `SELECT subtitle FROM assistant_subtitles WHERE environment_id = ?`,
+                )
+                .get(thread.environmentId) as
+                | { subtitle: string }
+                | undefined)
+            : undefined;
+          return { exitCode: 0, stdout: `${row?.subtitle ?? "(none)"}\n` };
+        }
+        const subtitle =
+          rest[0] === "--clear" ? "" : rest.join(" ").trim();
+        if (subtitle.length > 200) {
+          return {
+            exitCode: 1,
+            stderr: "subtitle is longer than 200 characters\n",
+          };
+        }
+        await writeSubtitle(threadId, subtitle);
+        return {
+          exitCode: 0,
+          stdout: subtitle
+            ? `Subtitle set: ${subtitle}\n`
+            : "Subtitle cleared\n",
+        };
+      } catch (cause) {
+        const message =
+          cause instanceof Error ? cause.message : String(cause);
+        return { exitCode: 1, stderr: `${message}\n` };
+      }
+    },
+  });
 
   bb.rpc.register(boardRpcContract, {
     async projectCreationContext() {
@@ -200,6 +391,111 @@ export default function plugin(bb: BbPluginApi) {
       });
       bb.realtime.publish(PINNED_CHANNEL, { threadId });
       return { ids: pinnedRootIds(threads) };
+    },
+    // An assistant is its home environment; threads are disposable. These two
+    // back the ↻ dialog: seed bb's compose surface from the current thread,
+    // then spawn the replacement from the typed message and archive the old
+    // thread — a fresh thread born exactly like bb's default new-thread flow.
+    async assistantSeeds({ threadId }) {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (!thread.environmentId) {
+        throw new Error(
+          `thread ${threadId} has no environment — not an assistant home`,
+        );
+      }
+      const [options, env] = await Promise.all([
+        bb.sdk.threads.defaultExecutionOptions({ threadId }),
+        bb.sdk.environments.get({ environmentId: thread.environmentId }),
+      ]);
+      const homes = env.path
+        ? await listAssistantHomes(env.hostId, env.path)
+        : [];
+      return {
+        title: thread.title,
+        projectId: thread.projectId,
+        environmentId: thread.environmentId,
+        providerId: thread.providerId,
+        model: options?.model,
+        reasoningLevel: options?.reasoningLevel,
+        permissionMode: options?.permissionMode,
+        serviceTier: options?.serviceTier,
+        homePath: env.path,
+        homes,
+      };
+    },
+    // An assistant's picture is a file it owns: <home>/avatar.svg. No store,
+    // no upload — the assistant (or the user) writes the file and the sidebar
+    // picks it up. Rendered via an <img> data URL, so embedded scripts are
+    // inert. Missing or bogus files just mean initials.
+    async listAssistantAvatars({ environmentIds }) {
+      const rows = await Promise.all(
+        [...new Set(environmentIds)].map(async (environmentId) => {
+          try {
+            const env = await bb.sdk.environments.get({ environmentId });
+            if (!env.path) return null;
+            const file = await bb.sdk.files.read({
+              hostId: env.hostId,
+              path: `${env.path}/avatar.svg`,
+            });
+            if (file.sizeBytes > 100_000) return null;
+            const svg =
+              file.contentEncoding === "base64"
+                ? Buffer.from(file.content, "base64").toString("utf8")
+                : file.content;
+            const head = svg.trimStart().slice(0, 5).toLowerCase();
+            if (!head.startsWith("<svg") && !head.startsWith("<?xml"))
+              return null;
+            return { environmentId, svg };
+          } catch {
+            return null;
+          }
+        }),
+      );
+      return { rows: rows.filter((row) => row !== null) };
+    },
+    async listAssistantSubtitles() {
+      const rows = (
+        db
+          .prepare(`SELECT environment_id, subtitle FROM assistant_subtitles`)
+          .all() as Array<{ environment_id: string; subtitle: string }>
+      ).map((row) => ({
+        environmentId: row.environment_id,
+        subtitle: row.subtitle,
+      }));
+      return { rows };
+    },
+    async setAssistantSubtitle({ threadId, subtitle }) {
+      await writeSubtitle(threadId, subtitle);
+      return { ok: true };
+    },
+    async createReplacementThread({ replaceThreadId, title, request, homePath }) {
+      // The dialog's Home choice wins over the composer's environment picker,
+      // which cannot express a plain directory: unchanged path reuses the
+      // current environment, a different path lets bb resolve it into one.
+      let environment: Record<string, unknown> | undefined;
+      if (homePath) {
+        const thread = await bb.sdk.threads.get({ threadId: replaceThreadId });
+        const env = thread.environmentId
+          ? await bb.sdk.environments.get({
+              environmentId: thread.environmentId,
+            })
+          : null;
+        environment =
+          env && env.path === homePath
+            ? { type: "reuse", environmentId: env.id }
+            : {
+                type: "host",
+                ...(env ? { hostId: env.hostId } : {}),
+                workspace: { type: "unmanaged", path: homePath },
+              };
+      }
+      const fresh = await bb.sdk.threads.spawn({
+        ...(request as Record<string, unknown>),
+        ...(environment ? { environment } : {}),
+        title: title ?? undefined,
+      } as Parameters<typeof bb.sdk.threads.spawn>[0]);
+      await bb.sdk.threads.archive({ threadId: replaceThreadId });
+      return { newThreadId: fresh.id };
     },
   });
 

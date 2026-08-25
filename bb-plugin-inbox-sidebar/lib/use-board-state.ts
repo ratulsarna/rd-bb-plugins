@@ -60,8 +60,38 @@ function samePullRequest(
  * It deliberately takes no search or project input. Whatever the surface hides
  * on screen, the classification underneath is computed over every thread.
  */
+/**
+ * The assistant fleet has its own sidebar mode (the assistant list). Its
+ * project and threads never reach this board.
+ */
+const ASSISTANTS_PROJECT_NAME = "assistants";
+
 export function useBoardState(): BoardState {
-  const { status: threadStatus, threads, projects } = useSidebarThreads();
+  const {
+    status: threadStatus,
+    threads: allThreads,
+    projects: allProjects,
+  } = useSidebarThreads();
+  const projects = useMemo(
+    () =>
+      allProjects.filter(
+        (project) => project.name.toLowerCase() !== ASSISTANTS_PROJECT_NAME,
+      ),
+    [allProjects],
+  );
+  const threads = useMemo(() => {
+    const assistantProjectIds = new Set(
+      allProjects
+        .filter(
+          (project) => project.name.toLowerCase() === ASSISTANTS_PROJECT_NAME,
+        )
+        .map((project) => project.id),
+    );
+    if (assistantProjectIds.size === 0) return allThreads;
+    return allThreads.filter(
+      (thread) => !assistantProjectIds.has(thread.projectId),
+    );
+  }, [allProjects, allThreads]);
   const settledApi = useSettledOverrides();
   const pinnedApi = usePinnedOrder();
   const [pullRequests, setPullRequests] = useState<

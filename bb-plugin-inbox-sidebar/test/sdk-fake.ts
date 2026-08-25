@@ -154,14 +154,23 @@ interface ThreadListRegistration {
   component: ComponentType<PluginThreadListProps>;
 }
 
+interface SidebarFooterActionRegistration {
+  id: string;
+  title: string;
+  icon: string;
+  run(): void;
+}
+
 export const registrations = {
   threadLists: [] as ThreadListRegistration[],
+  sidebarFooterActions: [] as SidebarFooterActionRegistration[],
 };
 
 export function definePluginApp(
   setup: (app: {
     slots: {
       experimental_threadList(registration: ThreadListRegistration): void;
+      sidebarFooterAction(registration: SidebarFooterActionRegistration): void;
     };
   }) => void,
 ): typeof registrations {
@@ -169,6 +178,8 @@ export function definePluginApp(
     slots: {
       experimental_threadList: (registration) =>
         registrations.threadLists.push(registration),
+      sidebarFooterAction: (registration) =>
+        registrations.sidebarFooterActions.push(registration),
     },
   });
   return registrations;
@@ -287,3 +298,16 @@ export const useRpc = () => rpc;
 export const useRealtime = () => {};
 
 export const useRealtimeConnectionState = () => "connected" as const;
+
+export const navigateCalls: Array<{ method: string; arg: unknown }> = [];
+const navigate = {
+  toThread: (threadId: string) => {
+    navigateCalls.push({ method: "toThread", arg: threadId });
+  },
+  toPluginPanel: (path: string, options?: unknown) => {
+    navigateCalls.push({ method: "toPluginPanel", arg: { path, options } });
+  },
+};
+export const useBbNavigate = () => navigate;
+
+export const experimental_NewThreadComposer = () => null;
