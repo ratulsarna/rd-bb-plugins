@@ -15,7 +15,7 @@
     "name": "Inbox Sidebar",
     "description": "An inbox for bb threads: pinned priorities on top, active work in a steady list, settled work out of the way.",
     "branding": {
-      "icon": "Rows3"
+      "icon": "ArrowReloadHorizontal"
     },
     "server": "./server.ts",
     "app": "./app.tsx",
