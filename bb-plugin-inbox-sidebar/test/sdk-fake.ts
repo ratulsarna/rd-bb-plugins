@@ -161,9 +161,15 @@ interface SidebarFooterActionRegistration {
   run(): void;
 }
 
+interface ContentScriptRegistration {
+  id: string;
+  mount(context: { signal: AbortSignal }): void;
+}
+
 export const registrations = {
   threadLists: [] as ThreadListRegistration[],
   sidebarFooterActions: [] as SidebarFooterActionRegistration[],
+  contentScripts: [] as ContentScriptRegistration[],
 };
 
 export function definePluginApp(
@@ -171,6 +177,9 @@ export function definePluginApp(
     slots: {
       experimental_threadList(registration: ThreadListRegistration): void;
       sidebarFooterAction(registration: SidebarFooterActionRegistration): void;
+    };
+    contentScripts: {
+      register(registration: ContentScriptRegistration): void;
     };
   }) => void,
 ): typeof registrations {
@@ -180,6 +189,10 @@ export function definePluginApp(
         registrations.threadLists.push(registration),
       sidebarFooterAction: (registration) =>
         registrations.sidebarFooterActions.push(registration),
+    },
+    contentScripts: {
+      register: (registration) =>
+        registrations.contentScripts.push(registration),
     },
   });
   return registrations;

@@ -13,10 +13,26 @@ export default definePluginApp((app) => {
   // the same in a browser tab and inside an installed PWA.
   app.slots.sidebarFooterAction({
     id: "mode-toggle",
-    title: "Switch between code and assistants",
+    title: "Switch between code and assistants (Cmd/Ctrl+Shift+S)",
     icon: "ArrowReloadHorizontal",
     run: () => {
       window.dispatchEvent(new Event(MODE_TOGGLE_EVENT));
+    },
+  });
+  // bb's keybinding table is a fixed core-command list, so the shortcut is a
+  // plain page listener. Mod+Shift+S is unclaimed by bb (checked against
+  // `bb settings keyboard list`) and by the browsers/desktop shell.
+  app.contentScripts.register({
+    id: "mode-toggle-shortcut",
+    mount({ signal }) {
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (!(event.metaKey || event.ctrlKey)) return;
+        if (!event.shiftKey || event.altKey) return;
+        if (event.key.toLowerCase() !== "s") return;
+        event.preventDefault();
+        window.dispatchEvent(new Event(MODE_TOGGLE_EVENT));
+      };
+      document.addEventListener("keydown", onKeyDown, { signal });
     },
   });
 });
