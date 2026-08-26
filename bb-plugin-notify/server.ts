@@ -10,7 +10,7 @@
 // desktop alert so macOS credits BB, while standards-based Web Push sends the
 // same alert to each subscribed Home Screen app. When neither app is in the
 // foreground and no desktop window is open, that copy waits in a short queue.
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import type { Context } from "hono";
 import { z } from "zod";
 
@@ -34,6 +34,7 @@ import {
 } from "./queue.ts";
 import { SERVICE_WORKER_SOURCE } from "./service-worker.ts";
 import { playSound, resolveSound, SOUND_OFF, SOUND_OPTIONS } from "./sound.ts";
+import { THREAD_MUTE_CHANNEL, type ThreadMuteChange } from "./thread-mute.ts";
 import {
   createWebPushOwner,
   createWebPushPayload,
@@ -51,8 +52,21 @@ const DEDUPE_WINDOW_MS = 3_000;
 const MAX_TRACKED_THREADS = 500;
 /** How long a cached project name is trusted before it is read again. */
 const PROJECT_NAME_TTL_MS = 5 * 60_000;
+const THREAD_MUTE_KEY_PREFIX = "thread-mute:";
 
 type DeliveryResult = "skipped" | "queued" | "held";
+type ThreadDeliveryResult = DeliveryResult | "muted";
+
+export const rpcContract = defineRpcContract({
+  getThreadMute: {
+    input: z.object({ threadId: z.string().min(1).max(256) }).strict(),
+    output: z.object({ muted: z.boolean() }).strict(),
+  },
+  setThreadMute: {
+    input: z.object({ threadId: z.string().min(1).max(256), muted: z.boolean() }).strict(),
+    output: z.object({ muted: z.boolean() }).strict(),
+  },
+});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -111,6 +125,28 @@ export default async function plugin(bb: BbPluginApi) {
   settings.onChange((next) => {
     current = next;
     bb.log.info("settings changed");
+  });
+
+  const threadMuteKey = (threadId: string) => `${THREAD_MUTE_KEY_PREFIX}${threadId}`;
+  const isThreadMuted = async (threadId: string) =>
+    (await bb.storage.kv.get<boolean>(threadMuteKey(threadId))) === true;
+
+  bb.rpc.register(rpcContract, {
+    async getThreadMute({ threadId }) {
+      return { muted: await isThreadMuted(threadId) };
+    },
+    async setThreadMute({ threadId, muted }) {
+      if (muted) {
+        await bb.storage.kv.set(threadMuteKey(threadId), true);
+      } else {
+        await bb.storage.kv.delete(threadMuteKey(threadId));
+      }
+      bb.realtime.publish(THREAD_MUTE_CHANNEL, {
+        threadId,
+        muted,
+      } satisfies ThreadMuteChange);
+      return { muted };
+    },
   });
 
   // --- The delivery queue ---------------------------------------------------
@@ -357,6 +393,20 @@ export default async function plugin(bb: BbPluginApi) {
     return listening ? "queued" : "held";
   }
 
+  async function postForThread(
+    project: string | null,
+    projectId: string | null,
+    threadName: string,
+    message: string,
+    threadId: string,
+  ): Promise<ThreadDeliveryResult> {
+    if (await isThreadMuted(threadId)) {
+      bb.log.debug(`skipped notification; thread is muted; opens ${threadId}`);
+      return "muted";
+    }
+    return post(project, projectId, threadName, message, threadId);
+  }
+
   // Bounded by the number of projects, which is small — the TTL is here for
   // freshness, not size. Without it a renamed project would keep tagging
   // notifications with its old name for the life of the server.
@@ -467,13 +517,14 @@ export default async function plugin(bb: BbPluginApi) {
       // The outcome used to sit on its own line. Now that the title carries
       // project and thread, only a failure earns the words.
       const said = oneLine(plainText(detail?.trim() || fallback), BODY_MAX_CHARS);
-      await post(
+      const delivery = await postForThread(
         project,
         thread.projectId,
         threadLabel(thread),
         outcome === "failed" ? `Failed — ${said}` : said,
         thread.id,
       );
+      if (delivery === "muted") notifiedAt.delete(thread.id);
     } catch (error) {
       notifiedAt.delete(thread.id);
       throw error;
@@ -506,7 +557,10 @@ export default async function plugin(bb: BbPluginApi) {
     return notifyThread(thread, "failed", error);
   });
 
-  bb.events.on("thread.deleted", ({ thread }) => forget(thread.id));
+  bb.events.on("thread.deleted", async ({ thread }) => {
+    forget(thread.id);
+    await bb.storage.kv.delete(threadMuteKey(thread.id));
+  });
   bb.events.on("thread.archived", ({ thread }) => forget(thread.id));
 
   // Published SDK types do not yet include the runtime's presentation field.
@@ -545,13 +599,16 @@ export default async function plugin(bb: BbPluginApi) {
       } catch {
         // Thread lookup is decoration only — still send the notification.
       }
-      const delivery = await post(
+      const delivery = await postForThread(
         project,
         projectId,
         heading,
         oneLine(plainText(message), BODY_MAX_CHARS),
         ctx.threadId,
       );
+      if (delivery === "muted") {
+        return "Notification skipped because this thread is muted.";
+      }
       if (delivery === "skipped") {
         return "Notification skipped because BB is in the foreground.";
       }

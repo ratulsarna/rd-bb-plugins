@@ -119,6 +119,13 @@ bb plugin config notify set agentTool true
 The defaults are the quiet ones: a notification arrives silently, and no agent
 can interrupt you until you turn the tool on.
 
+### Mute one thread
+
+Use the bell in a thread header to mute or unmute that thread. A mute skips its
+finish and failure alerts, plus notifications sent by its `notify_user` tool.
+It applies to every bb window and subscribed device. Explicit `bb notify send`
+commands and notification tests still send.
+
 ### iPhone Home Screen
 
 1. Open BB in Safari on the iPhone.

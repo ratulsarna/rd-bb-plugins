@@ -66,6 +66,7 @@
     "queue.ts",
     "service-worker.ts",
     "sound.ts",
+    "thread-mute.ts",
     "web-push.ts"
   ],
   "dependencies": {

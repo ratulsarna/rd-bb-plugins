@@ -8,15 +8,17 @@
 //
 // A content script stays mounted everywhere for foreground presence and the
 // desktop queue. The settings slot owns phone subscription controls.
-import { definePluginApp } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useState } from "react";
 
 import { isDesktopNotificationHost, notificationTag } from "./format";
+import type { rpcContract } from "./server";
 import {
   SERVICE_WORKER_SCOPE,
   SERVICE_WORKER_URL,
   WEB_PUSH_ROUTE_BASE,
 } from "./service-worker";
+import { isThreadMuteChange, THREAD_MUTE_CHANNEL } from "./thread-mute";
 
 const PENDING_URL = "/api/v1/plugins/notify/http/pending";
 const ACK_URL = "/api/v1/plugins/notify/http/ack";
@@ -380,6 +382,97 @@ function buttonClass(primary = false): string {
   ].join(" ");
 }
 
+function BellIcon({ muted }: { muted: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-4"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+      <path d="M10 21h4" />
+      {muted ? <path d="M4 4l16 16" /> : null}
+    </svg>
+  );
+}
+
+function ThreadMuteButton({ threadId }: { threadId: string }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [muted, setMuted] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMuted(null);
+    setLoadFailed(false);
+    void rpc
+      .call("getThreadMute", { threadId })
+      .then(({ muted: next }) => {
+        if (!cancelled) setMuted(next);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rpc, threadId]);
+
+  useRealtime(THREAD_MUTE_CHANNEL, (payload) => {
+    if (isThreadMuteChange(payload) && payload.threadId === threadId) {
+      setMuted(payload.muted);
+      setLoadFailed(false);
+    }
+  });
+
+  const label = muted ? "Unmute notifications" : "Mute notifications";
+  const toggle = async () => {
+    if (muted === null || busy) return;
+    const next = !muted;
+    setBusy(true);
+    setMuted(next);
+    try {
+      await rpc.call("setThreadMute", { threadId, muted: next });
+    } catch {
+      setMuted(!next);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className={[
+        "inline-flex size-7 items-center justify-center rounded-md text-muted-foreground",
+        "transition-colors hover:bg-muted hover:text-foreground",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "disabled:cursor-not-allowed disabled:opacity-50",
+        muted ? "bg-muted text-foreground" : "",
+      ].join(" ")}
+      aria-label={label}
+      aria-pressed={muted === true}
+      title={
+        loadFailed
+          ? "Could not load notification setting"
+          : muted === null
+            ? "Loading notification setting"
+            : label
+      }
+      disabled={muted === null || busy}
+      onClick={() => void toggle()}
+    >
+      <BellIcon muted={muted === true} />
+    </button>
+  );
+}
+
 function WebPushSettings() {
   const supportError = webPushSupportError();
   const [registration, setRegistration] = useState<ServiceWorkerRegistration | null>(null);
@@ -564,5 +657,10 @@ export default definePluginApp((app) => {
     title: "iPhone Home Screen notifications",
     description: "Send encrypted notifications to each subscribed Home Screen app.",
     component: WebPushSettings,
+  });
+  app.slots.experimental_threadHeaderAction({
+    id: "thread-mute",
+    title: "Notifications",
+    component: ThreadMuteButton,
   });
 });
