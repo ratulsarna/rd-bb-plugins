@@ -14,7 +14,7 @@ export default definePluginApp((app) => {
   app.slots.sidebarFooterAction({
     id: "mode-toggle",
     title: "Switch between code and assistants",
-    icon: "ArrowLeftRight",
+    icon: "ArrowReloadHorizontal",
     run: () => {
       window.dispatchEvent(new Event(MODE_TOGGLE_EVENT));
     },
