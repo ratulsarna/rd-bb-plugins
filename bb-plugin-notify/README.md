@@ -116,15 +116,17 @@ bb plugin config notify set agentTool true
 | `sound`                | `off`   | `off`, `system default`, or a named macOS server tone          |
 | `agentTool`            | `false` | Offer the `notify_user` tool to agents                         |
 
-The defaults are the quiet ones: a notification arrives silently, and no agent
-can interrupt you until you turn the tool on.
+The defaults are the quiet ones: threads do not notify until you enable their
+bell, notifications arrive silently, and no agent can interrupt you until you
+turn the tool on.
 
-### Mute one thread
+### Enable one thread
 
-Use the bell in a thread header to mute or unmute that thread. A mute skips its
-finish and failure alerts, plus notifications sent by its `notify_user` tool.
-It applies to every bb window and subscribed device. Explicit `bb notify send`
-commands and notification tests still send.
+Every thread starts with a crossed-out bell and sends no notifications. Use the
+bell in a thread header to enable its finish and failure alerts, plus
+notifications sent by its `notify_user` tool. The choice applies to every bb
+window and subscribed device. Explicit `bb notify send` commands and
+notification tests still send.
 
 ### iPhone Home Screen
 

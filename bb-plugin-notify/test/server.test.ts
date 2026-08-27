@@ -29,6 +29,10 @@ test("a parent notifies only after its last background agent finishes", async (c
     id: "thr_parent",
     projectId: "proj_plugins",
   } as const;
+  await host.harness.behavior.callRpc("setThreadNotification", {
+    threadId: parent.id,
+    enabled: true,
+  });
 
   await host.harness.behavior.emitThreadEvent("thread.active", {
     thread: makeThreadResponse({ ...parent, status: "active" }),
@@ -74,6 +78,10 @@ test("a focused BB app suppresses new and held desktop notifications", async (co
 
   const queue = new NotificationQueue(host.bb.storage.kv);
   const finish = async (id: string) => {
+    await host.harness.behavior.callRpc("setThreadNotification", {
+      threadId: id,
+      enabled: true,
+    });
     const base = { id, projectId: "proj_plugins" } as const;
     await host.harness.behavior.emitThreadEvent("thread.active", {
       thread: makeThreadResponse({ ...base, status: "active" }),
@@ -111,7 +119,7 @@ test("a focused BB app suppresses new and held desktop notifications", async (co
   assert.equal(await queue.count(), 1);
 });
 
-test("a thread mute blocks automatic and agent notifications until it is cleared", async (context) => {
+test("threads notify only after they are enabled", async (context) => {
   const host = createFakePluginHost({
     pluginId: "notify",
     sdk: {
@@ -120,7 +128,7 @@ test("a thread mute blocks automatic and agent notifications until it is cleared
       },
       threads: {
         get: async () =>
-          makeThreadResponse({ id: "thr_muted", projectId: "proj_plugins" }),
+          makeThreadResponse({ id: "thr_opt_in", projectId: "proj_plugins" }),
         events: { list: async () => [] },
       },
     },
@@ -129,21 +137,23 @@ test("a thread mute blocks automatic and agent notifications until it is cleared
   await plugin(host.bb);
 
   const queue = new NotificationQueue(host.bb.storage.kv);
-  await host.harness.behavior.callRpc("setThreadMute", {
-    threadId: "thr_muted",
-    muted: true,
-  });
+  assert.deepEqual(
+    await host.harness.behavior.callRpc("getThreadNotification", {
+      threadId: "thr_opt_in",
+    }),
+    { enabled: false },
+  );
 
   await host.harness.behavior.emitThreadEvent("thread.active", {
     thread: makeThreadResponse({
-      id: "thr_muted",
+      id: "thr_opt_in",
       projectId: "proj_plugins",
       status: "active",
     }),
   });
   await host.harness.behavior.emitThreadEvent("thread.idle", {
     thread: makeThreadResponse({
-      id: "thr_muted",
+      id: "thr_opt_in",
       projectId: "proj_plugins",
       status: "idle",
     }),
@@ -152,14 +162,14 @@ test("a thread mute blocks automatic and agent notifications until it is cleared
   await host.harness.behavior.callAgentTool(
     "notify_user",
     { message: "Needs review." },
-    { threadId: "thr_muted", projectId: "proj_plugins" },
+    { threadId: "thr_opt_in", projectId: "proj_plugins" },
   );
   assert.equal(await queue.count(), 0);
 
   const manual = await host.harness.behavior.runCli(
     ["send", "Manual check."],
     {
-      threadId: "thr_muted",
+      threadId: "thr_opt_in",
       projectId: "proj_plugins",
       signal: new AbortController().signal,
     },
@@ -167,24 +177,52 @@ test("a thread mute blocks automatic and agent notifications until it is cleared
   assert.equal(manual.exitCode, 0);
   assert.equal(await queue.count(), 1);
 
-  await host.harness.behavior.callRpc("setThreadMute", {
-    threadId: "thr_muted",
-    muted: false,
+  await host.harness.behavior.callRpc("setThreadNotification", {
+    threadId: "thr_opt_in",
+    enabled: true,
   });
   await host.harness.behavior.emitThreadEvent("thread.active", {
     thread: makeThreadResponse({
-      id: "thr_muted",
+      id: "thr_opt_in",
       projectId: "proj_plugins",
       status: "active",
     }),
   });
   await host.harness.behavior.emitThreadEvent("thread.idle", {
     thread: makeThreadResponse({
-      id: "thr_muted",
+      id: "thr_opt_in",
       projectId: "proj_plugins",
       status: "idle",
     }),
     lastAssistantText: "Done.",
   });
   assert.equal(await queue.count(), 2);
+
+  await host.harness.behavior.callAgentTool(
+    "notify_user",
+    { message: "Needs review." },
+    { threadId: "thr_opt_in", projectId: "proj_plugins" },
+  );
+  assert.equal(await queue.count(), 3);
+
+  await host.harness.behavior.callRpc("setThreadNotification", {
+    threadId: "thr_opt_in",
+    enabled: false,
+  });
+  await host.harness.behavior.emitThreadEvent("thread.active", {
+    thread: makeThreadResponse({
+      id: "thr_opt_in",
+      projectId: "proj_plugins",
+      status: "active",
+    }),
+  });
+  await host.harness.behavior.emitThreadEvent("thread.idle", {
+    thread: makeThreadResponse({
+      id: "thr_opt_in",
+      projectId: "proj_plugins",
+      status: "idle",
+    }),
+    lastAssistantText: "Done again.",
+  });
+  assert.equal(await queue.count(), 3);
 });

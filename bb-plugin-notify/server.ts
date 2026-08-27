@@ -34,7 +34,10 @@ import {
 } from "./queue.ts";
 import { SERVICE_WORKER_SOURCE } from "./service-worker.ts";
 import { playSound, resolveSound, SOUND_OFF, SOUND_OPTIONS } from "./sound.ts";
-import { THREAD_MUTE_CHANNEL, type ThreadMuteChange } from "./thread-mute.ts";
+import {
+  THREAD_NOTIFICATION_CHANNEL,
+  type ThreadNotificationChange,
+} from "./thread-notification.ts";
 import {
   createWebPushOwner,
   createWebPushPayload,
@@ -52,19 +55,24 @@ const DEDUPE_WINDOW_MS = 3_000;
 const MAX_TRACKED_THREADS = 500;
 /** How long a cached project name is trusted before it is read again. */
 const PROJECT_NAME_TTL_MS = 5 * 60_000;
-const THREAD_MUTE_KEY_PREFIX = "thread-mute:";
+const THREAD_NOTIFICATION_KEY_PREFIX = "thread-notification:";
 
 type DeliveryResult = "skipped" | "queued" | "held";
-type ThreadDeliveryResult = DeliveryResult | "muted";
+type ThreadDeliveryResult = DeliveryResult | "disabled";
 
 export const rpcContract = defineRpcContract({
-  getThreadMute: {
+  getThreadNotification: {
     input: z.object({ threadId: z.string().min(1).max(256) }).strict(),
-    output: z.object({ muted: z.boolean() }).strict(),
+    output: z.object({ enabled: z.boolean() }).strict(),
   },
-  setThreadMute: {
-    input: z.object({ threadId: z.string().min(1).max(256), muted: z.boolean() }).strict(),
-    output: z.object({ muted: z.boolean() }).strict(),
+  setThreadNotification: {
+    input: z
+      .object({
+        threadId: z.string().min(1).max(256),
+        enabled: z.boolean(),
+      })
+      .strict(),
+    output: z.object({ enabled: z.boolean() }).strict(),
   },
 });
 
@@ -127,25 +135,26 @@ export default async function plugin(bb: BbPluginApi) {
     bb.log.info("settings changed");
   });
 
-  const threadMuteKey = (threadId: string) => `${THREAD_MUTE_KEY_PREFIX}${threadId}`;
-  const isThreadMuted = async (threadId: string) =>
-    (await bb.storage.kv.get<boolean>(threadMuteKey(threadId))) === true;
+  const threadNotificationKey = (threadId: string) =>
+    `${THREAD_NOTIFICATION_KEY_PREFIX}${threadId}`;
+  const isThreadNotificationEnabled = async (threadId: string) =>
+    (await bb.storage.kv.get<boolean>(threadNotificationKey(threadId))) === true;
 
   bb.rpc.register(rpcContract, {
-    async getThreadMute({ threadId }) {
-      return { muted: await isThreadMuted(threadId) };
+    async getThreadNotification({ threadId }) {
+      return { enabled: await isThreadNotificationEnabled(threadId) };
     },
-    async setThreadMute({ threadId, muted }) {
-      if (muted) {
-        await bb.storage.kv.set(threadMuteKey(threadId), true);
+    async setThreadNotification({ threadId, enabled }) {
+      if (enabled) {
+        await bb.storage.kv.set(threadNotificationKey(threadId), true);
       } else {
-        await bb.storage.kv.delete(threadMuteKey(threadId));
+        await bb.storage.kv.delete(threadNotificationKey(threadId));
       }
-      bb.realtime.publish(THREAD_MUTE_CHANNEL, {
+      bb.realtime.publish(THREAD_NOTIFICATION_CHANNEL, {
         threadId,
-        muted,
-      } satisfies ThreadMuteChange);
-      return { muted };
+        enabled,
+      } satisfies ThreadNotificationChange);
+      return { enabled };
     },
   });
 
@@ -400,9 +409,11 @@ export default async function plugin(bb: BbPluginApi) {
     message: string,
     threadId: string,
   ): Promise<ThreadDeliveryResult> {
-    if (await isThreadMuted(threadId)) {
-      bb.log.debug(`skipped notification; thread is muted; opens ${threadId}`);
-      return "muted";
+    if (!(await isThreadNotificationEnabled(threadId))) {
+      bb.log.debug(
+        `skipped notification; thread notifications are disabled; opens ${threadId}`,
+      );
+      return "disabled";
     }
     return post(project, projectId, threadName, message, threadId);
   }
@@ -524,7 +535,7 @@ export default async function plugin(bb: BbPluginApi) {
         outcome === "failed" ? `Failed — ${said}` : said,
         thread.id,
       );
-      if (delivery === "muted") notifiedAt.delete(thread.id);
+      if (delivery === "disabled") notifiedAt.delete(thread.id);
     } catch (error) {
       notifiedAt.delete(thread.id);
       throw error;
@@ -559,7 +570,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.events.on("thread.deleted", async ({ thread }) => {
     forget(thread.id);
-    await bb.storage.kv.delete(threadMuteKey(thread.id));
+    await bb.storage.kv.delete(threadNotificationKey(thread.id));
   });
   bb.events.on("thread.archived", ({ thread }) => forget(thread.id));
 
@@ -606,8 +617,8 @@ export default async function plugin(bb: BbPluginApi) {
         oneLine(plainText(message), BODY_MAX_CHARS),
         ctx.threadId,
       );
-      if (delivery === "muted") {
-        return "Notification skipped because this thread is muted.";
+      if (delivery === "disabled") {
+        return "Notification skipped because notifications are not enabled for this thread.";
       }
       if (delivery === "skipped") {
         return "Notification skipped because BB is in the foreground.";

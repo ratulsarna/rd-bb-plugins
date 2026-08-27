@@ -18,7 +18,10 @@ import {
   SERVICE_WORKER_URL,
   WEB_PUSH_ROUTE_BASE,
 } from "./service-worker";
-import { isThreadMuteChange, THREAD_MUTE_CHANNEL } from "./thread-mute";
+import {
+  isThreadNotificationChange,
+  THREAD_NOTIFICATION_CHANNEL,
+} from "./thread-notification";
 
 const PENDING_URL = "/api/v1/plugins/notify/http/pending";
 const ACK_URL = "/api/v1/plugins/notify/http/ack";
@@ -382,7 +385,7 @@ function buttonClass(primary = false): string {
   ].join(" ");
 }
 
-function BellIcon({ muted }: { muted: boolean }) {
+function BellIcon({ enabled }: { enabled: boolean }) {
   return (
     <svg
       aria-hidden="true"
@@ -396,25 +399,25 @@ function BellIcon({ muted }: { muted: boolean }) {
     >
       <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
       <path d="M10 21h4" />
-      {muted ? <path d="M4 4l16 16" /> : null}
+      {!enabled ? <path d="M4 4l16 16" /> : null}
     </svg>
   );
 }
 
-function ThreadMuteButton({ threadId }: { threadId: string }) {
+function ThreadNotificationButton({ threadId }: { threadId: string }) {
   const rpc = useRpc<typeof rpcContract>();
-  const [muted, setMuted] = useState<boolean | null>(null);
+  const [enabled, setEnabled] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    setMuted(null);
+    setEnabled(null);
     setLoadFailed(false);
     void rpc
-      .call("getThreadMute", { threadId })
-      .then(({ muted: next }) => {
-        if (!cancelled) setMuted(next);
+      .call("getThreadNotification", { threadId })
+      .then(({ enabled: next }) => {
+        if (!cancelled) setEnabled(next);
       })
       .catch(() => {
         if (!cancelled) setLoadFailed(true);
@@ -424,23 +427,23 @@ function ThreadMuteButton({ threadId }: { threadId: string }) {
     };
   }, [rpc, threadId]);
 
-  useRealtime(THREAD_MUTE_CHANNEL, (payload) => {
-    if (isThreadMuteChange(payload) && payload.threadId === threadId) {
-      setMuted(payload.muted);
+  useRealtime(THREAD_NOTIFICATION_CHANNEL, (payload) => {
+    if (isThreadNotificationChange(payload) && payload.threadId === threadId) {
+      setEnabled(payload.enabled);
       setLoadFailed(false);
     }
   });
 
-  const label = muted ? "Unmute notifications" : "Mute notifications";
+  const label = enabled ? "Disable notifications" : "Enable notifications";
   const toggle = async () => {
-    if (muted === null || busy) return;
-    const next = !muted;
+    if (enabled === null || busy) return;
+    const next = !enabled;
     setBusy(true);
-    setMuted(next);
+    setEnabled(next);
     try {
-      await rpc.call("setThreadMute", { threadId, muted: next });
+      await rpc.call("setThreadNotification", { threadId, enabled: next });
     } catch {
-      setMuted(!next);
+      setEnabled(!next);
     } finally {
       setBusy(false);
     }
@@ -454,21 +457,21 @@ function ThreadMuteButton({ threadId }: { threadId: string }) {
         "transition-colors hover:bg-muted hover:text-foreground",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         "disabled:cursor-not-allowed disabled:opacity-50",
-        muted ? "bg-muted text-foreground" : "",
+        enabled ? "bg-muted text-foreground" : "",
       ].join(" ")}
       aria-label={label}
-      aria-pressed={muted === true}
+      aria-pressed={enabled === true}
       title={
         loadFailed
           ? "Could not load notification setting"
-          : muted === null
+          : enabled === null
             ? "Loading notification setting"
             : label
       }
-      disabled={muted === null || busy}
+      disabled={enabled === null || busy}
       onClick={() => void toggle()}
     >
-      <BellIcon muted={muted === true} />
+      <BellIcon enabled={enabled === true} />
     </button>
   );
 }
@@ -659,8 +662,8 @@ export default definePluginApp((app) => {
     component: WebPushSettings,
   });
   app.slots.experimental_threadHeaderAction({
-    id: "thread-mute",
+    id: "thread-notification",
     title: "Notifications",
-    component: ThreadMuteButton,
+    component: ThreadNotificationButton,
   });
 });
