@@ -1,0 +1,50 @@
+{
+  "name": "bb-plugin-taskwall",
+  "version": "0.1.0",
+  "description": "Keep the task ledger visible in a BB side panel.",
+  "license": "MIT",
+  "author": "Ratul Sarna",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.39.0 <1.0.0",
+    "bbPluginSdk": ">=0.4.16"
+  },
+  "bb": {
+    "name": "Taskwall",
+    "description": "Keep the task ledger visible in a BB side panel.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": []
+  },
+  "files": [
+    "dist/",
+    "assets/",
+    "README.md",
+    "server.ts",
+    "app.tsx",
+    "lib/"
+  ],
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.22",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "better-sqlite3": "^12.0.0",
+    "cron-parser": "^5.10.0",
+    "hono": "^4.11.9",
+    "typescript": "^5.7.3"
+  },
+  "scripts": {
+    "dev": "bb plugin dev .",
+    "build": "bb plugin build .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "clean": "rm -rf dist"
+  }
+}
