@@ -1422,3 +1422,57 @@ describe("Bots section", () => {
     });
   });
 });
+
+describe("Bots preview cap", () => {
+  const crowd = () =>
+    ["one", "two", "three", "four"].map((name) =>
+      thread(`thr_${name}`, {
+        title: name,
+        projectId: "assist-1",
+        environment: { id: `env-${name}` } as BoardThread["environment"],
+      }),
+    );
+
+  function crowdedSidebar(props: Partial<PluginThreadListProps> = {}) {
+    configureFakeSdk({
+      threads: crowd(),
+      projects: [
+        { id: "project-1", name: "bb", isPersonal: false },
+        { id: "assist-1", name: "assistants", isPersonal: false },
+      ],
+      assistantOrder: ["env-one", "env-two", "env-three", "env-four"],
+    });
+    return renderList(props);
+  }
+
+  const botIds = (bots: HTMLElement) =>
+    Array.from(bots.querySelectorAll("[data-sidebar-thread-id]")).map((row) =>
+      row.getAttribute("data-sidebar-thread-id"),
+    );
+
+  it("shows three bots until Show more, and Show less re-caps", async () => {
+    crowdedSidebar();
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    expect(botIds(bots)).toEqual(["thr_one", "thr_two", "thr_three"]);
+
+    fireEvent.click(within(bots).getByRole("button", { name: "Show more" }));
+    expect(botIds(bots)).toEqual([
+      "thr_one",
+      "thr_two",
+      "thr_three",
+      "thr_four",
+    ]);
+
+    fireEvent.click(within(bots).getByRole("button", { name: "Show less" }));
+    expect(botIds(bots)).toEqual(["thr_one", "thr_two", "thr_three"]);
+  });
+
+  it("lets a search reach a bot the cap hides", async () => {
+    crowdedSidebar({ searchQuery: "four" });
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    expect(botIds(bots)).toEqual(["thr_four"]);
+    expect(
+      within(bots).queryByRole("button", { name: "Show more" }),
+    ).toBeNull();
+  });
+});

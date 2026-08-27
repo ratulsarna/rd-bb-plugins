@@ -19,6 +19,11 @@ interface CollapsibleSectionProps {
    * header. The stored choice is untouched and returns when the force lifts.
    */
   forceExpanded?: boolean;
+  /**
+   * A control rendered at the header's right edge, beside the collapse
+   * arrow. Only shown while expanded — it acts on the visible rows.
+   */
+  headerAction?: ReactNode;
   children: ReactNode;
 }
 
@@ -33,6 +38,7 @@ export function CollapsibleSection({
   count,
   defaultExpanded,
   forceExpanded = false,
+  headerAction,
   children,
 }: CollapsibleSectionProps) {
   const [collapsed, setCollapsed] = useState<boolean | null>(() =>
@@ -48,20 +54,23 @@ export function CollapsibleSection({
 
   return (
     <section aria-label={label}>
-      <button
-        type="button"
-        onClick={toggle}
-        aria-expanded={expanded}
-        className="mt-5 flex w-full items-center gap-2 px-2.5 pb-2 text-left"
-      >
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-          {expanded ? label : `${label} (${count})`}
-        </span>
-        <span className="h-px flex-1 bg-sidebar-border" />
-        <span aria-hidden className="text-[11px] text-muted-foreground/70">
-          {expanded ? "▾" : "▸"}
-        </span>
-      </button>
+      <div className="mt-5 flex w-full items-center gap-2 px-2.5 pb-2">
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={expanded}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            {expanded ? label : `${label} (${count})`}
+          </span>
+          <span className="h-px flex-1 bg-sidebar-border" />
+          <span aria-hidden className="text-[11px] text-muted-foreground/70">
+            {expanded ? "▾" : "▸"}
+          </span>
+        </button>
+        {expanded && headerAction}
+      </div>
       {expanded && <ul className="flex flex-col gap-1">{children}</ul>}
     </section>
   );

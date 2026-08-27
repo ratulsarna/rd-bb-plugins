@@ -23,6 +23,9 @@ interface BotsSectionProps {
   searchQuery: string;
 }
 
+/** Rows shown until "Show more"; the rest stay a click away. */
+const PREVIEW_COUNT = 3;
+
 /**
  * The assistant fleet as the board's top section: one row per assistant,
  * like a messenger's conversation list. Rows order by hand — drag one, the
@@ -44,6 +47,7 @@ export function BotsSection({
   const order = useAssistantOrder();
   const [restartThreadId, setRestartThreadId] = useState<string | null>(null);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
 
   const project = useMemo(
     () =>
@@ -107,6 +111,10 @@ export function BotsSection({
     [order],
   );
 
+  // A search may only match a bot the cap hides — matches always show.
+  const capped = !showAll && !isSearching && rows.length > PREVIEW_COUNT;
+  const visibleRows = capped ? rows.slice(0, PREVIEW_COUNT) : rows;
+
   if (!project || rows.length === 0) return null;
 
   return (
@@ -117,9 +125,20 @@ export function BotsSection({
         count={rows.length}
         defaultExpanded
         forceExpanded={isSearching}
+        headerAction={
+          !isSearching && rows.length > PREVIEW_COUNT ? (
+            <button
+              type="button"
+              onClick={() => setShowAll((current) => !current)}
+              className="shrink-0 text-[10px] font-medium text-muted-foreground/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {showAll ? "Show less" : "Show more"}
+            </button>
+          ) : undefined
+        }
       >
         <SortableRows
-          items={rows}
+          items={visibleRows}
           idOf={(row) => row.environmentId ?? row.thread.id}
           fullOrder={fullOrder}
           enabled={order.ready && !isCompactViewport}
