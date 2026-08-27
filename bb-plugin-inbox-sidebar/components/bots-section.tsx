@@ -79,9 +79,34 @@ export function BotsSection({
     );
   }, [order.ids, project, threads]);
 
+  // Row identity is the thread id — always unique. Environment ids are NOT:
+  // an automation run in an assistant's home shares its environment, and two
+  // rows under one key leave React's list reconciliation stranding ghost rows
+  // when one of them goes away.
+  //
   // Neighbours for a drag come from every bot, never from a searched view — a
   // hidden row is still the one the dropped row lands beside.
-  const fullOrder = useMemo(() => orderableIds(allRows), [allRows]);
+  const fullOrder = useMemo(
+    () => allRows.map((row) => row.thread.id),
+    [allRows],
+  );
+
+  // A dropped row's projection arrives as thread ids; the store wants the
+  // durable environment ids in that order.
+  const environmentOrderOf = useCallback(
+    (threadIds: readonly string[]) => {
+      const byThread = new Map(
+        allRows.map((row) => [row.thread.id, row.environmentId]),
+      );
+      return orderableIds(
+        threadIds.map((threadId) => ({
+          environmentId: byThread.get(threadId) ?? null,
+          updatedAt: 0,
+        })),
+      );
+    },
+    [allRows],
+  );
 
   const rows = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -103,12 +128,14 @@ export function BotsSection({
     setRestartThreadId(threadId);
   }, []);
 
-  const avatars = useAssistantAvatars(fullOrder);
+  const avatars = useAssistantAvatars(
+    useMemo(() => orderableIds(allRows), [allRows]),
+  );
 
   const moveBot = useCallback(
     (_activeId: string, projection: { ids: string[] }) =>
-      order.set(projection.ids),
-    [order],
+      order.set(environmentOrderOf(projection.ids)),
+    [environmentOrderOf, order],
   );
 
   // A search may only match a bot the cap hides — matches always show.
@@ -139,7 +166,7 @@ export function BotsSection({
       >
         <SortableRows
           items={visibleRows}
-          idOf={(row) => row.environmentId ?? row.thread.id}
+          idOf={(row) => row.thread.id}
           fullOrder={fullOrder}
           enabled={order.ready && !isCompactViewport}
           movePending={order.moving}

@@ -1476,3 +1476,50 @@ describe("Bots preview cap", () => {
     ).toBeNull();
   });
 });
+
+describe("Bots row identity", () => {
+  // An automation run spawned in an assistant's home shares its environment.
+  // Rows must key by thread id: keyed by environment, React's reconciliation
+  // strands a ghost row when the run archives itself.
+  const chimp = () =>
+    ({
+      ...thread("thr_chimp", {
+        title: "Chimp",
+        projectId: "assist-1",
+        environment: { id: "env-chimp" } as BoardThread["environment"],
+      }),
+      updatedAt: 100,
+    }) as BoardThread;
+  const sweepRun = (overrides: Partial<BoardThread> = {}) =>
+    ({
+      ...thread("thr_sweep", {
+        title: "Email Sweep",
+        projectId: "assist-1",
+        environment: { id: "env-chimp" } as BoardThread["environment"],
+        ...overrides,
+      }),
+      updatedAt: 200,
+    }) as BoardThread;
+
+  it("renders a run beside its assistant and drops it cleanly on archive", async () => {
+    configureFakeSdk({
+      threads: [chimp(), sweepRun()],
+      projects: [
+        { id: "project-1", name: "bb", isPersonal: false },
+        { id: "assist-1", name: "assistants", isPersonal: false },
+      ],
+      assistantOrder: ["env-chimp"],
+    });
+    const view = renderList();
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    const ids = () =>
+      Array.from(bots.querySelectorAll("[data-sidebar-thread-id]")).map(
+        (row) => row.getAttribute("data-sidebar-thread-id"),
+      );
+    expect(ids().sort()).toEqual(["thr_chimp", "thr_sweep"]);
+
+    setFakeThreads([chimp(), sweepRun({ isArchived: true })]);
+    view.rerender(listElement());
+    expect(ids()).toEqual(["thr_chimp"]);
+  });
+});
