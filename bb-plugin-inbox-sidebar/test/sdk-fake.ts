@@ -23,6 +23,8 @@ export interface FakeSdkConfig {
   failRpc: boolean;
   /** What `pinnedOrder` returns; `setFakePinnedOrder` changes it mid-test. */
   pinnedOrder: string[];
+  /** What `assistantOrder` returns; `setAssistantOrder` echoes its input. */
+  assistantOrder: string[];
   /** Makes `movePinned` reject, so the refetch path can be exercised. */
   failMovePinned: boolean;
   /** Makes `pinnedOrder` reject, leaving the order unknown. */
@@ -53,6 +55,7 @@ const DEFAULTS: FakeSdkConfig = {
   overrides: [],
   failRpc: false,
   pinnedOrder: [],
+  assistantOrder: [],
   failMovePinned: false,
   failPinnedOrder: false,
   deferRpc: [],
@@ -237,6 +240,17 @@ const rpc = {
       if (config.failMovePinned) throw new Error("movePinned failed");
       // bb's answer is the canonical list; the fake just echoes what it has.
       return { ids: config.pinnedOrder };
+    }
+    if (method === "assistantOrder") {
+      return { ids: config.assistantOrder };
+    }
+    if (method === "setAssistantOrder") {
+      const { environmentIds } = input as { environmentIds: string[] };
+      config.assistantOrder = environmentIds;
+      return { ids: environmentIds };
+    }
+    if (method === "listAssistantSubtitles" || method === "listAssistantAvatars") {
+      return { rows: [] };
     }
     if (method === "listOverrides") {
       return {

@@ -112,6 +112,16 @@ export const boardRpcContract = defineRpcContract({
       ),
     }),
   },
+  assistantOrder: {
+    input: z.object({}),
+    output: z.object({ ids: z.array(z.string()) }),
+  },
+  setAssistantOrder: {
+    input: z.object({
+      environmentIds: z.array(z.string().trim().min(1)).max(200),
+    }),
+    output: z.object({ ids: z.array(z.string()) }),
+  },
   setAssistantSubtitle: {
     input: z.object({
       threadId: z.string().trim().min(1),
@@ -139,6 +149,9 @@ export const PINNED_CHANNEL = "pinned-order";
 /** Realtime channel the assistant list re-reads subtitles on. */
 export const SUBTITLE_CHANNEL = "assistant-subtitles";
 
+/** Realtime channel the Bots section re-reads its row order on. */
+export const ASSISTANT_ORDER_CHANNEL = "assistant-order";
+
 interface OverrideDbRow {
   thread_id: string;
   override: "settled" | "active";
@@ -160,7 +173,22 @@ export default function plugin(bb: BbPluginApi) {
        subtitle       TEXT NOT NULL,
        at             INTEGER NOT NULL
      )`,
+    // The user's hand-picked Bots order. Environment-keyed like subtitles,
+    // one row per rank; a write replaces the whole list.
+    `CREATE TABLE IF NOT EXISTS assistant_order (
+       environment_id TEXT PRIMARY KEY,
+       rank           INTEGER NOT NULL
+     )`,
   ]);
+
+  const readAssistantOrder = (): string[] =>
+    (
+      db
+        .prepare(
+          `SELECT environment_id FROM assistant_order ORDER BY rank`,
+        )
+        .all() as Array<{ environment_id: string }>
+    ).map((row) => row.environment_id);
 
   const write = (threadId: string, override: "settled" | "active"): void => {
     db.prepare(
@@ -467,6 +495,23 @@ export default function plugin(bb: BbPluginApi) {
     async setAssistantSubtitle({ threadId, subtitle }) {
       await writeSubtitle(threadId, subtitle);
       return { ok: true };
+    },
+    async assistantOrder() {
+      return { ids: readAssistantOrder() };
+    },
+    // The client sends the full displayed order after a drag; stored verbatim.
+    // Ids the fleet no longer has just stop matching and the next write
+    // clears them.
+    async setAssistantOrder({ environmentIds }) {
+      db.prepare(`DELETE FROM assistant_order`).run();
+      const insert = db.prepare(
+        `INSERT INTO assistant_order (environment_id, rank) VALUES (?, ?)`,
+      );
+      [...new Set(environmentIds)].forEach((environmentId, rank) => {
+        insert.run(environmentId, rank);
+      });
+      bb.realtime.publish(ASSISTANT_ORDER_CHANNEL, {});
+      return { ids: readAssistantOrder() };
     },
     async createReplacementThread({ replaceThreadId, title, request, homePath }) {
       // The dialog's Home choice wins over the composer's environment picker,

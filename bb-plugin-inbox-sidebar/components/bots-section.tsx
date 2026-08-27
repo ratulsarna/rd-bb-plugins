@@ -3,32 +3,45 @@ import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
   experimental_useSidebarThreads as useSidebarThreads,
+  experimental_useSidebarThreadSplit as useSidebarThreadSplit,
   type PluginSidebarThread,
-  type PluginThreadListProps,
 } from "@bb/plugin-sdk/app";
 import { ComposeDialog } from "@/components/compose-dialog";
+import { CollapsibleSection } from "@/components/section";
+import { SortableRows } from "@/components/sortable-rows";
+import type { RowReorder } from "@/components/sidebar-row";
+import { assistantDisplayOrder, orderableIds } from "@/lib/assistant-order";
 import { useAssistantAvatars } from "@/lib/use-assistant-avatars";
+import { useAssistantOrder } from "@/lib/use-assistant-order";
 import { useAssistantSubtitles } from "@/lib/use-assistant-subtitles";
+import { ASSISTANTS_PROJECT_NAME } from "@/lib/use-board-state";
 
-/** The project whose root threads are the assistants. */
-const ASSISTANTS_PROJECT_NAME = "assistants";
+interface BotsSectionProps {
+  activeThreadId: string | null;
+  isCompactViewport: boolean;
+  onNavigate: () => void;
+  searchQuery: string;
+}
 
 /**
- * The assistant world as bb's sidebar thread list: one row per assistant,
- * newest activity first, like a messenger's conversation list.
+ * The assistant fleet as the board's top section: one row per assistant,
+ * like a messenger's conversation list. Rows order by hand — drag one, the
+ * whole order lands in the plugin's store — and new assistants append at the
+ * bottom by activity until placed.
  *
- * The host owns the search field above the list, so this filters by the
- * `searchQuery` prop. Child threads are an assistant's workers, not
- * assistants — only root threads get rows.
+ * Child threads are an assistant's workers, not assistants — only root
+ * threads get rows.
  */
-export function AssistantList({
+export function BotsSection({
   activeThreadId,
+  isCompactViewport,
   onNavigate,
   searchQuery,
-}: PluginThreadListProps) {
-  const { status, threads, projects } = useSidebarThreads();
+}: BotsSectionProps) {
+  const { threads, projects } = useSidebarThreads();
   const actions = useSidebarThreadActions();
   const { subtitles, set: setSubtitle } = useAssistantSubtitles();
+  const order = useAssistantOrder();
   const [restartThreadId, setRestartThreadId] = useState<string | null>(null);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
 
@@ -41,28 +54,38 @@ export function AssistantList({
     [projects],
   );
 
-  const rows = useMemo(() => {
-    if (!project) return [];
-    const query = searchQuery.trim().toLowerCase();
-    return threads
-      .filter(
-        (thread) =>
-          thread.projectId === project.id &&
-          thread.parentThreadId === null &&
-          !thread.isArchived &&
-          (query === "" || nameOf(thread).toLowerCase().includes(query)),
-      )
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [project, searchQuery, threads]);
+  const isSearching = searchQuery.trim().length > 0;
 
-  const environmentIds = useMemo(
-    () =>
-      rows.flatMap((thread) =>
-        thread.environment?.id ? [thread.environment.id] : [],
-      ),
-    [rows],
-  );
-  const avatars = useAssistantAvatars(environmentIds);
+  const allRows = useMemo(() => {
+    if (!project) return [];
+    return assistantDisplayOrder(
+      threads
+        .filter(
+          (thread) =>
+            thread.projectId === project.id &&
+            thread.parentThreadId === null &&
+            !thread.isArchived,
+        )
+        .map((thread) => ({
+          thread,
+          environmentId: thread.environment?.id ?? null,
+          updatedAt: thread.updatedAt,
+        })),
+      order.ids,
+    );
+  }, [order.ids, project, threads]);
+
+  // Neighbours for a drag come from every bot, never from a searched view — a
+  // hidden row is still the one the dropped row lands beside.
+  const fullOrder = useMemo(() => orderableIds(allRows), [allRows]);
+
+  const rows = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (query === "") return allRows;
+    return allRows.filter((row) =>
+      nameOf(row.thread).toLowerCase().includes(query),
+    );
+  }, [allRows, searchQuery]);
 
   const openThread = useCallback(
     (threadId: string) => {
@@ -76,68 +99,68 @@ export function AssistantList({
     setRestartThreadId(threadId);
   }, []);
 
-  if (status === "error") {
-    return (
-      <p role="status" className="px-3 py-6 text-center text-xs text-destructive">
-        Could not load assistants.
-      </p>
-    );
-  }
-  if (status === "loading") return null;
+  const avatars = useAssistantAvatars(fullOrder);
 
-  if (!project) {
-    return (
-      <p role="status" className="px-3 py-6 text-center text-xs text-muted-foreground">
-        No project named &ldquo;{ASSISTANTS_PROJECT_NAME}&rdquo; yet. Create it
-        and its threads appear here.
-      </p>
-    );
-  }
+  const moveBot = useCallback(
+    (_activeId: string, projection: { ids: string[] }) =>
+      order.set(projection.ids),
+    [order],
+  );
+
+  if (!project || rows.length === 0) return null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2 pt-1">
-        {rows.length === 0 ? (
-          <p role="status" className="px-2 py-6 text-center text-xs text-muted-foreground">
-            {searchQuery.trim() ? "No assistants found" : "No assistants yet"}
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-0.5">
-            {rows.map((thread) => (
-              <AssistantRow
-                key={thread.id}
-                thread={thread}
-                avatarUrl={
-                  (thread.environment?.id
-                    ? avatars.get(thread.environment.id)
-                    : undefined) ?? null
-                }
-                subtitle={
-                  (thread.environment?.id
-                    ? subtitles.get(thread.environment.id)
-                    : undefined) ?? null
-                }
-                isActive={thread.id === activeThreadId}
-                isEditingSubtitle={thread.id === editingThreadId}
-                onOpen={openThread}
-                onRestart={restartThread}
-                onEditSubtitle={() => setEditingThreadId(thread.id)}
-                onSaveSubtitle={(value) => {
-                  setSubtitle(thread.id, value);
-                  setEditingThreadId(null);
-                }}
-                onCancelEditSubtitle={() => setEditingThreadId(null)}
-              />
-            ))}
-          </ul>
-        )}
-      </div>
+    <>
+      <CollapsibleSection
+        id="bots"
+        label="Bots"
+        count={rows.length}
+        defaultExpanded
+        forceExpanded={isSearching}
+      >
+        <SortableRows
+          items={rows}
+          idOf={(row) => row.environmentId ?? row.thread.id}
+          fullOrder={fullOrder}
+          enabled={order.ready && !isCompactViewport}
+          movePending={order.moving}
+          onMove={moveBot}
+        >
+          {(row, reorder) => (
+            <AssistantRow
+              key={row.thread.id}
+              thread={row.thread}
+              avatarUrl={
+                (row.environmentId
+                  ? avatars.get(row.environmentId)
+                  : undefined) ?? null
+              }
+              subtitle={
+                (row.environmentId
+                  ? subtitles.get(row.environmentId)
+                  : undefined) ?? null
+              }
+              isActive={row.thread.id === activeThreadId}
+              isEditingSubtitle={row.thread.id === editingThreadId}
+              reorder={reorder}
+              onOpen={openThread}
+              onRestart={restartThread}
+              onEditSubtitle={() => setEditingThreadId(row.thread.id)}
+              onSaveSubtitle={(value) => {
+                setSubtitle(row.thread.id, value);
+                setEditingThreadId(null);
+              }}
+              onCancelEditSubtitle={() => setEditingThreadId(null)}
+            />
+          )}
+        </SortableRows>
+      </CollapsibleSection>
       <ComposeDialog
         replaceThreadId={restartThreadId}
         onClose={() => setRestartThreadId(null)}
         onNavigate={onNavigate}
       />
-    </div>
+    </>
   );
 }
 
@@ -147,6 +170,7 @@ function AssistantRow({
   subtitle,
   isActive,
   isEditingSubtitle,
+  reorder,
   onOpen,
   onRestart,
   onEditSubtitle,
@@ -158,6 +182,7 @@ function AssistantRow({
   subtitle: string | null;
   isActive: boolean;
   isEditingSubtitle: boolean;
+  reorder: RowReorder | undefined;
   onOpen: (threadId: string) => void;
   onRestart: (threadId: string) => void;
   onEditSubtitle: () => void;
@@ -166,16 +191,24 @@ function AssistantRow({
 }) {
   const name = nameOf(thread);
   const tone = toneOf(thread);
+  const { splitProps } = useSidebarThreadSplit(thread.id);
   return (
-    <li className="group flex list-none items-center gap-1">
+    <li
+      ref={reorder?.setNodeRef}
+      className="group flex list-none items-center gap-1"
+      data-pinned-reordering={reorder?.isDragging || undefined}
+      style={reorder?.style}
+    >
       <ContextMenu.Root>
         <ContextMenu.Trigger asChild>
           <a
+            ref={reorder?.setActivatorNodeRef}
             data-sidebar-thread-shortcut-target=""
             data-sidebar-thread-id={thread.id}
             href="#"
             aria-label={thread.indicatorLabel ?? name}
             aria-current={isActive ? "true" : undefined}
+            draggable={false}
             onClick={(event) => {
               event.preventDefault();
               if (isEditingSubtitle) return;
@@ -183,13 +216,17 @@ function AssistantRow({
             }}
             className={`flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
               isActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60"
-            }`}
+            } ${reorder ? "select-none touch-manipulation" : ""}`}
+            {...(reorder?.attributes ?? {})}
+            {...(reorder?.listeners ?? {})}
+            {...splitProps}
           >
             {avatarUrl ? (
               <img
                 aria-hidden
                 alt=""
                 src={avatarUrl}
+                draggable={false}
                 className="size-7 shrink-0 rounded-full object-cover"
               />
             ) : (
@@ -217,6 +254,9 @@ function AssistantRow({
                   placeholder="What they do"
                   aria-label={`Subtitle for ${name}`}
                   maxLength={200}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onTouchStart={(event) => event.stopPropagation()}
                   onKeyDown={(event) => {
                     event.stopPropagation();
                     if (event.key === "Enter") {

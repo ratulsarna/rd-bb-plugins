@@ -61,10 +61,10 @@ function samePullRequest(
  * on screen, the classification underneath is computed over every thread.
  */
 /**
- * The assistant fleet has its own sidebar mode (the assistant list). Its
- * project and threads never reach this board.
+ * The assistant fleet renders as the board's own Bots section, not as board
+ * rows. Its project and threads never reach the lanes.
  */
-const ASSISTANTS_PROJECT_NAME = "assistants";
+export const ASSISTANTS_PROJECT_NAME = "assistants";
 
 export function useBoardState(): BoardState {
   const {

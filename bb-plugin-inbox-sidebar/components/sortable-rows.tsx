@@ -28,38 +28,43 @@ import {
   type ReactNode,
 } from "react";
 import type { RowReorder } from "@/components/sidebar-row";
-import type { BoardItem } from "@/lib/lanes";
-import { projectPinnedReorder } from "@/lib/pinned-order";
+import {
+  projectPinnedReorder,
+  type PinnedReorderProjection,
+} from "@/lib/pinned-order";
 
 const verticalOnly: Modifier = ({ transform }) => ({ ...transform, x: 0 });
 
-const pinnedCollisionDetection: CollisionDetection = (args) => {
+const rowCollisionDetection: CollisionDetection = (args) => {
   const pointerHits = pointerWithin(args);
   return pointerHits.length > 0 ? pointerHits : closestCenter(args);
 };
 
-interface PinnedReorderProps {
-  items: readonly BoardItem[];
+interface SortableRowsProps<T> {
+  items: readonly T[];
+  idOf(item: T): string;
+  /** The complete order, including rows a filter hides from `items`. */
   fullOrder: readonly string[];
   enabled: boolean;
   movePending: boolean;
-  onMove: (
-    threadId: string,
-    previousThreadId: string | null,
-    nextThreadId: string | null,
-  ) => void;
-  children: (item: BoardItem, reorder: RowReorder | undefined) => ReactNode;
+  onMove(activeId: string, projection: PinnedReorderProjection): void;
+  children: (item: T, reorder: RowReorder | undefined) => ReactNode;
 }
 
-/** BB-compatible pointer sorting for pinned roots. */
-export function PinnedReorder({
+/**
+ * Pointer sorting for a section's rows. Shared by Pinned (whose order bb owns,
+ * moved by neighbours) and Bots (whose order the plugin stores whole) — the
+ * projection hands each caller both shapes.
+ */
+export function SortableRows<T>({
   items,
+  idOf,
   fullOrder,
   enabled,
   movePending,
   onMove,
   children,
-}: PinnedReorderProps) {
+}: SortableRowsProps<T>) {
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
     useSensor(TouchSensor, {
@@ -85,17 +90,17 @@ export function PinnedReorder({
 
   const visibleItems = useMemo(() => {
     const rank = new Map(
-      (projectedOrder ?? fullOrder).map((threadId, index) => [threadId, index]),
+      (projectedOrder ?? fullOrder).map((id, index) => [id, index]),
     );
     return [...items].sort(
       (a, b) =>
-        (rank.get(a.thread.id) ?? Number.MAX_SAFE_INTEGER) -
-        (rank.get(b.thread.id) ?? Number.MAX_SAFE_INTEGER),
+        (rank.get(idOf(a)) ?? Number.MAX_SAFE_INTEGER) -
+        (rank.get(idOf(b)) ?? Number.MAX_SAFE_INTEGER),
     );
-  }, [fullOrder, items, projectedOrder]);
+  }, [fullOrder, idOf, items, projectedOrder]);
   const visibleIds = useMemo(
-    () => visibleItems.map((item) => item.thread.id),
-    [visibleItems],
+    () => visibleItems.map(idOf),
+    [idOf, visibleItems],
   );
 
   const finishGesture = useCallback(() => {
@@ -132,11 +137,7 @@ export function PinnedReorder({
         : null;
       if (projection) {
         setProjectedOrder(projection.ids);
-        onMove(
-          String(event.active.id),
-          projection.previousThreadId,
-          projection.nextThreadId,
-        );
+        onMove(String(event.active.id), projection);
       }
       finishGesture();
     },
@@ -146,7 +147,7 @@ export function PinnedReorder({
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={pinnedCollisionDetection}
+      collisionDetection={rowCollisionDetection}
       modifiers={[verticalOnly]}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
@@ -154,29 +155,32 @@ export function PinnedReorder({
     >
       <SortableContext items={visibleIds} strategy={verticalListSortingStrategy}>
         {visibleItems.map((item) => (
-          <SortablePinnedRow
-            key={item.thread.id}
+          <SortableRow
+            key={idOf(item)}
+            id={idOf(item)}
             item={item}
             disabled={!enabled || reorderLocked}
           >
             {children}
-          </SortablePinnedRow>
+          </SortableRow>
         ))}
       </SortableContext>
     </DndContext>
   );
 }
 
-function SortablePinnedRow({
+function SortableRow<T>({
+  id,
   item,
   disabled,
   children,
 }: {
-  item: BoardItem;
+  id: string;
+  item: T;
   disabled: boolean;
-  children: PinnedReorderProps["children"];
+  children: SortableRowsProps<T>["children"];
 }) {
-  const sortable = useSortable({ id: item.thread.id, disabled });
+  const sortable = useSortable({ id, disabled });
   const reorder: RowReorder | undefined = disabled
     ? undefined
     : {

@@ -4,10 +4,12 @@ import {
   type PluginThreadListProps,
 } from "@bb/plugin-sdk/app";
 import { AddProjectButton } from "@/components/add-project";
+import { BotsSection } from "@/components/bots-section";
 import { PrProbes } from "@/components/pr-probes";
-import { PinnedReorder } from "@/components/pinned-reorder";
 import { ProjectSelect, useProjectFilter } from "@/components/project-select";
+import { CollapsibleSection } from "@/components/section";
 import { SidebarRow, type RowReorder } from "@/components/sidebar-row";
+import { SortableRows } from "@/components/sortable-rows";
 import { filterBoardForDisplay } from "@/lib/display-filter";
 import { ancestorIdsOf, effectiveExpandedIds } from "@/lib/expansion";
 import {
@@ -19,12 +21,15 @@ import { pinnedMoveActions } from "@/lib/pinned-order";
 import { useBoardState } from "@/lib/use-board-state";
 
 /**
- * The board as bb's sidebar thread list.
+ * The board as bb's sidebar thread list: Bots on top, then Pinned, Inbox and
+ * the Settled shelf, every section behind its own collapsible header.
  *
  * The host owns the search field and the New-thread button above it, so this
  * ships neither and filters by the `searchQuery` prop. `activeProjectId` is
  * only the current route's project — using it as a filter would re-scope the
  * whole board on every navigation — so the list keeps its own scope picker.
+ * The picker scopes the board lanes only; Bots sits outside every project
+ * filter.
  */
 export function BoardSidebar({
   activeThreadId,
@@ -35,9 +40,6 @@ export function BoardSidebar({
   const actions = useSidebarThreadActions();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
-  // null means "no explicit choice yet", so the shelf can open itself for a
-  // search hit or the active thread — and one click still overrules that.
-  const [showSettled, setShowSettled] = useState<boolean | null>(null);
   const state = useBoardState();
   const [projectId, setProjectId, setPendingProjectId] = useProjectFilter(
     state.projects,
@@ -209,15 +211,11 @@ export function BoardSidebar({
     ],
   );
 
-  // A search that only matches settled work must not report nothing behind a
-  // collapsed header, and the thread the user is looking at must exist on
-  // screen even when it lives on the settled shelf. Both are defaults: one
-  // click on the header overrules them for as long as the list is mounted.
-  const settledExpanded =
-    showSettled ??
-    (isSearching ||
-      (activeThreadId !== null &&
-        view.settled.some((item) => treeContains(item, activeThreadId))));
+  // The shelf starts shut, but the thread the user is looking at must exist
+  // on screen — an untouched shelf opens itself for it. A stored choice wins.
+  const settledDefaultExpanded =
+    activeThreadId !== null &&
+    view.settled.some((item) => treeContains(item, activeThreadId));
 
   // Probes read the same expanded set the rows do. Selecting off the raw
   // toggle state would leave a revealed row unprobed and badge-less.
@@ -266,6 +264,12 @@ export function BoardSidebar({
         <AddProjectButton onCreated={openNewProject} />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+        <BotsSection
+          activeThreadId={activeThreadId}
+          isCompactViewport={isCompactViewport}
+          onNavigate={onNavigate}
+          searchQuery={searchQuery}
+        />
         {isEmpty ? (
           <p role="status" className="px-2 py-6 text-center text-xs text-muted-foreground">
             {searchQuery.trim() ? "No threads found" : "No threads yet"}
@@ -273,19 +277,38 @@ export function BoardSidebar({
         ) : (
           <>
             {view.pinned.length > 0 && (
-              <Section label="Pinned">
-                <PinnedReorder
+              <CollapsibleSection
+                id="pinned"
+                label="Pinned"
+                count={view.pinned.length}
+                defaultExpanded
+                forceExpanded={isSearching}
+              >
+                <SortableRows
                   items={view.pinned}
+                  idOf={(item) => item.thread.id}
                   fullOrder={pinnedIds}
                   enabled={state.pinnedOrderReady && !isCompactViewport}
                   movePending={state.pinnedOrderMoving}
-                  onMove={movePinned}
+                  onMove={(threadId, projection) =>
+                    movePinned(
+                      threadId,
+                      projection.previousThreadId,
+                      projection.nextThreadId,
+                    )
+                  }
                 >
                   {renderPinnedRow}
-                </PinnedReorder>
-              </Section>
+                </SortableRows>
+              </CollapsibleSection>
             )}
-            <Section label="Inbox">
+            <CollapsibleSection
+              id="inbox"
+              label="Inbox"
+              count={view.inbox.length}
+              defaultExpanded
+              forceExpanded={isSearching}
+            >
               {view.inbox.length === 0 ? (
                 <li className="list-none px-2.5 py-1.5 text-xs text-muted-foreground">
                   All clear.
@@ -300,36 +323,22 @@ export function BoardSidebar({
                   ),
                 )
               )}
-            </Section>
+            </CollapsibleSection>
             {view.settled.length > 0 && (
-              <section aria-label="Settled">
-                <button
-                  type="button"
-                  onClick={() => setShowSettled(!settledExpanded)}
-                  aria-expanded={settledExpanded}
-                  className="mt-5 flex w-full items-center gap-2 px-2.5 pb-2 text-left"
-                >
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-                    {settledExpanded
-                      ? "Settled"
-                      : `Settled (${view.settled.length})`}
-                  </span>
-                  <span className="h-px flex-1 bg-sidebar-border" />
-                  <span aria-hidden className="text-[11px] text-muted-foreground/70">
-                    {settledExpanded ? "▾" : "▸"}
-                  </span>
-                </button>
-                {settledExpanded && (
-                  <ul className="flex flex-col gap-1">
-                    {view.settled.map((item) =>
-                      renderRow(item, {
-                        label: "Unsettle",
-                        run: () => state.unsettle(item.thread.id),
-                      }),
-                    )}
-                  </ul>
+              <CollapsibleSection
+                id="settled"
+                label="Settled"
+                count={view.settled.length}
+                defaultExpanded={settledDefaultExpanded}
+                forceExpanded={isSearching}
+              >
+                {view.settled.map((item) =>
+                  renderRow(item, {
+                    label: "Unsettle",
+                    run: () => state.unsettle(item.thread.id),
+                  }),
                 )}
-              </section>
+              </CollapsibleSection>
             )}
           </>
         )}
@@ -342,25 +351,5 @@ function treeContains(item: BoardItem, threadId: string): boolean {
   return (
     item.thread.id === threadId ||
     item.children.some((child) => treeContains(child, threadId))
-  );
-}
-
-function Section({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section aria-label={label}>
-      <h2 className="flex items-center gap-2 px-2.5 pb-2 pt-5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-          {label}
-        </span>
-        <span className="h-px flex-1 bg-sidebar-border" />
-      </h2>
-      <ul className="flex flex-col gap-1">{children}</ul>
-    </section>
   );
 }

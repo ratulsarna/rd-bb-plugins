@@ -22,13 +22,19 @@ import {
   splitPointerDownCalls,
 } from "./sdk-fake";
 import { DAY, HOUR, NOW, thread } from "./fixtures";
+import type { BoardThread } from "@/lib/lanes";
 // Importing the plugin entry is what registers the slots, exactly as bb loads
 // it — so these tests exercise the component the host would actually mount.
 import "@/app";
 
 const list = registrations.threadLists[0]!;
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // Section collapse choices persist in localStorage; tests must not inherit
+  // a choice an earlier test clicked into place.
+  localStorage.clear();
+});
 
 function listElement(props: Partial<PluginThreadListProps> = {}) {
   const List = list.component;
@@ -1345,5 +1351,74 @@ describe("row context menu", () => {
     expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
       false,
     );
+  });
+});
+
+describe("Bots section", () => {
+  const fleet = () => [
+    thread("thr_sam", {
+      title: "Sam",
+      projectId: "assist-1",
+      environment: { id: "env-sam" } as BoardThread["environment"],
+    }),
+    thread("thr_hands", {
+      title: "Hands",
+      projectId: "assist-1",
+      environment: { id: "env-hands" } as BoardThread["environment"],
+    }),
+    thread("thr_work", { title: "Plain work" }),
+  ];
+
+  function fleetSidebar(assistantOrder: string[] = []) {
+    configureFakeSdk({
+      threads: fleet(),
+      projects: [
+        { id: "project-1", name: "bb", isPersonal: false },
+        { id: "assist-1", name: "assistants", isPersonal: false },
+      ],
+      assistantOrder,
+    });
+    return renderList();
+  }
+
+  it("shows assistants under Bots in the stored order, never in Inbox", async () => {
+    fleetSidebar(["env-hands", "env-sam"]);
+
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    const rows = Array.from(bots.querySelectorAll("[data-sidebar-thread-id]"));
+    expect(rows.map((row) => row.getAttribute("data-sidebar-thread-id"))).toEqual(
+      ["thr_hands", "thr_sam"],
+    );
+
+    const inbox = screen.getByRole("region", { name: "Inbox" });
+    expect(within(inbox).queryByText("Sam")).toBeNull();
+    expect(within(inbox).getByText("Plain work")).toBeDefined();
+  });
+
+  it("keeps a collapsed section collapsed across a remount", async () => {
+    fleetSidebar();
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    fireEvent.click(
+      within(bots).getByRole("button", { name: /Bots/, expanded: true }),
+    );
+    expect(within(bots).queryByText("Sam")).toBeNull();
+    expect(within(bots).getByText("Bots (2)")).toBeDefined();
+
+    cleanup();
+    fleetSidebar();
+    const remounted = await screen.findByRole("region", { name: "Bots" });
+    expect(within(remounted).getByText("Bots (2)")).toBeDefined();
+    expect(within(remounted).queryByText("Sam")).toBeNull();
+  });
+
+  it("opens an assistant thread on click", async () => {
+    fleetSidebar();
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    fireEvent.click(within(bots).getByLabelText("Sam"));
+    expect(sidebarActionCalls).toContainEqual({
+      method: "open",
+      threadId: "thr_sam",
+      options: undefined,
+    });
   });
 });
