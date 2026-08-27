@@ -169,20 +169,38 @@ function LoadingWall() {
   );
 }
 
+function UnavailableWall() {
+  return (
+    <div role="status" className="flex min-h-full flex-col bg-background">
+      <div className="flex flex-1 items-center justify-center px-6 py-12 text-center">
+        <div>
+          <p className="text-sm font-semibold text-foreground">Could not refresh Taskwall.</p>
+          <p className="mt-1 text-xs text-muted-foreground">Trying again every 30 seconds.</p>
+        </div>
+      </div>
+      <footer className="border-t border-border/70 px-4 py-3 text-[10px] text-muted-foreground sm:px-5">
+        ledger.json · IST
+      </footer>
+    </div>
+  );
+}
+
 function useWall() {
   const rpc = useRpc<typeof rpcContract>();
   const [data, setData] = useState<Wall | null>(null);
   const [failed, setFailed] = useState(false);
   const mounted = useRef(false);
+  const requestId = useRef(0);
 
   const load = useCallback(async () => {
+    const id = ++requestId.current;
     try {
       const wall = await rpc.call("getWall", null);
-      if (!mounted.current) return;
+      if (!mounted.current || id !== requestId.current) return;
       setData(wall);
       setFailed(false);
     } catch {
-      if (mounted.current) setFailed(true);
+      if (mounted.current && id === requestId.current) setFailed(true);
     }
   }, [rpc]);
   const loadRef = useRef(load);
@@ -224,13 +242,13 @@ export function TaskwallHeader() {
 
 export function TaskwallPanel() {
   const { data, failed } = useWall();
-  if (!data) return <LoadingWall />;
+  if (!data) return failed ? <UnavailableWall /> : <LoadingWall />;
 
   const notice = failed ? "Refresh failed. Showing the last update." : data.error;
 
   return (
     <div className="flex min-h-full flex-col bg-background">
-      <main className="flex-1 space-y-7 overflow-y-auto px-4 py-5 sm:px-5">
+      <div className="flex-1 space-y-7 overflow-y-auto px-4 py-5 sm:px-5">
         {notice && (
           <p role="status" className="rounded-lg border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
             {notice}
@@ -287,7 +305,7 @@ export function TaskwallPanel() {
             </div>
           ) : <EmptySection>Nothing finished yet.</EmptySection>}
         </section>
-      </main>
+      </div>
 
       <footer className="flex items-center justify-between gap-3 border-t border-border/70 px-4 py-3 text-[10px] text-muted-foreground sm:px-5">
         <span className="inline-flex items-center gap-1.5">

@@ -35,16 +35,22 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@testing-library/react": "^16.3.0",
     "better-sqlite3": "^12.0.0",
     "cron-parser": "^5.10.0",
     "hono": "^4.11.9",
-    "typescript": "^5.7.3"
+    "jsdom": "^26.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
   },
   "scripts": {
     "dev": "bb plugin dev .",
     "build": "bb plugin build .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "test": "node --test --experimental-strip-types test/*.test.ts && vitest run",
     "clean": "rm -rf dist"
   }
 }
