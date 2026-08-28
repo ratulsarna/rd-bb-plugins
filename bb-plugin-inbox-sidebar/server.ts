@@ -22,6 +22,59 @@ import {
 const threadIdInput = z.object({ threadId: z.string().trim().min(1) });
 const pinnedOrderOutput = z.object({ ids: z.array(z.string()) });
 
+// The automations plugin's overview RPC. Read-only, cross-plugin: this shape
+// is a subset of its real output, enough to name every automation whose
+// agent execution still points at a thread being restarted.
+const automationsOverviewOutput = z.object({
+  automations: z.array(
+    z.object({
+      automation: z.object({
+        id: z.string(),
+        name: z.string(),
+        execution: z
+          .object({
+            mode: z.string(),
+            targetThreadId: z.string().optional(),
+          })
+          .passthrough(),
+      }),
+    }),
+  ),
+});
+
+/**
+ * Every automation whose agent execution targets `threadId`. Falls back to
+ * an empty list when the automations plugin is down — the restart dialog
+ * must never be blocked by a naming nicety.
+ */
+async function targetingAutomationsOf(
+  bb: BbPluginApi,
+  threadId: string,
+): Promise<Array<{ id: string; name: string }>> {
+  try {
+    const { automations } = await bb.sdk.plugins.callRpc({
+      pluginId: "automations",
+      method: "automations_overview",
+      input: null,
+      outputSchema: automationsOverviewOutput,
+    });
+    return automations
+      .map((row) => row.automation)
+      .filter(
+        (automation) =>
+          automation.execution.mode === "agent" &&
+          automation.execution.targetThreadId === threadId,
+      )
+      .map((automation) => ({ id: automation.id, name: automation.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch (error) {
+    bb.log.warn(
+      `Could not list automations targeting ${threadId} from automations plugin: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return [];
+  }
+}
+
 export const boardRpcContract = defineRpcContract({
   projectCreationContext: {
     input: z.object({}),
@@ -92,6 +145,9 @@ export const boardRpcContract = defineRpcContract({
       serviceTier: z.string().optional(),
       homePath: z.string().nullable(),
       homes: z.array(z.object({ name: z.string(), path: z.string() })),
+      targetingAutomations: z.array(
+        z.object({ id: z.string(), name: z.string() }),
+      ),
     }),
   },
   listAssistantAvatars: {
@@ -438,6 +494,7 @@ export default function plugin(bb: BbPluginApi) {
       const homes = env.path
         ? await listAssistantHomes(env.hostId, env.path)
         : [];
+      const targetingAutomations = await targetingAutomationsOf(bb, threadId);
       return {
         title: thread.title,
         projectId: thread.projectId,
@@ -449,6 +506,7 @@ export default function plugin(bb: BbPluginApi) {
         serviceTier: options?.serviceTier,
         homePath: env.path,
         homes,
+        targetingAutomations,
       };
     },
     // An assistant's picture is a file it owns: <home>/avatar.svg. No store,
