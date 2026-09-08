@@ -1,4 +1,4 @@
-export type ProviderId = "codex" | "claudeCode";
+export type ProviderId = "codex" | "claudeCode" | "zai";
 
 export type Clock = () => Date;
 

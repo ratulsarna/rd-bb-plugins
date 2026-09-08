@@ -76,7 +76,7 @@ describe("normalizeUsage", () => {
       raw,
       () => new Date("2026-08-09T09:30:00.000Z"),
     );
-    expect(Object.keys(result.providers)).toEqual(["codex", "claudeCode"]);
+    expect(Object.keys(result.providers)).toEqual(["codex", "claudeCode", "zai"]);
     expect(result.providers.codex.windows[0]).toEqual({
       label: "Current session",
       remainingPercent: 60,
@@ -120,6 +120,7 @@ describe("normalizeUsage", () => {
 
     expect(result.providers.codex.status).toBe("not_installed");
     expect(result.providers.claudeCode.status).toBe("not_installed");
+    expect(result.providers.zai.status).toBe("not_installed");
   });
 });
 

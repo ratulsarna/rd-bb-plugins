@@ -142,7 +142,10 @@ const STATUS_COPY: Record<
   (name: string) => string
 > = {
   not_installed: (name) => `${name} isn’t installed. Install it to see usage.`,
-  unauthenticated: (name) => `Sign in to ${name} to see usage.`,
+  unauthenticated: (name) =>
+    name === "Z.ai"
+      ? "Add your Z.ai API key in this plugin’s settings, then reload the plugin."
+      : `Sign in to ${name} to see usage.`,
   expired: (name) =>
     name === "Claude Code"
       ? "Claude Code usage session expired. Click Refresh. If that still fails, open Claude Code on this server."
@@ -180,7 +183,8 @@ function ProviderCard({
             {provider.name}
           </h2>
           <p className="truncate text-xs text-muted-foreground">
-            {provider.accountEmail ?? "Account email unavailable"}
+            {provider.accountEmail ??
+              (provider.id === "zai" ? "API key" : "Account email unavailable")}
           </p>
         </div>
         {provider.planLabel && (
@@ -279,8 +283,13 @@ export function UsagePanel() {
           </div>
         )}
         {state.phase === "ready" && (
+          // Explicit columns, not one grid: a grid row grows to its tallest
+          // card and leaves a hole under the short ones.
           <div className="grid items-start gap-4 lg:grid-cols-2">
-            <ProviderCard provider={state.data.providers.codex} now={now} />
+            <div className="grid gap-4">
+              <ProviderCard provider={state.data.providers.codex} now={now} />
+              <ProviderCard provider={state.data.providers.zai} now={now} />
+            </div>
             <ProviderCard
               provider={state.data.providers.claudeCode}
               now={now}

@@ -21,7 +21,7 @@ export interface UsageWindow {
 
 export interface UsageProvider {
   id: ProviderId;
-  name: "Codex" | "Claude Code";
+  name: "Codex" | "Claude Code" | "Z.ai";
   status: ProviderStatus;
   accountEmail: string | null;
   planLabel: string | null;
@@ -36,6 +36,7 @@ export interface UsageResponse {
       id: "claudeCode";
       name: "Claude Code";
     };
+    zai: UsageProvider & { id: "zai"; name: "Z.ai" };
   };
 }
 
@@ -60,6 +61,7 @@ export const USAGE_REQUEST_TIMEOUT_MS = 35_000;
 const PROVIDER_NAMES = {
   codex: "Codex",
   claudeCode: "Claude Code",
+  zai: "Z.ai",
 } as const;
 
 const PROVIDER_STATUSES = new Set<ProviderStatus>([
@@ -146,6 +148,7 @@ export function normalizeUsage(
         raw["claude-code"],
         fixedClock,
       ),
+      zai: normalizeProvider("zai", raw.zai, fixedClock),
     },
   };
 }

@@ -45,6 +45,7 @@ function usage({
   claudeStatus = "ok",
   claudeRemaining = 80,
   claudePace = { kind: "reserve", percentage: 15 },
+  zaiStatus = "ok",
 }: {
   fetchedAt?: string;
   codexStatus?: Status;
@@ -53,10 +54,11 @@ function usage({
   claudeStatus?: Status;
   claudeRemaining?: number;
   claudePace?: Pace | null;
+  zaiStatus?: Status;
 } = {}) {
   const provider = (
-    id: "codex" | "claudeCode",
-    name: "Codex" | "Claude Code",
+    id: "codex" | "claudeCode" | "zai",
+    name: "Codex" | "Claude Code" | "Z.ai",
     status: Status,
     remainingPercent: number,
     pace: Pace | null,
@@ -64,13 +66,13 @@ function usage({
     id,
     name,
     status,
-    accountEmail: status === "ok" ? `${id}@example.com` : null,
+    accountEmail: status === "ok" && id !== "zai" ? `${id}@example.com` : null,
     planLabel: status === "ok" ? "Pro" : null,
     windows:
       status === "ok"
         ? ([
             {
-              label: "Weekly",
+              label: id === "zai" ? "5-hour" : "Weekly",
               remainingPercent,
               resetsAt: "2026-08-12T13:00:00.000Z",
               pace,
@@ -90,6 +92,7 @@ function usage({
         claudeRemaining,
         claudePace,
       ),
+      zai: provider("zai", "Z.ai", zaiStatus, 60, null),
     },
   };
 }
@@ -153,7 +156,7 @@ describe("usage panel", () => {
     ).toBe("65%");
     expect(screen.getByText("+10% deficit")).toBeTruthy();
     expect(screen.getByText("15% reserve")).toBeTruthy();
-    expect(screen.getAllByText("resets in 3d 1h")).toHaveLength(2);
+    expect(screen.getAllByText("resets in 3d 1h")).toHaveLength(3);
     expect(document.querySelector("time")).toBeNull();
   });
 
@@ -177,6 +180,18 @@ describe("usage panel", () => {
         .getByRole("progressbar")
         .getAttribute("aria-valuenow"),
     ).toBe("72");
+  });
+
+  it("tells the user where the Z.ai key goes when none is configured", async () => {
+    configureFakeSdk({ getUsage: () => usage({ zaiStatus: "unauthenticated" }) });
+    renderPanel();
+
+    expect(
+      await screen.findByText(
+        "Add your Z.ai API key in this plugin’s settings, then reload the plugin.",
+      ),
+    ).toBeTruthy();
+    expect(remaining()).toBe("25");
   });
 
   it("gives an honest server-local fallback for expired Claude usage", async () => {

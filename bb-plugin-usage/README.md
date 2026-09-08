@@ -1,6 +1,6 @@
 # Usage
 
-A small BB plugin for Codex and Claude Code subscription usage.
+A small BB plugin for Codex, Claude Code, and Z.ai coding plan usage.
 
 It shows:
 
@@ -30,6 +30,8 @@ npm run typecheck
 npm run build
 ```
 
-The plugin uses BB's public usage API. It does not read, copy, log, or store provider credentials.
+Codex and Claude Code come from BB's public usage API; the plugin does not read, copy, log, or store their credentials.
+
+Z.ai has no BB usage API, so the plugin calls `api.z.ai` itself with an API key you give it. Set it in the plugin's settings (`Z.ai API key`, stored as a BB secret setting) and reload the plugin. The key is sent only to `api.z.ai` to read quota limits.
 
 BB 0.36 does not yet return Codex model-only limits such as Spark. The plugin will show them automatically when BB adds them to its usage API.

@@ -2,6 +2,7 @@ import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
 import { z } from "zod";
 import { createClaudeCredentialRecovery } from "./lib/claude-recovery";
 import { createUsageService, fetchUsageLimits } from "./lib/usage";
+import { fetchZaiUsage } from "./lib/zai";
 
 const paceSchema = z
   .object({
@@ -51,6 +52,13 @@ const usageOutputSchema = z
             ...providerFields,
           })
           .strict(),
+        zai: z
+          .object({
+            id: z.literal("zai"),
+            name: z.literal("Z.ai"),
+            ...providerFields,
+          })
+          .strict(),
       })
       .strict(),
   })
@@ -64,9 +72,25 @@ export const rpcContract = defineRpcContract({
 });
 
 export default function plugin(bb: BbPluginApi) {
+  const settings = bb.settings.define({
+    zaiApiKey: {
+      type: "string",
+      label: "Z.ai API key",
+      description:
+        "Coding plan API key from z.ai/manage-apikey/apikey. Sent only to api.z.ai to read quota.",
+      secret: true,
+    },
+  });
   const claudeRecovery = createClaudeCredentialRecovery();
   const usage = createUsageService({
-    fetchUsage: () => fetchUsageLimits((args) => bb.sdk.system.usageLimits(args)),
+    // bb has no Z.ai usage API, so the plugin asks Z.ai directly.
+    fetchUsage: async () => {
+      const [limits, zai] = await Promise.all([
+        fetchUsageLimits((args) => bb.sdk.system.usageLimits(args)),
+        settings.get().then(({ zaiApiKey }) => fetchZaiUsage(zaiApiKey)),
+      ]);
+      return { ...limits, zai };
+    },
     recoverClaudeCredentials: claudeRecovery.recover,
     publishUsageUpdated: ({ fetchedAt }) => {
       bb.realtime.publish("usage-updated", { fetchedAt });
