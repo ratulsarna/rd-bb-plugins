@@ -102,10 +102,26 @@ describe("fetchZaiUsage", () => {
   });
 
   it("maps rejected keys to unauthenticated and everything else that fails to error", async () => {
-    const responses = [jsonResponse(401, {}), jsonResponse(500, {}), jsonResponse(200, { success: false })];
+    const responses = [
+      jsonResponse(401, {}),
+      jsonResponse(500, {}),
+      // A revoked key arrives as HTTP 200 with this envelope.
+      jsonResponse(200, { code: 1000, msg: "Authentication Failed", success: false }),
+      jsonResponse(200, { code: "1000", success: false }),
+      jsonResponse(200, { success: false, msg: "  authentication failed  " }),
+      // Unrecognized failures stay generic, however plausible they sound.
+      jsonResponse(200, { success: false, msg: "invalid api key" }),
+      jsonResponse(200, { code: 3000, msg: "Internal Error", success: false }),
+      jsonResponse(200, { success: false }),
+    ];
     const fetchImpl = vi.fn<typeof fetch>(async () => responses.shift()!);
 
     expect((await fetchZaiUsage("key", fetchImpl, at)).status).toBe("unauthenticated");
+    expect((await fetchZaiUsage("key", fetchImpl, at)).status).toBe("error");
+    expect((await fetchZaiUsage("key", fetchImpl, at)).status).toBe("unauthenticated");
+    expect((await fetchZaiUsage("key", fetchImpl, at)).status).toBe("unauthenticated");
+    expect((await fetchZaiUsage("key", fetchImpl, at)).status).toBe("unauthenticated");
+    expect((await fetchZaiUsage("key", fetchImpl, at)).status).toBe("error");
     expect((await fetchZaiUsage("key", fetchImpl, at)).status).toBe("error");
     expect((await fetchZaiUsage("key", fetchImpl, at)).status).toBe("error");
 

@@ -96,6 +96,22 @@ function toWindow(limit: ZaiLimit, nowMs: number): RawUsageWindow {
   return { label: windowLabel(limit), usedPercent: usedPercent(limit), resetsAt };
 }
 
+// Z.ai answers a revoked key with HTTP 200 and this envelope, so the status
+// code alone cannot tell a dead key from a transient failure. Only the observed
+// failure is treated as a key problem; anything unseen stays a generic error.
+const ZAI_AUTH_FAILURE_CODE = 1000;
+const ZAI_AUTH_FAILURE_MSG = "authentication failed";
+
+export function classifyZaiEnvelope(body: unknown): "unauthenticated" | "error" | null {
+  if (!isRecord(body)) return "error";
+  if (body.success === true && body.code === 200) return null;
+  const msg = typeof body.msg === "string" ? body.msg.trim().toLowerCase() : "";
+  if (Number(body.code) === ZAI_AUTH_FAILURE_CODE || msg === ZAI_AUTH_FAILURE_MSG) {
+    return "unauthenticated";
+  }
+  return "error";
+}
+
 export function normalizeZaiQuota(body: unknown, nowMs: number): RawUsageProvider {
   if (!isRecord(body) || body.success !== true || body.code !== 200) {
     throw new Error("Z.ai quota response was not successful");
@@ -133,7 +149,10 @@ export async function fetchZaiUsage(
     });
     if (response.status === 401 || response.status === 403) return { status: "unauthenticated" };
     if (!response.ok) return { status: "error" };
-    return normalizeZaiQuota(await response.json(), clock().getTime());
+    const body: unknown = await response.json();
+    const rejected = classifyZaiEnvelope(body);
+    if (rejected) return { status: rejected };
+    return normalizeZaiQuota(body, clock().getTime());
   } catch {
     return { status: "error" };
   }
