@@ -14,8 +14,9 @@ What the plugin does:
   gets cancelled or skipped is picked up next time.
 - Once an hour, at minute 17, sweep every Sam thread for anything missed.
 - `bb sam-scribe run` queues a sweep now.
+- On the first turn of a Sam thread, steer in a session context message, agent-only: today's note, the week summary, and where the older layers live. Once per thread; a deleted thread forgets it.
 
-Settings: `samEnvPath`, `scriptDir`, `quietSeconds`.
+Settings: `samEnvPath`, `scriptDir`, `quietSeconds`, `vaultPath`.
 
 The script exits 2 when nothing is loaded on edgexpert. That is logged as a
 deferral, never a failure, because asking for another model would trigger a

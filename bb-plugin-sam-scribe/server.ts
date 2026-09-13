@@ -7,15 +7,23 @@
 // it: a quiet window after each idle, one thread at a time, plus an hourly
 // sweep for anything an idle event missed. The script prints counts only, so
 // its output is safe to log.
+//
+// It also seeds each Sam thread once: the first turn gets today's note and the
+// week summary steered in as an agent-only message, plus pointers to the
+// older layers. That is the old /ss, made deterministic.
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
 import { ScribeRunner } from "./runner.ts";
+import { istDay, sessionContext } from "./session.ts";
 
 /** Keep only the end of a child's output; stack traces and bb errors are short anyway. */
 const OUTPUT_TAIL_CHARS = 4_000;
 /** observe.py exits 2 when llama-swap has nothing loaded: a deferral, not a failure. */
 const EXIT_NO_MODEL = 2;
+const SEEDED_KEY_PREFIX = "seeded:";
 
 interface ThreadLike {
   id: string;
@@ -54,6 +62,12 @@ export default async function plugin(bb: BbPluginApi) {
       description: "How long a thread stays idle before its new turns are read.",
       default: "120",
     },
+    vaultPath: {
+      type: "string",
+      label: "Vault path",
+      description: "Obsidian vault holding the daily notes and the memory layers.",
+      default: "/home/ratul/ObsidianVault",
+    },
   });
   // The SDK types settings loosely, so read them through these.
   let current = await settings.get();
@@ -62,6 +76,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   const samEnvPath = () => String(current.samEnvPath ?? "/home/ratul/assistants/sam").replace(/\/+$/, "");
   const scriptDir = () => String(current.scriptDir ?? "/home/ratul/assistants/sam/memory");
+  const vaultPath = () => String(current.vaultPath ?? "/home/ratul/ObsidianVault");
   const quietMs = () => {
     const seconds = Number.parseInt(String(current.quietSeconds ?? "120"), 10);
     return (Number.isFinite(seconds) && seconds > 0 ? seconds : 120) * 1000;
@@ -125,6 +140,44 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }
 
+  async function readVaultFile(relative: string): Promise<string> {
+    try {
+      return await readFile(join(vaultPath(), relative), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+      throw error;
+    }
+  }
+
+  // Once per thread. The key is written before the send so two quick turns cannot both seed;
+  // a failed send clears it so the next turn tries again.
+  async function seed(threadId: string): Promise<void> {
+    const key = `${SEEDED_KEY_PREFIX}${threadId}`;
+    if (await bb.storage.kv.get<boolean>(key)) return;
+    await bb.storage.kv.set(key, true);
+    try {
+      const day = istDay(new Date());
+      const notePath = `Notes/Dated/${day}/${day}.md`;
+      const weekPath = "Notes/Memory/WeekSummary.md";
+      const text = sessionContext({
+        day,
+        notePath,
+        note: await readVaultFile(notePath),
+        weekPath,
+        week: await readVaultFile(weekPath),
+      });
+      await bb.sdk.threads.send({
+        threadId,
+        mode: "steer",
+        input: [{ type: "text", text, mentions: [], visibility: "agent-only" }],
+      });
+      bb.log.info(`seeded ${threadId} (${text.length} chars)`);
+    } catch (error) {
+      await bb.storage.kv.delete(key);
+      bb.log.error(`seeding ${threadId} failed: ${message(error)}`);
+    }
+  }
+
   const runner = new ScribeRunner({
     quietMs,
     run: runObserve,
@@ -136,8 +189,14 @@ export default async function plugin(bb: BbPluginApi) {
     if (thread.activeBackgroundAgentCount > 0) return;
     if (await isSamThread(thread)) runner.touch(thread.id);
   });
-  bb.events.on("thread.active", ({ thread }) => runner.cancel(thread.id));
-  bb.events.on("thread.deleted", ({ thread }) => runner.cancel(thread.id));
+  bb.events.on("thread.active", async ({ thread }) => {
+    runner.cancel(thread.id);
+    if (await isSamThread(thread)) await seed(thread.id);
+  });
+  bb.events.on("thread.deleted", async ({ thread }) => {
+    runner.cancel(thread.id);
+    await bb.storage.kv.delete(`${SEEDED_KEY_PREFIX}${thread.id}`);
+  });
   bb.events.on("thread.archived", ({ thread }) => runner.cancel(thread.id));
 
   bb.background.schedule("sweep", "17 * * * *", async () => {

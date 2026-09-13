@@ -10,5 +10,5 @@
     "noEmit": true,
     "skipLibCheck": false
   },
-  "include": ["server.ts", "runner.ts", "test"]
+  "include": ["server.ts", "runner.ts", "session.ts", "test"]
 }
