@@ -8,6 +8,7 @@ Personal plugins for [bb](https://github.com/ymichael/bb).
 - [`bb-plugin-usage`](./bb-plugin-usage) — view Codex and Claude Code subscription usage.
 - [`bb-plugin-favorites`](./bb-plugin-favorites) — save machine / harness / model setups and open New Thread already set to them.
 - [`bb-plugin-notify`](./bb-plugin-notify) — get BB thread notifications on macOS and iPhone Home Screen PWAs.
+- [`bb-plugin-sam-scribe`](./bb-plugin-sam-scribe) — run Sam's scribe when a Sam thread goes quiet, so the daily journal keeps up.
 
 ## Development
 
