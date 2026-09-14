@@ -1,0 +1,29 @@
+{
+  "name": "bb-plugin-sam-scribe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runs Sam's scribe when a Sam thread goes quiet, so Ratul's daily note keeps up with the day.",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.39.0 <1.0.0",
+    "bbPluginSdk": ">=0.4.15"
+  },
+  "bb": {
+    "name": "Sam scribe",
+    "description": "Runs Sam's scribe when a Sam thread goes quiet.",
+    "branding": {
+      "icon": "Zap"
+    },
+    "server": "./server.ts",
+    "skills": []
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types test/*.test.ts"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.15",
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.0"
+  }
+}
