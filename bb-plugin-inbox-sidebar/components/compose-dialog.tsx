@@ -10,6 +10,7 @@ import {
 } from "@bb/plugin-sdk/app";
 import type { boardRpcContract } from "@/server";
 import { usePortalScopeProps } from "@/lib/portal-scope";
+import { restartPrompt } from "@/lib/restart-prompt";
 
 type Seeds = {
   title: string | null;
@@ -25,26 +26,6 @@ type Seeds = {
   /** Agent automations that still target the thread being replaced. */
   targetingAutomations: Array<{ id: string; name: string }>;
 };
-
-/**
- * The draft's lead line, with a repoint note when automations still point at
- * the thread being replaced. The note rides in the first user message, so the
- * freshly-born assistant sees it and knows to repoint (its own id is the new
- * one) or tell you.
- */
-function restartPrompt(replaceThreadId: string | null, seeds: Seeds): string {
-  if (!replaceThreadId) return "";
-  const lead = `Continue from thread ${replaceThreadId}.\n\n`;
-  if (seeds.targetingAutomations.length === 0) return lead;
-  const lines = seeds.targetingAutomations
-    .map((automation) => `- ${automation.name} (${automation.id})`)
-    .join("\n");
-  return (
-    lead +
-    `This thread replaces the one above. These automations still target ` +
-    `the archived thread and need repointing to this thread's id:\n${lines}\n`
-  );
-}
 
 /**
  * bb's own new-thread compose surface in a dialog, seeded with one
