@@ -7,6 +7,7 @@
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { ASSISTANTS_PROJECT_NAME } from "./bots/assistants-project";
+import { registerBots } from "./bots/server-bots";
 import {
   autoSettleNeedsPullRequest,
   decideAutoSettle,
@@ -1417,4 +1418,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
   });
 
+  // rd addition: the Bots section's RPCs (stateless locally, stateful
+  // proxied to the inbox-sidebar plugin that owns the tables).
+  registerBots(bb);
 }

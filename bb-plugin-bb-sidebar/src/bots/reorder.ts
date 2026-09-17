@@ -1,0 +1,163 @@
+/**
+ * Row reorder arithmetic, ported verbatim from the inbox-sidebar plugin's
+ * lib/pinned-order.ts. This plugin's Bots drag stores a whole order rather
+ * than a neighbour move, but the projection here is what SortableRows hands
+ * it, and the rest of the module rides along with its tests.
+ */
+
+/** The fields of a bb thread-list entry that decide pin order. */
+export interface PinnedThreadEntry {
+  id: string;
+  parentThreadId: string | null;
+  archivedAt: number | null;
+  pinnedAt: number | null;
+  pinSortKey: string | null;
+  createdAt: number;
+}
+
+/**
+ * bb's own pinned-root comparator (host `pinnedSidebarThreads.ts`). Threads
+ * that carry a sort key order by it; anything without one — or a tie — falls
+ * back to most recently pinned, then newest, then id.
+ */
+export function comparePinnedRoots(
+  a: PinnedThreadEntry,
+  b: PinnedThreadEntry,
+): number {
+  if (a.pinSortKey !== null && b.pinSortKey !== null) {
+    if (a.pinSortKey < b.pinSortKey) return -1;
+    if (a.pinSortKey > b.pinSortKey) return 1;
+  }
+  const pinned = (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0);
+  if (pinned !== 0) return pinned;
+  const created = b.createdAt - a.createdAt;
+  if (created !== 0) return created;
+  // Codepoint, like the sort-key compare above: a locale compare would order
+  // ids differently from bb and drift the two lists apart.
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
+}
+
+/**
+ * The pinned roots of a bb thread list, in bb's order.
+ *
+ * "Root" is bb's definition, not "has no parent": among the active pins, a root
+ * is one whose parent is not itself pinned. A pinned subagent whose parent is
+ * archived heads its own pinned tree, and requiring a null parent would drop it
+ * from the order — leaving a row that ranks first and refuses to move.
+ *
+ * Both server handlers derive the order this way, including the one that reads
+ * `reorderPinned`'s response: bb's own sidebar merges the sort keys out of that
+ * response and re-sorts, so the array order it comes back in is not a promise.
+ */
+export function pinnedRootIds<T extends PinnedThreadEntry>(
+  threads: readonly T[],
+): string[] {
+  // Active pins only. Archived threads are off the board, and ranking one
+  // would shift every neighbour a move computes.
+  const pins = threads.filter(
+    (thread) => thread.pinnedAt !== null && thread.archivedAt === null,
+  );
+  const pinnedIds = new Set(pins.map((thread) => thread.id));
+  return pins
+    .filter(
+      (thread) =>
+        thread.parentThreadId === null || !pinnedIds.has(thread.parentThreadId),
+    )
+    .sort(comparePinnedRoots)
+    .map((thread) => thread.id);
+}
+
+/** Where a moved thread lands: bb places it between these two. */
+export interface PinnedMoveTarget {
+  previousThreadId: string | null;
+  nextThreadId: string | null;
+}
+
+/**
+ * One step up or down the pinned list. Null at the edges and for a thread the
+ * order doesn't know about — both mean "no move to make".
+ */
+export function pinnedMoveTarget(
+  ids: readonly string[],
+  threadId: string,
+  direction: "up" | "down",
+): PinnedMoveTarget | null {
+  const index = ids.indexOf(threadId);
+  if (index === -1) return null;
+  if (direction === "up") {
+    if (index === 0) return null;
+    return {
+      previousThreadId: ids[index - 2] ?? null,
+      nextThreadId: ids[index - 1]!,
+    };
+  }
+  if (index === ids.length - 1) return null;
+  return {
+    previousThreadId: ids[index + 1]!,
+    nextThreadId: ids[index + 2] ?? null,
+  };
+}
+
+export interface PinnedReorderProjection extends PinnedMoveTarget {
+  ids: string[];
+}
+
+/**
+ * Project dnd-kit's active row into the row currently under the pointer.
+ * Neighbours come from the full order, including rows hidden by a filter.
+ */
+export function projectPinnedReorder(
+  ids: readonly string[],
+  activeId: string,
+  overId: string,
+): PinnedReorderProjection | null {
+  const from = ids.indexOf(activeId);
+  const to = ids.indexOf(overId);
+  if (from === -1 || to === -1 || from === to) return null;
+
+  const projected = [...ids];
+  projected.splice(from, 1);
+  projected.splice(to, 0, activeId);
+  const index = projected.indexOf(activeId);
+  return {
+    ids: projected,
+    previousThreadId: projected[index - 1] ?? null,
+    nextThreadId: projected[index + 1] ?? null,
+  };
+}
+
+export interface PinnedMove {
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  moveUp(): void;
+  moveDown(): void;
+}
+
+/**
+ * The move affordance both surfaces hand to a pinned row. Neighbours always
+ * come from the full pinned order, never from a filtered view — a hidden
+ * neighbour is still the thread bb will put this one beside.
+ */
+export function pinnedMoveActions(
+  ids: readonly string[],
+  threadId: string,
+  move: (
+    threadId: string,
+    previousThreadId: string | null,
+    nextThreadId: string | null,
+  ) => void,
+): PinnedMove {
+  const up = pinnedMoveTarget(ids, threadId, "up");
+  const down = pinnedMoveTarget(ids, threadId, "down");
+  const run = (target: PinnedMoveTarget | null) => () => {
+    if (target) move(threadId, target.previousThreadId, target.nextThreadId);
+  };
+  return {
+    canMoveUp: up !== null,
+    canMoveDown: down !== null,
+    moveUp: run(up),
+    moveDown: run(down),
+  };
+}
