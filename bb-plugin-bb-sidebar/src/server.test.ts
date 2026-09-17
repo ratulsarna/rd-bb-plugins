@@ -888,6 +888,7 @@ describe("automatic settle evaluation", () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "bb-sidebar",
       sdk: {
+        projects: { list: async () => [] },  // rd: policy scope exclusion
         threads: {
           list: async () => [
             makeThreadResponse({
@@ -936,6 +937,7 @@ describe("automatic settle evaluation", () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "bb-sidebar",
       sdk: {
+        projects: { list: async () => [] },  // rd: policy scope exclusion
         threads: {
           list: async () => [thread],
         },
@@ -963,6 +965,7 @@ describe("automatic settle evaluation", () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "bb-sidebar",
       sdk: {
+        projects: { list: async () => [] },  // rd: policy scope exclusion
         threads: {
           list: async () => [
             makeThreadResponse({
@@ -1037,6 +1040,7 @@ describe("automatic settle evaluation", () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "bb-sidebar",
       sdk: {
+        projects: { list: async () => [] },  // rd: policy scope exclusion
         threads: { list: async () => [thread] },
         environments: {
           pullRequest: async () => {
@@ -1097,6 +1101,7 @@ describe("automatic settle evaluation", () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "bb-sidebar",
       sdk: {
+        projects: { list: async () => [] },  // rd: policy scope exclusion
         threads: {
           list: async () => [
             makeThreadResponse({
@@ -1135,6 +1140,7 @@ describe("automatic settle evaluation", () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "bb-sidebar",
       sdk: {
+        projects: { list: async () => [] },  // rd: policy scope exclusion
         threads: {
           list: async () => [
             makeThreadResponse({

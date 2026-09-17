@@ -6,6 +6,7 @@
 // understands. Here, uninstalling the plugin removes its state with it.
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { ASSISTANTS_PROJECT_NAME } from "./bots/assistants-project";
 import {
   autoSettleNeedsPullRequest,
   decideAutoSettle,
@@ -868,7 +869,30 @@ export default async function plugin(bb: BbPluginApi) {
       threads.push(...page);
       if (page.length < pageSize) break;
     }
-    return threads;
+    // rd patch: the assistants fleet is out of policy scope. Its home
+    // threads are long-lived by design and must never be auto-settled or
+    // have their runtimes and terminals reclaimed by the scheduler. A
+    // failed project listing fails this pass closed — skipping one tick is
+    // cheaper than risking an assistant's runtime.
+    try {
+      const excludedProjectIds = new Set(
+        (await bb.sdk.projects.list({ includePersonal: true }))
+          .filter(
+            (project) =>
+              project.name.toLowerCase() === ASSISTANTS_PROJECT_NAME,
+          )
+          .map((project) => project.id),
+      );
+      if (excludedProjectIds.size === 0) return threads;
+      return threads.filter(
+        (thread) => !excludedProjectIds.has(thread.projectId),
+      );
+    } catch (error) {
+      bb.log.warn(
+        `Skipping auto-settle pass: could not list projects to exclude the assistants fleet: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return [];
+    }
   };
 
   const loadPullRequests = async (environmentIds: readonly string[]) => {
@@ -1392,4 +1416,5 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish(INBOX_ORDER_CHANNEL, {});
     }
   });
+
 }

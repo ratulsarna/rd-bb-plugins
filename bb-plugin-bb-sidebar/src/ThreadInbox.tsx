@@ -17,6 +17,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { autoAnimate } from "@formkit/auto-animate";
 import { toast } from "sonner";
+import { ASSISTANTS_PROJECT_NAME } from "./bots/assistants-project";
 import { Icon } from "./components/Icon";
 import { cn } from "./lib/utils";
 import {
@@ -294,7 +295,42 @@ export function ThreadInbox({
   onNavigate,
   searchQuery,
 }: PluginThreadListProps) {
-  const { status, threads, projects } = useSidebarThreads();
+  // rd patch: the assistants fleet renders as the Bots section above this
+  // list (src/bots), so its threads and project never reach the shelves or
+  // the project picker.
+  const {
+    status,
+    threads: allThreads,
+    projects: allProjects,
+  } = useSidebarThreads();
+  const assistantsProjectIds = useMemo(
+    () =>
+      new Set(
+        allProjects
+          .filter(
+            (project) =>
+              project.name.toLowerCase() === ASSISTANTS_PROJECT_NAME,
+          )
+          .map((project) => project.id),
+      ),
+    [allProjects],
+  );
+  const threads = useMemo(
+    () =>
+      assistantsProjectIds.size === 0
+        ? allThreads
+        : allThreads.filter(
+            (thread) => !assistantsProjectIds.has(thread.projectId),
+          ),
+    [assistantsProjectIds, allThreads],
+  );
+  const projects = useMemo(
+    () =>
+      allProjects.filter(
+        (project) => project.name.toLowerCase() !== ASSISTANTS_PROJECT_NAME,
+      ),
+    [allProjects],
+  );
   const workingSince = useWorkingSince(threads);
   const { providers } = useProviders();
   const actions = useSidebarThreadActions();
