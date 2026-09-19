@@ -30,6 +30,8 @@ bb project attachment upload <project-id> --client-file <path>
 
 Pass the returned path to `bb pipeline add --attachment`.
 
+Removing a card removes only its board data. It does not stop the intake or lead threads; archive those threads in BB if needed.
+
 ## Configuration
 
 The defaults launch Claude Code on `host_wt5difpwsy` with `claude-fable-5-1`, high reasoning, and full permission. Change them in the plugin settings or with `bb plugin config pipeline set`:
@@ -37,6 +39,8 @@ The defaults launch Claude Code on `host_wt5difpwsy` with `claude-fable-5-1`, hi
 - `hostId`, `providerId`, `model`
 - `reasoningLevel`, `permissionMode`
 - `jevApiKey` (secret), `jevThreshold`
+
+The BB server needs `gh` installed and authenticated because Pipeline reads the GitHub issue when it launches a lead thread.
 
 The Jev key is optional. Without it, an unsignalled lead idle is shown as `idle, unchecked` rather than guessed.
 
