@@ -41,8 +41,8 @@ One line per site, in the skill the moment belongs to; the full table appears on
 - `pipeline-implement/SKILL.md`, 5 lines:
   - top of "Dispatch" (start): `` `bb pipeline report --column implementing --working` ``
   - end of gate 1 (review passes start): `` `bb pipeline report --column reviewing --working` ``
-  - end of gate 4 (back to fixing after findings): `` `bb pipeline report --column implementing --working` ``
-  - end of gate 5 (QA starts, then QA sends it back): `` `bb pipeline report --column qa --working` `` and `` `bb pipeline report --column implementing --working` ``
+  - end of gate 4: ``When findings send it back to the worker: `bb pipeline report --column implementing --working` ``
+  - end of gate 5 (QA starts, then QA sends it back): `` `bb pipeline report --column qa --working` `` and ``When QA sends it back: `bb pipeline report --column implementing --working` ``
 - `pipeline-close-out/SKILL.md`, 2 lines:
   - in step 2, after the draft-PR paragraph: `` `bb pipeline report --column pr --pr <url> --working` ``
   - end of step 3 (review loop clean): `` `bb pipeline report --column pr_ready --needs-you "PR ready to merge"` ``

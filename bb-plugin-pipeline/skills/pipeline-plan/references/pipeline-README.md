@@ -74,9 +74,9 @@ The card lives on the pipeline board. Report every column change and every stop 
 | debug | RCA done, before any fix | `--needs-you "root cause found; tier the fix"` (column stays planning) |
 | implement | start (right after the go on the last walkthrough step; no separate stop) | `--column implementing` |
 | implement | review passes start | `--column reviewing` |
-| implement | back to fixing after findings | `--column implementing` |
+| implement | when findings send it back to the worker | `--column implementing` |
 | implement | QA starts | `--column qa` |
-| implement | QA sends it back | `--column implementing` |
+| implement | when QA sends it back | `--column implementing` |
 | close-out | draft PR opened | `--column pr --pr <url>` |
 | close-out | review loop clean, PR ready to merge | `--column pr_ready --needs-you "PR ready to merge"` |
 | any | lead stops for the user for another reason | `--needs-you "<why>"` |

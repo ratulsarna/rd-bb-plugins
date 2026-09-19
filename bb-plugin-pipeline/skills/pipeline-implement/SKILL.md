@@ -48,10 +48,10 @@ One cycle over the landed change, where reviewers and QA see the whole picture:
    - both harnesses returned accepted P1 or P2: two full passes, as in step 1;
    - the fix commits touch only comments or docs: a lead read of the delta, no pass.
    Every pass is a fresh session; prior findings stay with the lead, not the reviewer.
-   `bb pipeline report --column implementing --working`
+   When findings send it back to the worker: `bb pipeline report --column implementing --working`
 5. **QA worker** from `templates/qa.md`, after reviews clear. Give it the flows as the plan named them, not implementation reasoning. It designs its own steps within that and exercises real behavior, with whatever real-system tools are reachable. Findings are blocking: the owning worker fixes, the same QA session re-runs, and QA never changes code. A pass with any criterion not reached is partial, not clear: the unreached criteria run again after the blocker is fixed, or the user waives them, recorded in `run.md`.
    `bb pipeline report --column qa --working`
-   `bb pipeline report --column implementing --working`
+   When QA sends it back: `bb pipeline report --column implementing --working`
 6. **Acceptance.** The lead maps the verified behavior back to the ticket; code review does not substitute for this judgment.
 
 **Exit:** all gates clear → `pipeline-close-out`.
