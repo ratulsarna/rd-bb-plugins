@@ -1,7 +1,5 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 
 export function AddCard(props: {
   disabled: boolean;
@@ -30,17 +28,23 @@ export function AddCard(props: {
 
   if (!open) {
     return (
-      <Button type="button" disabled={props.disabled} onClick={() => setOpen(true)}>
+      <button
+        type="button"
+        className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
+        disabled={props.disabled}
+        onClick={() => setOpen(true)}
+      >
         Add card
-      </Button>
+      </button>
     );
   }
 
   return (
     <form onSubmit={submit} className="space-y-2 rounded-lg border border-border bg-card p-3">
-      <Input
+      <input
         aria-label="Card title"
         placeholder="Card title"
+        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
         value={title}
         onChange={(event) => setTitle(event.target.value)}
       />
@@ -51,19 +55,28 @@ export function AddCard(props: {
         value={body}
         onChange={(event) => setBody(event.target.value)}
       />
-      <Input
+      <input
         aria-label="Card attachments"
         type="file"
         multiple
+        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
         onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
       />
       <div className="flex gap-2">
-        <Button type="submit" disabled={pending || title.trim() === ""}>
+        <button
+          type="submit"
+          className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
+          disabled={pending || title.trim() === ""}
+        >
           {pending ? "Adding…" : "Add"}
-        </Button>
-        <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+        </button>
+        <button
+          type="button"
+          className="inline-flex h-9 items-center justify-center rounded-md px-4 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+          onClick={() => setOpen(false)}
+        >
           Cancel
-        </Button>
+        </button>
       </div>
     </form>
   );

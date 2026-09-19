@@ -1,5 +1,4 @@
 import type { MouseEvent } from "react";
-import { Button } from "@/components/ui/button";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import type { Card } from "@/lib/store";
 
@@ -75,13 +74,21 @@ export function PipelineCard(props: {
           </select>
         </label>
         {props.card.launchError === null ? null : (
-          <Button type="button" size="sm" variant="outline" onClick={props.onRetry}>
+          <button
+            type="button"
+            className="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent hover:text-accent-foreground"
+            onClick={props.onRetry}
+          >
             Retry
-          </Button>
+          </button>
         )}
-        <Button type="button" size="sm" variant="ghost" onClick={props.onRemove}>
+        <button
+          type="button"
+          className="inline-flex h-7 items-center justify-center rounded-md px-2 text-xs hover:bg-accent hover:text-accent-foreground"
+          onClick={props.onRemove}
+        >
           Remove
-        </Button>
+        </button>
       </div>
     </article>
   );
