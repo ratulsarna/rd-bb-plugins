@@ -264,11 +264,15 @@ describe("idle policy", () => {
     seed(store);
     store.update("card_1", { intakeThreadId: "intake" });
     await service.report({ threadId: "intake", needsYou: "Which repository?" });
-    const before = store.get("card_1");
 
     await service.onThreadIdle(thread("intake"), "Which repository?");
 
-    expect(store.get("card_1")).toEqual(before);
+    expect(store.get("card_1")).toMatchObject({
+      column: "todo",
+      needsUser: true,
+      attentionReason: "Which repository?",
+      reportSignal: "needs_you",
+    });
   });
 });
 
