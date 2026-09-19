@@ -176,6 +176,16 @@ describe("idle policy", () => {
     expect(classify).not.toHaveBeenCalled();
   });
 
+  it("does nothing while intake children are active", async () => {
+    const { store, service } = setup();
+    seed(store);
+    const before = store.update("card_1", { intakeThreadId: "intake" });
+
+    await service.onThreadIdle(thread("intake", 1), "Question?");
+
+    expect(store.get("card_1")).toEqual(before);
+  });
+
   it("trusts an explicit needs-you report for the turn", async () => {
     const { store, service, classify } = setup();
     seed(store);

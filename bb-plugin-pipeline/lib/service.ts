@@ -380,6 +380,7 @@ export function createPipelineService(
     }
 
     if (thread.status !== "idle") return;
+    if (thread.activeBackgroundAgentCount > 0) return;
     if (role === "intake") {
       const nextColumn = initial.column === "backlog" ? "todo" : initial.column;
       if (initial.reportSignal === "needs_you") {
@@ -425,7 +426,6 @@ export function createPipelineService(
       return;
     }
     if (initial.reportSignal === "needs_you") return;
-    if (thread.activeBackgroundAgentCount > 0) return;
 
     const lastText =
       (observation.kind === "thread" ? observation.lastText : null) ?? null;
