@@ -214,13 +214,15 @@ describe("idle policy", () => {
   });
 
   it.each([null, "", "   "])("treats blank text %p as unknown without Jev", async (text) => {
-    const { store, service, classify } = setup();
+    const { store, service, classify } = setup({
+      classify: async () => ({ decision: "unknown", probability: null }),
+    });
     seed(store);
     store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
 
     await service.onThreadIdle(thread("lead"), text);
 
-    expect(classify).not.toHaveBeenCalled();
+    expect(classify).toHaveBeenCalledOnce();
     expect(store.get("card_1")).toMatchObject({ needsUser: false, attentionUnknown: true });
   });
 
@@ -280,13 +282,20 @@ describe("idle policy", () => {
   });
 
   it("shows unknown without a Jev key", async () => {
-    const { store, service, classify } = setup({ settings: { ...settings, jevApiKey: undefined } });
+    const { store, service, classify } = setup({
+      classify: async () => ({ decision: "unknown", probability: null }),
+      settings: { ...settings, jevApiKey: undefined },
+    });
     seed(store);
     store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
 
     await service.onThreadIdle(thread("lead"), "Question?");
 
-    expect(classify).not.toHaveBeenCalled();
+    expect(classify).toHaveBeenCalledWith({
+      apiKey: undefined,
+      threshold: 0.7,
+      lastText: "Question?",
+    });
     expect(store.get("card_1")).toMatchObject({ needsUser: false, attentionUnknown: true });
   });
 
@@ -379,7 +388,9 @@ describe("owner rules", () => {
   });
 
   it("reconciles an unarchived idle lead from its current state", async () => {
-    const { store, service } = setup();
+    const { store, service } = setup({
+      classify: async () => ({ decision: "unknown", probability: null }),
+    });
     seed(store);
     store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
     await service.onThreadGone(thread("lead", 0, { archivedAt: 1 }));
@@ -749,12 +760,13 @@ describe("startup pass", () => {
       getThread: async ({ threadId }) =>
         makeThreadResponse({ id: threadId, status: "idle" }),
       getThreadOutput: async () => ({ output: "Would normally call Jev" }),
-      classify: async () => ({ decision: "needs", probability: 0.9 }),
+      classify: async () => ({ decision: "unknown", probability: null }),
     });
     seed(store);
     store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
     await service.onThreadIdle(thread("lead"), null);
     const before = store.get("card_1");
+    classify.mockClear();
     publish.mockClear();
 
     await service.startupPass();

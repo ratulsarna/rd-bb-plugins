@@ -478,14 +478,11 @@ export function createPipelineService(
     const lastText =
       (observation.kind === "thread" ? observation.lastText : null) ?? null;
     const settings = await dependencies.getSettings();
-    const verdict =
-      (lastText?.trim() ?? "") === "" || !settings.jevApiKey
-        ? { decision: "unknown" as const, probability: null }
-        : await dependencies.classify({
-            apiKey: settings.jevApiKey,
-            threshold: parseThreshold(settings.jevThreshold),
-            lastText,
-          });
+    const verdict = await dependencies.classify({
+      apiKey: settings.jevApiKey,
+      threshold: parseThreshold(settings.jevThreshold),
+      lastText,
+    });
     const current = store.get(initial.id);
     if (current === null || current.revision !== initial.revision) return;
 
