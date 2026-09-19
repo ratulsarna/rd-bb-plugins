@@ -53,6 +53,7 @@ export function PipelineBoard() {
   const [cards, setCards] = useState<Awaited<ReturnType<typeof rpc.call<"listCards">>>["cards"]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestSequence = useRef(0);
 
   useEffect(() => {
     rpc.call("listProjects").then(({ projects: next }) => {
@@ -67,16 +68,24 @@ export function PipelineBoard() {
     }, (cause) => setError(String(cause)));
   }, [context.projectId, rpc]);
 
+  useEffect(() => {
+    requestSequence.current += 1;
+    setCards([]);
+  }, [projectId]);
+
   const refetch = useCallback(() => {
     if (projectId === null) return;
+    const request = ++requestSequence.current;
     setLoading(true);
     rpc.call("listCards", { projectId, includeDone }).then(
       ({ cards: next }) => {
+        if (request !== requestSequence.current) return;
         setCards(next);
         setError(null);
         setLoading(false);
       },
       (cause) => {
+        if (request !== requestSequence.current) return;
         setError(cause instanceof Error ? cause.message : String(cause));
         setLoading(false);
       },

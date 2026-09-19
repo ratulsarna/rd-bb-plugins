@@ -17,10 +17,12 @@ afterEach(() => {
 
 function renderBoard(options?: {
   cards?: ReturnType<typeof makeCard>[];
+  projects?: Array<{ id: string; name: string }>;
   pending?: boolean;
   ownerThreadId?: string;
   connection?: "connecting" | "connected" | "reconnecting";
   listCards?: ReturnType<typeof vi.fn>;
+  addCard?: ReturnType<typeof vi.fn>;
 }) {
   const listCards =
     options?.listCards ??
@@ -42,9 +44,11 @@ function renderBoard(options?: {
         ],
       },
       rpc: {
-        listProjects: () => ({ projects: [{ id: "proj_1", name: "Example" }] }),
+        listProjects: () => ({
+          projects: options?.projects ?? [{ id: "proj_1", name: "Example" }],
+        }),
         listCards,
-        addCard: () => makeCard(),
+        addCard: options?.addCard ?? (() => makeCard()),
         moveCard: (input: unknown) => {
           const { cardId, column } = input as { cardId: string; column: string };
           return makeCard({ id: cardId, column: column as never });
@@ -103,5 +107,74 @@ describe("pipeline board", () => {
     await slot.behavior.setRealtimeConnectionState("connected");
 
     await waitFor(() => expect(listCards.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  it("clears cards on a project switch and ignores an older response", async () => {
+    let resolveOld!: (value: { cards: ReturnType<typeof makeCard>[] }) => void;
+    let resolveCurrent!: (value: { cards: ReturnType<typeof makeCard>[] }) => void;
+    const old = new Promise<{ cards: ReturnType<typeof makeCard>[] }>((resolve) => {
+      resolveOld = resolve;
+    });
+    const current = new Promise<{ cards: ReturnType<typeof makeCard>[] }>((resolve) => {
+      resolveCurrent = resolve;
+    });
+    let projectACalls = 0;
+    const listCards = vi.fn((input: unknown) => {
+      const { projectId } = input as { projectId: string };
+      if (projectId === "project-a" && projectACalls++ === 0) {
+        return { cards: [makeCard({ id: "a", projectId, title: "Project A" })] };
+      }
+      return projectId === "project-a" ? old : current;
+    });
+    renderBoard({
+      projects: [
+        { id: "project-a", name: "A" },
+        { id: "project-b", name: "B" },
+      ],
+      listCards,
+    });
+    await screen.findByText("Project A");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show done" }));
+    await waitFor(() => expect(listCards).toHaveBeenCalledTimes(2));
+    fireEvent.change(screen.getByRole("combobox", { name: "Project" }), {
+      target: { value: "project-b" },
+    });
+
+    await waitFor(() => expect(screen.queryByText("Project A")).toBeNull());
+    await waitFor(() => expect(listCards).toHaveBeenCalledTimes(3));
+    resolveCurrent({
+      cards: [makeCard({ id: "b", projectId: "project-b", title: "Project B" })],
+    });
+    await screen.findByText("Project B");
+    resolveOld({
+      cards: [makeCard({ id: "stale", projectId: "project-a", title: "Stale A" })],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Project B")).toBeTruthy();
+      expect(screen.queryByText("Stale A")).toBeNull();
+    });
+  });
+
+  it("keeps the add form open when creating a card fails", async () => {
+    const addCard = vi.fn(async () => {
+      throw new Error("Could not create card");
+    });
+    renderBoard({ addCard });
+    await screen.findByText("A pipeline card");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
+    fireEvent.change(screen.getByLabelText("Card title"), {
+      target: { value: "Broken card" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Could not create card",
+    );
+    expect((screen.getByLabelText("Card title") as HTMLInputElement).value).toBe(
+      "Broken card",
+    );
   });
 });

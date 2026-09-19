@@ -21,6 +21,7 @@ export function AddCard(props: {
       setBody("");
       setFiles([]);
       setOpen(false);
+    } catch {
     } finally {
       setPending(false);
     }
