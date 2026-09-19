@@ -89,6 +89,11 @@ function errorMessage(cause: unknown): string {
 const MISSING_ISSUE_ERROR =
   "no issue yet: let intake finish, or pass --issue <url>";
 
+function normalizeIssueUrl(value: string | null): string | null {
+  const trimmed = value?.trim() ?? "";
+  return trimmed === "" ? null : trimmed;
+}
+
 function isThreadNotFound(cause: unknown): boolean {
   if (cause === null || typeof cause !== "object") return false;
   const error = cause as { code?: unknown; status?: unknown };
@@ -172,13 +177,14 @@ export function createPipelineService(
         role,
         project,
       );
-      if (role === "lead" && card.issueUrl === null) {
+      const issueUrl = normalizeIssueUrl(card.issueUrl);
+      if (role === "lead" && issueUrl === null) {
         throw new Error(MISSING_ISSUE_ERROR);
       }
       const prompt =
         role === "intake"
           ? intakePrompt(card, project.name)
-          : leadPrompt(card, await dependencies.readIssue(card.issueUrl!));
+          : leadPrompt(card, await dependencies.readIssue(issueUrl!));
       const thread = await sdk.threads.spawn(
         spawnRequest({ card, role, prompt, environment, settings }),
       );
@@ -234,7 +240,7 @@ export function createPipelineService(
     source: "ui" | "cli",
   ): Promise<Card> => {
     const before = required(cardId);
-    if (column === "planning" && before.issueUrl === null) {
+    if (column === "planning" && normalizeIssueUrl(before.issueUrl) === null) {
       throw new Error(MISSING_ISSUE_ERROR);
     }
     let card = before;
@@ -535,15 +541,22 @@ export function createPipelineService(
           `card ${card.id} is now led by ${ownerThread(card) ?? "no thread"}`,
         );
       }
+      const issueUrl =
+        input.issueUrl === undefined
+          ? undefined
+          : normalizeIssueUrl(input.issueUrl);
+      if (input.issueUrl !== undefined && issueUrl === null) {
+        throw new Error(MISSING_ISSUE_ERROR);
+      }
       if (
         input.column === "planning" &&
-        (input.issueUrl ?? card.issueUrl) === null
+        (issueUrl ?? normalizeIssueUrl(card.issueUrl)) === null
       ) {
         throw new Error(MISSING_ISSUE_ERROR);
       }
 
       const patch: Parameters<CardStore["update"]>[1] = {};
-      if (input.issueUrl !== undefined) patch.issueUrl = input.issueUrl;
+      if (issueUrl !== undefined) patch.issueUrl = issueUrl;
       if (input.prUrl !== undefined) patch.prUrl = input.prUrl;
       if (input.tier !== undefined) patch.tier = input.tier;
       if (input.needsYou !== undefined) {

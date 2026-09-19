@@ -422,7 +422,7 @@ describe("launch", () => {
     await service.report({
       threadId: "intake",
       column: "planning",
-      issueUrl: "https://github.com/o/r/issues/1",
+      issueUrl: "  https://github.com/o/r/issues/1  ",
       working: true,
     });
 
@@ -430,6 +430,7 @@ describe("launch", () => {
       column: "planning",
       ownerRole: "lead",
       leadThreadId: "thr_1",
+      issueUrl: "https://github.com/o/r/issues/1",
     });
     expect(spawn).toHaveBeenCalledOnce();
   });
@@ -452,6 +453,33 @@ describe("launch", () => {
     expect(store.get("card_1")).toEqual(before);
     expect(spawn).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { label: "empty", issueUrl: "" },
+    { label: "whitespace-only", issueUrl: "  \t " },
+  ])(
+    "rejects a $label issue before a planning handoff",
+    async ({ issueUrl }) => {
+      const { store, service, spawn, readIssue } = setup();
+      seed(store);
+      const before = store.update("card_1", { intakeThreadId: "intake" });
+
+      await expect(
+        service.report({
+          threadId: "intake",
+          column: "planning",
+          issueUrl,
+          working: true,
+        }),
+      ).rejects.toThrow(
+        "no issue yet: let intake finish, or pass --issue <url>",
+      );
+
+      expect(store.get("card_1")).toEqual(before);
+      expect(readIssue).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+    },
+  );
 
   it("is idempotent for repeated planning reports", async () => {
     const { store, service, spawn } = setup();
