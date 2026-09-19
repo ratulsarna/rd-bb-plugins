@@ -19,6 +19,7 @@ export function makeCard(overrides: Partial<Card> = {}): Card {
     prUrl: null,
     intakeThreadId: "intake",
     leadThreadId: null,
+    ownerRole: "intake",
     threadError: null,
     launchError: null,
     revision: 1,

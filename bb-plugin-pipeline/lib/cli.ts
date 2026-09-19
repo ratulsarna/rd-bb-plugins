@@ -7,7 +7,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { COLUMNS, isColumn } from "./columns";
 import type { PipelineService } from "./service";
-import { ownerThread } from "./service";
+import { ownerThread } from "./store";
 import type { Card, CardAttachment, CardStore } from "./store";
 
 const USAGE = `Usage:

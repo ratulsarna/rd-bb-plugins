@@ -4,8 +4,16 @@ import {
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
 import type { PluginBbSdk } from "@get-bb/plugin-sdk";
-import { createPipelineService, type PipelineSettings } from "../lib/service";
-import { createCardStore, MIGRATIONS, type CardAttachment } from "../lib/store";
+import {
+  createPipelineService,
+  type PipelineSettings,
+} from "../lib/service";
+import {
+  createCardStore,
+  MIGRATIONS,
+  ownerThread,
+  type CardAttachment,
+} from "../lib/store";
 
 const settings: PipelineSettings = {
   hostId: "host_mac",
@@ -119,8 +127,12 @@ function seed(
   });
 }
 
-function thread(id: string, activeBackgroundAgentCount = 0) {
-  return { id, activeBackgroundAgentCount };
+function thread(
+  id: string,
+  activeBackgroundAgentCount = 0,
+  overrides: Partial<ReturnType<typeof makeThreadResponse>> = {},
+) {
+  return makeThreadResponse({ id, activeBackgroundAgentCount, ...overrides });
 }
 
 describe("idle policy", () => {
@@ -144,6 +156,7 @@ describe("idle policy", () => {
     const before = store.update("card_1", {
       intakeThreadId: "intake",
       leadThreadId: "lead",
+      ownerRole: "lead",
     });
 
     await service.onThreadIdle(thread("intake"), "Question?");
@@ -155,7 +168,7 @@ describe("idle policy", () => {
   it("does nothing while lead children are active", async () => {
     const { store, service, classify } = setup();
     seed(store);
-    const before = store.update("card_1", { leadThreadId: "lead" });
+    const before = store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
 
     await service.onThreadIdle(thread("lead", 1), "Question?");
 
@@ -166,7 +179,7 @@ describe("idle policy", () => {
   it("trusts an explicit needs-you report for the turn", async () => {
     const { store, service, classify } = setup();
     seed(store);
-    store.update("card_1", { leadThreadId: "lead" });
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
     await service.report({ threadId: "lead", needsYou: "Choose one" });
     const before = store.get("card_1");
 
@@ -181,7 +194,7 @@ describe("idle policy", () => {
       classify: async () => ({ decision: "needs", probability: 0.9 }),
     });
     seed(store);
-    store.update("card_1", { leadThreadId: "lead" });
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
     await service.report({ threadId: "lead", working: true });
 
     await service.onThreadIdle(thread("lead"), "Pick A or B?");
@@ -193,7 +206,7 @@ describe("idle policy", () => {
   it.each([null, "", "   "])("treats blank text %p as unknown without Jev", async (text) => {
     const { store, service, classify } = setup();
     seed(store);
-    store.update("card_1", { leadThreadId: "lead" });
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
 
     await service.onThreadIdle(thread("lead"), text);
 
@@ -210,7 +223,7 @@ describe("idle policy", () => {
       classify: async () => ({ decision, probability: decision === "needs" ? 0.9 : decision === "no" ? 0.1 : 0.5 }),
     });
     seed(store);
-    store.update("card_1", { leadThreadId: "lead" });
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
     const message = `status ${"x".repeat(220)} question`;
 
     await service.onThreadIdle(thread("lead"), message);
@@ -224,7 +237,7 @@ describe("idle policy", () => {
     const pending = new Promise<{ decision: "needs"; probability: number }>((done) => { resolve = done; });
     const { store, service } = setup({ classify: async () => pending });
     seed(store);
-    store.update("card_1", { leadThreadId: "lead" });
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
 
     const idle = service.onThreadIdle(thread("lead"), "Need a decision?");
     await vi.waitFor(() => expect(store.get("card_1")?.revision).toBe(1));
@@ -238,12 +251,24 @@ describe("idle policy", () => {
   it("shows unknown without a Jev key", async () => {
     const { store, service, classify } = setup({ settings: { ...settings, jevApiKey: undefined } });
     seed(store);
-    store.update("card_1", { leadThreadId: "lead" });
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
 
     await service.onThreadIdle(thread("lead"), "Question?");
 
     expect(classify).not.toHaveBeenCalled();
     expect(store.get("card_1")).toMatchObject({ needsUser: false, attentionUnknown: true });
+  });
+
+  it("preserves an explicit intake needs-you reason on idle", async () => {
+    const { store, service } = setup();
+    seed(store);
+    store.update("card_1", { intakeThreadId: "intake" });
+    await service.report({ threadId: "intake", needsYou: "Which repository?" });
+    const before = store.get("card_1");
+
+    await service.onThreadIdle(thread("intake"), "Which repository?");
+
+    expect(store.get("card_1")).toEqual(before);
   });
 });
 
@@ -251,9 +276,13 @@ describe("owner rules", () => {
   it("records intake failure after lead handoff without changing attention", async () => {
     const { store, service } = setup();
     seed(store);
-    const before = store.update("card_1", { intakeThreadId: "intake", leadThreadId: "lead" });
+    const before = store.update("card_1", {
+      intakeThreadId: "intake",
+      leadThreadId: "lead",
+      ownerRole: "lead",
+    });
 
-    await service.onThreadFailed(thread("intake"), "old failure");
+    await service.onThreadFailed(thread("intake", 0, { status: "error" }), "old failure");
 
     expect(store.get("card_1")).toEqual(before);
     expect(store.history("card_1").at(-1)).toMatchObject({ kind: "thread_failed", threadId: "intake" });
@@ -262,9 +291,9 @@ describe("owner rules", () => {
   it("marks a lead failure as needing the user", async () => {
     const { store, service } = setup();
     seed(store);
-    store.update("card_1", { leadThreadId: "lead" });
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
 
-    await service.onThreadFailed(thread("lead"), "boom");
+    await service.onThreadFailed(thread("lead", 0, { status: "error" }), "boom");
 
     expect(store.get("card_1")).toMatchObject({ needsUser: true, attentionReason: "thread failed: boom" });
   });
@@ -272,7 +301,11 @@ describe("owner rules", () => {
   it("allows explicit-card reports from unrelated threads", async () => {
     const { store, service } = setup();
     seed(store);
-    store.update("card_1", { intakeThreadId: "intake", leadThreadId: "lead" });
+    store.update("card_1", {
+      intakeThreadId: "intake",
+      leadThreadId: "lead",
+      ownerRole: "lead",
+    });
 
     await service.report({
       cardId: "card_1",
@@ -296,6 +329,7 @@ describe("owner rules", () => {
     store.update("card_1", {
       intakeThreadId: "intake",
       leadThreadId: "lead",
+      ownerRole: "lead",
       issueUrl: "https://github.com/o/r/issues/2",
     });
 
@@ -308,9 +342,37 @@ describe("owner rules", () => {
     ).rejects.toThrow("now led by lead");
     expect(store.get("card_1")?.issueUrl).toBe("https://github.com/o/r/issues/2");
   });
+
+  it("reconciles an unarchived idle lead from its current state", async () => {
+    const { store, service } = setup();
+    seed(store);
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
+    await service.onThreadGone(thread("lead", 0, { archivedAt: 1 }));
+
+    await service.onThreadUnarchived(
+      makeThreadResponse({ id: "lead", status: "idle", archivedAt: null }),
+    );
+
+    expect(store.get("card_1")).toMatchObject({
+      needsUser: false,
+      attentionReason: null,
+      attentionUnknown: true,
+    });
+  });
 });
 
 describe("launch", () => {
+  it("keeps lead ownership after a card enters planning", async () => {
+    const { store, service } = setup();
+    seed(store);
+
+    await service.move("card_1", "planning", "ui");
+    expect(store.get("card_1")).toMatchObject({ ownerRole: "lead" });
+
+    await service.move("card_1", "todo", "ui");
+    expect(store.get("card_1")).toMatchObject({ ownerRole: "lead" });
+  });
+
   it("is idempotent for repeated planning reports", async () => {
     const { store, service, spawn } = setup();
     seed(store);
@@ -364,7 +426,7 @@ describe("launch", () => {
     expect(store.get("card_1")).toMatchObject({ intakeThreadId: "intake", launchError: null });
   });
 
-  it("retries intake after a failed lead launch overwrites the error", async () => {
+  it("retries the lead after planning takes ownership", async () => {
     let offline = true;
     const { store, service, spawn } = setup({
       spawn: async () => {
@@ -377,14 +439,18 @@ describe("launch", () => {
     await service.launch("card_1", "intake");
     await service.move("card_1", "planning", "ui");
     expect(store.get("card_1")?.launchError).toContain("lead: no issue yet");
+    await service.report({
+      cardId: "card_1",
+      issueUrl: "https://github.com/o/r/issues/1",
+    });
 
     offline = false;
     await service.retry("card_1");
 
     expect(spawn).toHaveBeenCalledTimes(2);
     expect(store.get("card_1")).toMatchObject({
-      intakeThreadId: "intake-retry",
-      leadThreadId: null,
+      intakeThreadId: null,
+      leadThreadId: "intake-retry",
       launchError: null,
     });
   });
@@ -395,10 +461,11 @@ describe("launch", () => {
     store.update("card_1", {
       intakeThreadId: "intake",
       leadThreadId: "deleted-lead",
+      ownerRole: "lead",
       issueUrl: "https://github.com/o/r/issues/1",
     });
 
-    await service.onThreadGone(thread("deleted-lead"), "deleted");
+    await service.onThreadGone(thread("deleted-lead", 0, { deletedAt: 1 }));
     expect(store.get("card_1")).toMatchObject({
       leadThreadId: null,
       launchError: "lead: thread deleted",
@@ -411,6 +478,54 @@ describe("launch", () => {
     expect(spawn).toHaveBeenCalledOnce();
     expect(store.get("card_1")).toMatchObject({
       leadThreadId: "thr_1",
+      launchError: null,
+    });
+  });
+
+  it("keeps lead ownership while a deleted lead is absent", async () => {
+    const { store, service, spawn } = setup();
+    seed(store);
+    store.update("card_1", {
+      intakeThreadId: "intake",
+      leadThreadId: "deleted-lead",
+      ownerRole: "lead",
+      issueUrl: "https://github.com/o/r/issues/1",
+    });
+
+    await service.onThreadGone(thread("deleted-lead", 0, { deletedAt: 1 }));
+    const deleted = store.get("card_1")!;
+    expect(ownerThread(deleted)).toBeNull();
+
+    await service.onThreadIdle(thread("intake"), "Old intake question");
+    expect(store.get("card_1")).toEqual(deleted);
+
+    await service.retry("card_1");
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(ownerThread(store.get("card_1")!)).toBe("thr_1");
+  });
+
+  it("clears lifecycle attention after a successful launch", async () => {
+    const { store, service } = setup();
+    seed(store);
+    store.update("card_1", {
+      needsUser: true,
+      attentionReason: "thread deleted",
+      attentionSource: "system",
+      attentionUnknown: true,
+      reportSignal: "needs_you",
+      threadError: "gone",
+      launchError: "intake: thread deleted",
+    });
+
+    await service.retry("card_1");
+
+    expect(store.get("card_1")).toMatchObject({
+      needsUser: false,
+      attentionReason: null,
+      attentionSource: null,
+      attentionUnknown: false,
+      reportSignal: null,
+      threadError: null,
       launchError: null,
     });
   });
@@ -483,7 +598,10 @@ describe("startup pass", () => {
       },
     });
     seed(store);
-    const before = store.update("card_1", { leadThreadId: "lead" });
+    const before = store.update("card_1", {
+      leadThreadId: "lead",
+      ownerRole: "lead",
+    });
 
     await service.startupPass();
 
@@ -492,13 +610,59 @@ describe("startup pass", () => {
       "startup pass failed for thread lead: temporary output failure",
     );
   });
+
+  it("treats a missing startup thread as deleted", async () => {
+    const { store, service } = setup({
+      getThread: async () => {
+        throw Object.assign(new Error("thread not found"), {
+          status: 404,
+          code: "thread_not_found",
+        });
+      },
+    });
+    seed(store);
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
+
+    await service.startupPass();
+
+    expect(store.get("card_1")).toMatchObject({
+      leadThreadId: null,
+      launchError: "lead: thread deleted",
+      attentionReason: "thread deleted",
+    });
+  });
+
+  it("leaves a card unchanged on a non-404 startup lookup failure", async () => {
+    const { store, service, log } = setup({
+      getThread: async () => {
+        throw Object.assign(new Error("host unavailable"), { status: 503 });
+      },
+    });
+    seed(store);
+    const before = store.update("card_1", {
+      leadThreadId: "lead",
+      ownerRole: "lead",
+    });
+
+    await service.startupPass();
+
+    expect(store.get("card_1")).toEqual(before);
+    expect(log).toHaveBeenCalledWith(
+      "startup pass failed for thread lead: host unavailable",
+    );
+  });
 });
 
 describe("report and active state", () => {
   it.each(["intake", "lead"])("resolves a report by %s thread id", async (role) => {
     const { store, service } = setup();
     seed(store);
-    store.update("card_1", role === "intake" ? { intakeThreadId: role } : { leadThreadId: role });
+    store.update(
+      "card_1",
+      role === "intake"
+        ? { intakeThreadId: role }
+        : { leadThreadId: role, ownerRole: "lead" },
+    );
 
     await service.report({ threadId: role, tier: "standard" });
 
@@ -510,11 +674,29 @@ describe("report and active state", () => {
     await expect(service.report({ threadId: "missing", working: true })).rejects.toThrow("unknown card or pipeline thread");
   });
 
+  it("records move and attention history for a combined report", async () => {
+    const { store, service } = setup();
+    seed(store);
+    store.update("card_1", { intakeThreadId: "intake" });
+
+    await service.report({
+      threadId: "intake",
+      column: "todo",
+      needsYou: "Choose a target",
+    });
+
+    expect(store.history("card_1").slice(-2)).toMatchObject([
+      { kind: "moved", threadId: "intake", toColumn: "todo" },
+      { kind: "attention", threadId: "intake", note: "Choose a target" },
+    ]);
+  });
+
   it("clears attention, runtime error, and report signal on active", async () => {
     const { store, service } = setup();
     seed(store);
     store.update("card_1", {
       leadThreadId: "lead",
+      ownerRole: "lead",
       needsUser: true,
       attentionReason: "Choose",
       attentionSource: "report",
@@ -523,7 +705,7 @@ describe("report and active state", () => {
       reportSignal: "needs_you",
     });
 
-    await service.onThreadActive(thread("lead"));
+    await service.onThreadActive(thread("lead", 0, { status: "active" }));
 
     expect(store.get("card_1")).toMatchObject({
       needsUser: false,
@@ -539,7 +721,7 @@ describe("report and active state", () => {
       settings: { ...settings, jevThreshold: "0.3" },
     });
     seed(store);
-    store.update("card_1", { leadThreadId: "lead" });
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
 
     await service.onThreadIdle(thread("lead"), "Need a decision?");
 

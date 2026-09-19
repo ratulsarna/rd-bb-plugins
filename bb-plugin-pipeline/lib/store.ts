@@ -1,6 +1,8 @@
 import type { Database } from "better-sqlite3";
 import type { Column } from "./columns";
 
+export type CardOwnerRole = "intake" | "lead";
+
 export interface CardAttachment {
   path: string;
   filename: string;
@@ -26,6 +28,7 @@ export interface Card {
   prUrl: string | null;
   intakeThreadId: string | null;
   leadThreadId: string | null;
+  ownerRole: CardOwnerRole;
   threadError: string | null;
   launchError: string | null;
   revision: number;
@@ -68,6 +71,7 @@ export type CardPatch = Partial<
     | "prUrl"
     | "intakeThreadId"
     | "leadThreadId"
+    | "ownerRole"
     | "threadError"
     | "launchError"
   >
@@ -90,6 +94,7 @@ interface CardRow {
   pr_url: string | null;
   intake_thread_id: string | null;
   lead_thread_id: string | null;
+  owner_role: CardOwnerRole;
   thread_error: string | null;
   launch_error: string | null;
   revision: number;
@@ -127,7 +132,24 @@ export const MIGRATIONS = [
   CREATE INDEX cards_project ON cards(project_id, updated_at);
   CREATE INDEX cards_intake ON cards(intake_thread_id);
   CREATE INDEX cards_lead ON cards(lead_thread_id);`,
+  `ALTER TABLE cards ADD COLUMN owner_role TEXT NOT NULL DEFAULT 'intake' CHECK (owner_role IN ('intake', 'lead'));
+   UPDATE cards
+   SET owner_role = 'lead'
+   WHERE lead_thread_id IS NOT NULL
+      OR EXISTS (
+        SELECT 1 FROM card_history
+        WHERE card_history.card_id = cards.id
+          AND card_history.to_column = 'planning'
+      );`,
 ] as const;
+
+export function roleThread(card: Card, role: CardOwnerRole): string | null {
+  return role === "lead" ? card.leadThreadId : card.intakeThreadId;
+}
+
+export function ownerThread(card: Card): string | null {
+  return roleThread(card, card.ownerRole);
+}
 
 function parseAttachments(value: string): CardAttachment[] {
   try {
@@ -156,6 +178,7 @@ function cardFromRow(row: CardRow): Card {
     prUrl: row.pr_url,
     intakeThreadId: row.intake_thread_id,
     leadThreadId: row.lead_thread_id,
+    ownerRole: row.owner_role,
     threadError: row.thread_error,
     launchError: row.launch_error,
     revision: row.revision,
@@ -232,7 +255,7 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         `UPDATE cards SET
           "column" = ?, needs_user = ?, attention_reason = ?, attention_source = ?, attention_unknown = ?,
           report_signal = ?, tier = ?, issue_url = ?, pr_url = ?, intake_thread_id = ?, lead_thread_id = ?,
-          thread_error = ?, launch_error = ?, revision = revision + 1, updated_at = ?
+          owner_role = ?, thread_error = ?, launch_error = ?, revision = revision + 1, updated_at = ?
          WHERE id = ?`,
       ).run(
         next.column,
@@ -246,6 +269,7 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         next.prUrl,
         next.intakeThreadId,
         next.leadThreadId,
+        next.ownerRole,
         next.threadError,
         next.launchError,
         next.updatedAt,
@@ -298,7 +322,9 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         db
           .prepare(
             `SELECT * FROM cards
-             WHERE "column" <> 'done' AND (lead_thread_id IS NOT NULL OR intake_thread_id IS NOT NULL)
+             WHERE "column" <> 'done'
+               AND ((owner_role = 'lead' AND lead_thread_id IS NOT NULL)
+                 OR (owner_role = 'intake' AND intake_thread_id IS NOT NULL))
              ORDER BY updated_at DESC`,
           )
           .all() as CardRow[]

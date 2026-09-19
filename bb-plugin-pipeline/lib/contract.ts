@@ -33,6 +33,7 @@ export const cardSchema = z
     prUrl: z.string().nullable(),
     intakeThreadId: z.string().nullable(),
     leadThreadId: z.string().nullable(),
+    ownerRole: z.enum(["intake", "lead"]),
     threadError: z.string().nullable(),
     launchError: z.string().nullable(),
     revision: z.number().int(),

@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { PluginBbSdk } from "@get-bb/plugin-sdk";
+import type {
+  PluginBbSdk,
+  PluginThreadEventPayloads,
+} from "@get-bb/plugin-sdk";
 import type { Column } from "./columns";
 import type { IssueDetails } from "./issue";
 import type { JevResult } from "./jev";
@@ -16,6 +19,7 @@ import type {
   CardStore,
   HistoryInput,
 } from "./store";
+import { ownerThread, roleThread } from "./store";
 
 export interface PipelineSettings {
   hostId: string;
@@ -27,11 +31,8 @@ export interface PipelineSettings {
   jevThreshold: string;
 }
 
-export interface PipelineThread {
-  id: string;
-  status?: string;
-  activeBackgroundAgentCount: number;
-}
+export type PipelineThread =
+  PluginThreadEventPayloads["thread.created"]["thread"];
 
 export interface ReportInput {
   threadId?: string;
@@ -60,10 +61,8 @@ export interface PipelineService {
   onThreadActive(thread: PipelineThread): Promise<void>;
   onThreadIdle(thread: PipelineThread, lastText: string | null): Promise<void>;
   onThreadFailed(thread: PipelineThread, error: string | null): Promise<void>;
-  onThreadGone(
-    thread: PipelineThread,
-    action: "archived" | "deleted",
-  ): Promise<void>;
+  onThreadGone(thread: PipelineThread): Promise<void>;
+  onThreadUnarchived(thread: PipelineThread): Promise<void>;
   startupPass(): Promise<void>;
 }
 
@@ -83,12 +82,14 @@ export interface PipelineServiceDependencies {
   id?: () => string;
 }
 
-export function ownerThread(card: Card): string | null {
-  return card.leadThreadId ?? card.intakeThreadId;
-}
-
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function isThreadNotFound(cause: unknown): boolean {
+  if (cause === null || typeof cause !== "object") return false;
+  const error = cause as { code?: unknown; status?: unknown };
+  return error.status === 404 || error.code === "thread_not_found";
 }
 
 function parseThreshold(value: string): number {
@@ -184,6 +185,11 @@ export function createPipelineService(
         card.id,
         {
           [field]: thread.id,
+          needsUser: false,
+          attentionReason: null,
+          attentionSource: null,
+          attentionUnknown: false,
+          threadError: null,
           launchError: null,
           reportSignal: null,
         },
@@ -228,22 +234,234 @@ export function createPipelineService(
   ): Promise<Card> => {
     const before = required(cardId);
     let card = before;
-    if (before.column !== column) {
+    if (before.column !== column || (column === "planning" && before.ownerRole !== "lead")) {
       card = update(
         cardId,
-        { column },
         {
-          kind: "moved",
-          fromColumn: before.column,
-          toColumn: column,
-          source,
+          column,
+          ...(column === "planning" ? { ownerRole: "lead" as const } : {}),
         },
+        before.column === column
+          ? undefined
+          : {
+              kind: "moved",
+              fromColumn: before.column,
+              toColumn: column,
+              source,
+            },
       );
     }
     if (column === "planning" && card.leadThreadId === null) {
       card = await launch(cardId, "lead");
     }
     return card;
+  };
+
+  type ReconcileInput =
+    | {
+        kind: "thread";
+        thread: PipelineThread;
+        lastText?: string | null;
+        error?: string | null;
+      }
+    | { kind: "not-found"; threadId: string };
+
+  const reconcile = async (
+    initial: Card,
+    role: PipelineRole,
+    observation: ReconcileInput,
+  ): Promise<void> => {
+    const threadId =
+      observation.kind === "thread"
+        ? observation.thread.id
+        : observation.threadId;
+    if (initial.ownerRole !== role) {
+      if (observation.kind === "thread") {
+        const state =
+          observation.thread.deletedAt !== null
+            ? "deleted"
+            : observation.thread.archivedAt !== null
+              ? "archived"
+              : observation.thread.status;
+        nonOwnerHistory(
+          initial,
+          threadId,
+          state === "error" ? "thread_failed" : "attention",
+          `ignored non-owner ${state}`,
+        );
+      }
+      return;
+    }
+
+    const thread = observation.kind === "thread" ? observation.thread : null;
+    if (thread === null || thread.deletedAt !== null) {
+      update(
+        initial.id,
+        {
+          [role === "lead" ? "leadThreadId" : "intakeThreadId"]: null,
+          launchError: `${role}: thread deleted`,
+          needsUser: true,
+          attentionReason: "thread deleted",
+          attentionSource: "system",
+          attentionUnknown: false,
+          reportSignal: null,
+        },
+        {
+          kind: "thread_gone",
+          source: "system",
+          threadId,
+          note: "deleted",
+        },
+      );
+      return;
+    }
+
+    if (thread.archivedAt !== null) {
+      update(
+        initial.id,
+        {
+          needsUser: true,
+          attentionReason: "thread archived",
+          attentionSource: "system",
+          attentionUnknown: false,
+          reportSignal: null,
+        },
+        {
+          kind: "thread_gone",
+          source: "system",
+          threadId,
+          note: "archived",
+        },
+      );
+      return;
+    }
+
+    if (thread.status === "error") {
+      const failure =
+        (observation.kind === "thread" ? observation.error : null) ??
+        "thread is in error state";
+      const reason = `thread failed: ${failure}`;
+      update(
+        initial.id,
+        {
+          threadError: failure,
+          needsUser: true,
+          attentionReason: reason,
+          attentionSource: "system",
+          attentionUnknown: false,
+          reportSignal: null,
+        },
+        {
+          kind: "thread_failed",
+          source: "system",
+          threadId,
+          note: failure,
+        },
+      );
+      return;
+    }
+
+    if (thread.status === "active" || thread.status === "starting") {
+      update(initial.id, {
+        needsUser: false,
+        attentionReason: null,
+        attentionSource: null,
+        attentionUnknown: false,
+        threadError: null,
+        reportSignal: null,
+      });
+      return;
+    }
+
+    if (thread.status !== "idle") return;
+    if (initial.reportSignal === "needs_you") return;
+    if (thread.activeBackgroundAgentCount > 0) return;
+
+    if (role === "intake") {
+      const nextColumn = initial.column === "backlog" ? "todo" : initial.column;
+      update(
+        initial.id,
+        {
+          column: nextColumn,
+          needsUser: true,
+          attentionReason: "intake is waiting for you",
+          attentionSource: "system",
+          attentionUnknown: false,
+        },
+        initial.column === "backlog"
+          ? {
+              kind: "moved",
+              fromColumn: "backlog",
+              toColumn: "todo",
+              source: "system",
+              threadId,
+            }
+          : {
+              kind: "attention",
+              source: "system",
+              threadId,
+              note: "intake is waiting for you",
+            },
+      );
+      return;
+    }
+
+    const lastText =
+      (observation.kind === "thread" ? observation.lastText : null) ?? null;
+    const settings = await dependencies.getSettings();
+    const verdict =
+      (lastText?.trim() ?? "") === "" || !settings.jevApiKey
+        ? { decision: "unknown" as const, probability: null }
+        : await dependencies.classify({
+            apiKey: settings.jevApiKey,
+            threshold: parseThreshold(settings.jevThreshold),
+            column: initial.column,
+            lastText,
+          });
+    const current = store.get(initial.id);
+    if (current === null || current.revision !== initial.revision) return;
+
+    if (verdict.decision === "needs") {
+      update(
+        initial.id,
+        {
+          needsUser: true,
+          attentionReason: (lastText ?? "").slice(-200),
+          attentionSource: "jev",
+          attentionUnknown: false,
+        },
+        {
+          kind: "attention",
+          source: "jev",
+          threadId,
+          note: "needs user",
+        },
+      );
+    } else if (verdict.decision === "no") {
+      update(initial.id, {
+        needsUser: false,
+        attentionReason: null,
+        attentionSource: null,
+        attentionUnknown: false,
+      });
+    } else {
+      update(initial.id, {
+        needsUser: false,
+        attentionReason: null,
+        attentionSource: null,
+        attentionUnknown: true,
+      });
+    }
+  };
+
+  const reconcileThread = async (
+    thread: PipelineThread,
+    details: { lastText?: string | null; error?: string | null } = {},
+  ): Promise<void> => {
+    const card = store.getByThread(thread.id);
+    if (card === null) return;
+    const role = card.leadThreadId === thread.id ? "lead" : "intake";
+    await reconcile(card, role, { kind: "thread", thread, ...details });
   };
 
   const service: PipelineService = {
@@ -265,8 +483,10 @@ export function createPipelineService(
     launch,
     async retry(cardId) {
       const card = required(cardId);
-      if (card.launchError === null) throw new Error("nothing to retry");
-      const role = card.intakeThreadId === null ? "intake" : "lead";
+      const role = card.ownerRole;
+      if (card.launchError === null || roleThread(card, role) !== null) {
+        throw new Error("nothing to retry");
+      }
       return launch(cardId, role);
     },
     async report(input) {
@@ -313,8 +533,18 @@ export function createPipelineService(
         patch.reportSignal = "working";
       }
       if (input.column !== undefined) patch.column = input.column;
+      if (input.column === "planning") patch.ownerRole = "lead";
 
       const moved = input.column !== undefined && input.column !== card.column;
+      const attentionHistory =
+        input.needsYou !== undefined || input.working
+          ? {
+              kind: "attention",
+              source: "report",
+              threadId: input.threadId,
+              note: input.needsYou ?? "working",
+            }
+          : undefined;
       let next = update(
         card.id,
         patch,
@@ -326,15 +556,11 @@ export function createPipelineService(
               source: "report",
               threadId: input.threadId,
             }
-          : input.needsYou !== undefined || input.working
-            ? {
-                kind: "attention",
-                source: "report",
-                threadId: input.threadId,
-                note: input.needsYou ?? "working",
-              }
-            : undefined,
+          : attentionHistory,
       );
+      if (moved && attentionHistory !== undefined) {
+        store.recordHistory(card.id, attentionHistory);
+      }
       if (input.column === "planning" && next.leadThreadId === null) {
         next = await launch(next.id, "lead");
       }
@@ -347,164 +573,20 @@ export function createPipelineService(
       if (removed) dependencies.publish(card.projectId);
       return removed;
     },
-    async onThreadActive(thread) {
-      const card = store.getByThread(thread.id);
-      if (card === null) return;
-      if (ownerThread(card) !== thread.id) {
-        nonOwnerHistory(card, thread.id, "attention", "ignored non-owner active");
-        return;
-      }
-      update(card.id, {
-        needsUser: false,
-        attentionReason: null,
-        attentionSource: null,
-        attentionUnknown: false,
-        threadError: null,
-        reportSignal: null,
-      });
+    onThreadActive(thread) {
+      return reconcileThread(thread);
     },
-    async onThreadIdle(thread, lastText) {
-      const initial = store.getByThread(thread.id);
-      if (initial === null) return;
-      if (ownerThread(initial) !== thread.id) {
-        nonOwnerHistory(initial, thread.id, "attention", "ignored non-owner idle");
-        return;
-      }
-
-      if (initial.leadThreadId === null) {
-        const nextColumn = initial.column === "backlog" ? "todo" : initial.column;
-        update(
-          initial.id,
-          {
-            column: nextColumn,
-            needsUser: true,
-            attentionReason: "intake is waiting for you",
-            attentionSource: "system",
-            attentionUnknown: false,
-          },
-          initial.column === "backlog"
-            ? {
-                kind: "moved",
-                fromColumn: "backlog",
-                toColumn: "todo",
-                source: "system",
-                threadId: thread.id,
-              }
-            : {
-                kind: "attention",
-                source: "system",
-                threadId: thread.id,
-                note: "intake is waiting for you",
-              },
-        );
-        return;
-      }
-
-      if (
-        thread.activeBackgroundAgentCount > 0 ||
-        initial.reportSignal === "needs_you"
-      ) {
-        return;
-      }
-      const settings = await dependencies.getSettings();
-      const verdict =
-        (lastText?.trim() ?? "") === "" || !settings.jevApiKey
-          ? { decision: "unknown" as const, probability: null }
-          : await dependencies.classify({
-              apiKey: settings.jevApiKey,
-              threshold: parseThreshold(settings.jevThreshold),
-              column: initial.column,
-              lastText,
-            });
-      const current = store.get(initial.id);
-      if (current === null || current.revision !== initial.revision) return;
-
-      if (verdict.decision === "needs") {
-        update(
-          initial.id,
-          {
-            needsUser: true,
-            attentionReason: (lastText ?? "").slice(-200),
-            attentionSource: "jev",
-            attentionUnknown: false,
-          },
-          {
-            kind: "attention",
-            source: "jev",
-            threadId: thread.id,
-            note: "needs user",
-          },
-        );
-      } else if (verdict.decision === "no") {
-        update(initial.id, {
-          needsUser: false,
-          attentionReason: null,
-          attentionSource: null,
-          attentionUnknown: false,
-        });
-      } else {
-        update(initial.id, {
-          needsUser: false,
-          attentionReason: null,
-          attentionSource: null,
-          attentionUnknown: true,
-        });
-      }
+    onThreadIdle(thread, lastText) {
+      return reconcileThread(thread, { lastText });
     },
-    async onThreadFailed(thread, error) {
-      const card = store.getByThread(thread.id);
-      if (card === null) return;
-      const reason = `thread failed: ${error ?? "unknown error"}`;
-      if (ownerThread(card) !== thread.id) {
-        nonOwnerHistory(card, thread.id, "thread_failed", reason);
-        return;
-      }
-      update(
-        card.id,
-        {
-          threadError: error ?? "unknown error",
-          needsUser: true,
-          attentionReason: reason,
-          attentionSource: "system",
-          attentionUnknown: false,
-        },
-        {
-          kind: "thread_failed",
-          source: "system",
-          threadId: thread.id,
-          note: error,
-        },
-      );
+    onThreadFailed(thread, error) {
+      return reconcileThread(thread, { error });
     },
-    async onThreadGone(thread, action) {
-      const card = store.getByThread(thread.id);
-      if (card === null) return;
-      if (ownerThread(card) !== thread.id) {
-        nonOwnerHistory(card, thread.id, "thread_gone", action);
-        return;
-      }
-      const role = card.leadThreadId === thread.id ? "lead" : "intake";
-      update(
-        card.id,
-        {
-          needsUser: true,
-          attentionReason: `thread ${action}`,
-          attentionSource: "system",
-          attentionUnknown: false,
-          ...(action === "deleted"
-            ? {
-                [role === "lead" ? "leadThreadId" : "intakeThreadId"]: null,
-                launchError: `${role}: thread deleted`,
-              }
-            : {}),
-        },
-        {
-          kind: "thread_gone",
-          source: "system",
-          threadId: thread.id,
-          note: action,
-        },
-      );
+    onThreadGone(thread) {
+      return reconcileThread(thread);
+    },
+    onThreadUnarchived(thread) {
+      return reconcileThread(thread);
     },
     async startupPass() {
       for (const card of store.listActiveWithOwner()) {
@@ -512,27 +594,31 @@ export function createPipelineService(
         let thread;
         try {
           thread = await sdk.threads.get({ threadId });
-        } catch {
-          await service.onThreadGone(
-            { id: threadId, activeBackgroundAgentCount: 0 },
-            "archived",
-          );
+        } catch (cause) {
+          if (isThreadNotFound(cause)) {
+            await reconcile(card, card.ownerRole, { kind: "not-found", threadId });
+          } else {
+            dependencies.log(
+              `startup pass failed for thread ${threadId}: ${errorMessage(cause)}`,
+            );
+          }
           continue;
         }
         try {
-          if (thread.status === "error") {
-            await service.onThreadFailed(thread, "thread is in error state");
-          } else if (thread.status === "active" || thread.status === "starting") {
-            await service.onThreadActive(thread);
-          } else if (
+          let lastText: string | null | undefined;
+          if (
             thread.status === "idle" &&
-            !card.needsUser &&
-            !card.attentionUnknown &&
-            card.reportSignal !== "needs_you"
+            thread.deletedAt === null &&
+            thread.archivedAt === null
           ) {
             const output = await sdk.threads.output({ threadId });
-            await service.onThreadIdle(thread, output.output);
+            lastText = output.output;
           }
+          await reconcile(card, card.ownerRole, {
+            kind: "thread",
+            thread,
+            lastText,
+          });
         } catch (cause) {
           dependencies.log(
             `startup pass failed for thread ${threadId}: ${errorMessage(cause)}`,

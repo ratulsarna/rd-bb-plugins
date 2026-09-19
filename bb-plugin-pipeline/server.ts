@@ -106,10 +106,13 @@ export default async function plugin(bb: BbPluginApi) {
     service.onThreadFailed(thread, error),
   );
   bb.events.on("thread.archived", ({ thread }) =>
-    service.onThreadGone(thread, "archived"),
+    service.onThreadGone(thread),
+  );
+  bb.events.on("thread.unarchived", ({ thread }) =>
+    service.onThreadUnarchived(thread),
   );
   bb.events.on("thread.deleted", ({ thread }) =>
-    service.onThreadGone(thread, "deleted"),
+    service.onThreadGone(thread),
   );
 
   bb.agents.configure((context) => {
