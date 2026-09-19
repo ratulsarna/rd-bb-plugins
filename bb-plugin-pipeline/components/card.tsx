@@ -1,12 +1,11 @@
 import type { MouseEvent } from "react";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
-import type { Card } from "@/lib/store";
+import { ownerThread, type Card } from "@/lib/store";
 
 function attention(card: Card): string | null {
   if (card.needsUser) return card.attentionReason ?? "needs you";
   if (card.attentionUnknown) return "idle, unchecked";
   if (card.threadError !== null) return `thread failed: ${card.threadError}`;
-  if (card.launchError !== null) return `launch failed: ${card.launchError}`;
   return null;
 }
 
@@ -18,7 +17,7 @@ export function PipelineCard(props: {
   onRetry(): void;
   onRemove(): void;
 }) {
-  const owner = props.card.leadThreadId ?? props.card.intakeThreadId;
+  const owner = ownerThread(props.card);
   const stop = (event: MouseEvent) => event.stopPropagation();
   return (
     <article className="rounded-lg border border-border bg-card p-3 shadow-sm">
@@ -39,6 +38,11 @@ export function PipelineCard(props: {
         {attention(props.card) === null ? null : (
           <span className="mt-2 block text-xs text-amber-700 dark:text-amber-300">
             {attention(props.card)}
+          </span>
+        )}
+        {props.card.launchError === null ? null : (
+          <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">
+            launch failed: {props.card.launchError}
           </span>
         )}
         {props.questionOpen ? (

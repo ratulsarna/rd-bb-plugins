@@ -10,16 +10,23 @@ export function AddCard(props: {
   const [body, setBody] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (title.trim() === "" || pending) return;
+    if (files.length > 20) {
+      setError("Choose at most 20 attachments.");
+      return;
+    }
     setPending(true);
+    setError(null);
     try {
       await props.onAdd(title.trim(), body, files);
       setTitle("");
       setBody("");
       setFiles([]);
+      setError(null);
       setOpen(false);
     } catch {
     } finally {
@@ -61,8 +68,17 @@ export function AddCard(props: {
         type="file"
         multiple
         className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
-        onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
+        onChange={(event) => {
+          const next = Array.from(event.target.files ?? []);
+          setFiles(next);
+          setError(next.length > 20 ? "Choose at most 20 attachments." : null);
+        }}
       />
+      {error === null ? null : (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex gap-2">
         <button
           type="submit"

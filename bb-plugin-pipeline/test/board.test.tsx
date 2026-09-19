@@ -13,6 +13,7 @@ afterEach(() => {
   while (mounted.length > 0) mounted.pop()!.lifecycle.unmount();
   cleanup();
   localStorage.clear();
+  vi.unstubAllGlobals();
 });
 
 function renderBoard(options?: {
@@ -21,9 +22,16 @@ function renderBoard(options?: {
   pending?: boolean;
   ownerThreadId?: string;
   connection?: "connecting" | "connected" | "reconnecting";
+  listProjects?: ReturnType<typeof vi.fn>;
   listCards?: ReturnType<typeof vi.fn>;
   addCard?: ReturnType<typeof vi.fn>;
+  moveCard?: ReturnType<typeof vi.fn>;
 }) {
+  const listProjects =
+    options?.listProjects ??
+    vi.fn(() => ({
+      projects: options?.projects ?? [{ id: "proj_1", name: "Example" }],
+    }));
   const listCards =
     options?.listCards ??
     vi.fn(() => ({ cards: options?.cards ?? [makeCard()] }));
@@ -44,15 +52,15 @@ function renderBoard(options?: {
         ],
       },
       rpc: {
-        listProjects: () => ({
-          projects: options?.projects ?? [{ id: "proj_1", name: "Example" }],
-        }),
+        listProjects,
         listCards,
         addCard: options?.addCard ?? (() => makeCard()),
-        moveCard: (input: unknown) => {
-          const { cardId, column } = input as { cardId: string; column: string };
-          return makeCard({ id: cardId, column: column as never });
-        },
+        moveCard:
+          options?.moveCard ??
+          ((input: unknown) => {
+            const { cardId, column } = input as { cardId: string; column: string };
+            return makeCard({ id: cardId, column: column as never });
+          }),
         retryLaunch: () => makeCard(),
         removeCard: () => ({ removed: true }),
         showCard: () => ({ card: makeCard(), history: [] }),
@@ -60,7 +68,7 @@ function renderBoard(options?: {
     },
   );
   mounted.push(slot);
-  return { slot, listCards };
+  return { slot, listProjects, listCards };
 }
 
 describe("pipeline board", () => {
@@ -88,7 +96,7 @@ describe("pipeline board", () => {
     const { slot } = renderBoard({
       pending: true,
       ownerThreadId: "lead",
-      cards: [makeCard({ leadThreadId: "lead" })],
+      cards: [makeCard({ leadThreadId: "lead", ownerRole: "lead" })],
     });
     const title = await screen.findByText("A pipeline card");
 
@@ -176,5 +184,114 @@ describe("pipeline board", () => {
     expect((screen.getByLabelText("Card title") as HTMLInputElement).value).toBe(
       "Broken card",
     );
+  });
+
+  it("loads the selected project after an earlier mutation finishes", async () => {
+    let finishMove!: (value: ReturnType<typeof makeCard>) => void;
+    const moveCard = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof makeCard>>((resolve) => {
+          finishMove = resolve;
+        }),
+    );
+    const listCards = vi.fn((input: unknown) => {
+      const { projectId } = input as { projectId: string };
+      return {
+        cards: [
+          makeCard({
+            id: projectId,
+            projectId,
+            title: projectId === "project-a" ? "Card A" : "Card B",
+          }),
+        ],
+      };
+    });
+    renderBoard({
+      projects: [
+        { id: "project-a", name: "A" },
+        { id: "project-b", name: "B" },
+      ],
+      listCards,
+      moveCard,
+    });
+    await screen.findByText("Card A");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Move Card A" }), {
+      target: { value: "todo" },
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Project" }), {
+      target: { value: "project-b" },
+    });
+    await screen.findByText("Card B");
+
+    finishMove(makeCard({ id: "project-a", projectId: "project-a" }));
+    await waitFor(() => expect(listCards.mock.calls.length).toBeGreaterThan(2));
+    expect(listCards.mock.calls.at(-1)?.[0]).toMatchObject({
+      projectId: "project-b",
+    });
+  });
+
+  it("recovers a failed project load on the next connection", async () => {
+    let attempts = 0;
+    const listProjects = vi.fn(() => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("projects unavailable");
+      return { projects: [{ id: "proj_1", name: "Example" }] };
+    });
+    const { slot } = renderBoard({
+      connection: "connecting",
+      listProjects,
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "projects unavailable",
+    );
+
+    await slot.behavior.setRealtimeConnectionState("connected");
+
+    await screen.findByText("A pipeline card");
+    expect(listProjects).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects more than 20 attachments before upload", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const addCard = vi.fn(() => makeCard());
+    renderBoard({ addCard });
+    await screen.findByText("A pipeline card");
+    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
+    fireEvent.change(screen.getByLabelText("Card title"), {
+      target: { value: "Too many files" },
+    });
+    fireEvent.change(screen.getByLabelText("Card attachments"), {
+      target: {
+        files: Array.from(
+          { length: 21 },
+          (_, index) => new File(["x"], `file-${index}.txt`),
+        ),
+      },
+    });
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Choose at most 20 attachments.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(fetch).not.toHaveBeenCalled();
+    expect(addCard).not.toHaveBeenCalled();
+  });
+
+  it("shows a launch error alongside another attention reason", async () => {
+    renderBoard({
+      cards: [
+        makeCard({
+          needsUser: true,
+          attentionReason: "thread deleted",
+          launchError: "lead: host unavailable",
+        }),
+      ],
+    });
+
+    await screen.findByText("thread deleted");
+    expect(screen.getByText("launch failed: lead: host unavailable")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 });

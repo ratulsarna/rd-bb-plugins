@@ -9,7 +9,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "@/lib/contract";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
-import type { CardAttachment } from "@/lib/store";
+import { ownerThread, type CardAttachment } from "@/lib/store";
 import { AddCard } from "./add-card";
 import { PipelineCard } from "./card";
 
@@ -54,60 +54,62 @@ export function PipelineBoard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const requestSequence = useRef(0);
+  const projectIdRef = useRef<string | null>(null);
+  const includeDoneRef = useRef(false);
+  const contextProjectIdRef = useRef(context.projectId);
+  contextProjectIdRef.current = context.projectId;
 
-  useEffect(() => {
-    rpc.call("listProjects").then(({ projects: next }) => {
-      setProjects(next);
-      const remembered = localStorage.getItem(PROJECT_KEY);
-      const preferred = remembered ?? context.projectId;
-      setProjectId(
-        next.some((project) => project.id === preferred)
-          ? preferred
-          : (next[0]?.id ?? null),
-      );
-    }, (cause) => setError(String(cause)));
-  }, [context.projectId, rpc]);
-
-  useEffect(() => {
-    requestSequence.current += 1;
-    setCards([]);
-  }, [projectId]);
-
-  const refetch = useCallback(() => {
-    if (projectId === null) return;
+  const load = useCallback(async () => {
     const request = ++requestSequence.current;
     setLoading(true);
-    rpc.call("listCards", { projectId, includeDone }).then(
-      ({ cards: next }) => {
-        if (request !== requestSequence.current) return;
-        setCards(next);
-        setError(null);
-        setLoading(false);
-      },
-      (cause) => {
-        if (request !== requestSequence.current) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
-        setLoading(false);
-      },
-    );
-  }, [includeDone, projectId, rpc]);
+    try {
+      const { projects: nextProjects } = await rpc.call("listProjects");
+      if (request !== requestSequence.current) return;
 
-  useEffect(() => refetch(), [refetch]);
-  useRealtime("cards:changed", refetch);
+      const current = projectIdRef.current;
+      const remembered = localStorage.getItem(PROJECT_KEY);
+      const preferred = current ?? remembered ?? contextProjectIdRef.current;
+      const selected = nextProjects.some((project) => project.id === preferred)
+        ? preferred
+        : (nextProjects[0]?.id ?? null);
+      projectIdRef.current = selected;
+      setProjects(nextProjects);
+      setProjectId(selected);
 
-  const previousConnection = useRef(connection);
-  const hasConnected = useRef(connection === "connected");
+      if (selected === null) {
+        setCards([]);
+      } else {
+        const result = await rpc.call("listCards", {
+          projectId: selected,
+          includeDone: includeDoneRef.current,
+        });
+        if (request !== requestSequence.current) return;
+        setCards(result.cards);
+      }
+      setError(null);
+      setLoading(false);
+    } catch (cause) {
+      if (request !== requestSequence.current) return;
+      setError(cause instanceof Error ? cause.message : String(cause));
+      setLoading(false);
+    }
+  }, [rpc]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+  useRealtime("cards:changed", load);
+
+  const previousConnection = useRef<typeof connection | null>(null);
   useEffect(() => {
     if (
       connection === "connected" &&
-      previousConnection.current !== "connected" &&
-      (hasConnected.current || previousConnection.current === "reconnecting")
+      previousConnection.current !== "connected"
     ) {
-      refetch();
+      void load();
     }
-    if (connection === "connected") hasConnected.current = true;
     previousConnection.current = connection;
-  }, [connection, refetch]);
+  }, [connection, load]);
 
   const pendingThreads = useMemo(
     () =>
@@ -121,11 +123,12 @@ export function PipelineBoard() {
   const visibleColumns = includeDone ? COLUMNS : COLUMNS.filter((column) => column !== "done");
 
   async function add(title: string, body: string, files: File[]) {
-    if (projectId === null) return;
+    const targetProjectId = projectIdRef.current;
+    if (targetProjectId === null) return;
     try {
-      const attachments = await Promise.all(files.map((file) => upload(projectId, file)));
-      await rpc.call("addCard", { projectId, title, body, attachments });
-      refetch();
+      const attachments = await Promise.all(files.map((file) => upload(targetProjectId, file)));
+      await rpc.call("addCard", { projectId: targetProjectId, title, body, attachments });
+      await load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       throw cause;
@@ -133,7 +136,7 @@ export function PipelineBoard() {
   }
 
   const mutate = (promise: Promise<unknown>) => {
-    promise.then(refetch, (cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+    promise.then(load, (cause) => setError(cause instanceof Error ? cause.message : String(cause)));
   };
 
   return (
@@ -146,8 +149,13 @@ export function PipelineBoard() {
             className="rounded-md border border-input bg-background px-2 py-1.5"
             value={projectId ?? ""}
             onChange={(event) => {
-              localStorage.setItem(PROJECT_KEY, event.target.value);
-              setProjectId(event.target.value);
+              const next = event.target.value;
+              requestSequence.current += 1;
+              projectIdRef.current = next;
+              localStorage.setItem(PROJECT_KEY, next);
+              setProjectId(next);
+              setCards([]);
+              void load();
             }}
           >
             {projects.map((project) => (
@@ -156,7 +164,16 @@ export function PipelineBoard() {
           </select>
         </label>
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={includeDone} onChange={(event) => setIncludeDone(event.target.checked)} />
+          <input
+            type="checkbox"
+            checked={includeDone}
+            onChange={(event) => {
+              requestSequence.current += 1;
+              includeDoneRef.current = event.target.checked;
+              setIncludeDone(event.target.checked);
+              void load();
+            }}
+          />
           Show done
         </label>
         <div className="ml-auto w-full max-w-md">
@@ -175,7 +192,7 @@ export function PipelineBoard() {
                 </h2>
                 <div className="min-h-0 space-y-2 overflow-y-auto">
                   {columnCards.map((card) => {
-                    const owner = card.leadThreadId ?? card.intakeThreadId;
+                    const owner = ownerThread(card);
                     return (
                       <PipelineCard
                         key={card.id}
