@@ -186,6 +186,23 @@ describe("pipeline board", () => {
     );
   });
 
+  it("shows the error from a rejected move", async () => {
+    const moveCard = vi.fn(async () => {
+      throw new Error("no issue yet: let intake finish, or pass --issue <url>");
+    });
+    renderBoard({ moveCard });
+    await screen.findByText("A pipeline card");
+
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Move A pipeline card" }),
+      { target: { value: "planning" } },
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "no issue yet: let intake finish, or pass --issue <url>",
+    );
+  });
+
   it("loads the selected project after an earlier mutation finishes", async () => {
     let finishMove!: (value: ReturnType<typeof makeCard>) => void;
     const moveCard = vi.fn(

@@ -86,6 +86,9 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+const MISSING_ISSUE_ERROR =
+  "no issue yet: let intake finish, or pass --issue <url>";
+
 function isThreadNotFound(cause: unknown): boolean {
   if (cause === null || typeof cause !== "object") return false;
   const error = cause as { code?: unknown; status?: unknown };
@@ -170,9 +173,7 @@ export function createPipelineService(
         project,
       );
       if (role === "lead" && card.issueUrl === null) {
-        throw new Error(
-          `no issue yet: let intake finish, or \`bb pipeline report --card ${card.id} --issue <url>\`, then retry`,
-        );
+        throw new Error(MISSING_ISSUE_ERROR);
       }
       const prompt =
         role === "intake"
@@ -233,6 +234,9 @@ export function createPipelineService(
     source: "ui" | "cli",
   ): Promise<Card> => {
     const before = required(cardId);
+    if (column === "planning" && before.issueUrl === null) {
+      throw new Error(MISSING_ISSUE_ERROR);
+    }
     let card = before;
     if (before.column !== column || (column === "planning" && before.ownerRole !== "lead")) {
       card = update(
@@ -528,6 +532,12 @@ export function createPipelineService(
         throw new Error(
           `card ${card.id} is now led by ${ownerThread(card) ?? "no thread"}`,
         );
+      }
+      if (
+        input.column === "planning" &&
+        (input.issueUrl ?? card.issueUrl) === null
+      ) {
+        throw new Error(MISSING_ISSUE_ERROR);
       }
 
       const patch: Parameters<CardStore["update"]>[1] = {};

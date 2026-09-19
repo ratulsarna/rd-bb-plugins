@@ -302,29 +302,29 @@ describe("owner rules", () => {
     expect(store.get("card_1")).toMatchObject({ needsUser: true, attentionReason: "thread failed: boom" });
   });
 
-  it("allows explicit-card reports from unrelated threads", async () => {
-    const { store, service } = setup();
+  it("allows unrelated explicit-card reports to hand off planning", async () => {
+    const { store, service, spawn } = setup();
     seed(store);
-    store.update("card_1", {
-      intakeThreadId: "intake",
-      leadThreadId: "lead",
-      ownerRole: "lead",
-    });
+    store.update("card_1", { intakeThreadId: "intake" });
 
     await service.report({
       cardId: "card_1",
       threadId: "unrelated",
+      column: "planning",
       issueUrl: "https://github.com/o/r/issues/2",
       working: true,
     });
 
     expect(store.get("card_1")).toMatchObject({
+      column: "planning",
+      ownerRole: "lead",
+      leadThreadId: "thr_1",
       issueUrl: "https://github.com/o/r/issues/2",
     });
-    expect(store.history("card_1").at(-1)).toMatchObject({
-      kind: "attention",
-      threadId: "unrelated",
-    });
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(store.history("card_1")).toContainEqual(
+      expect.objectContaining({ kind: "attention", threadId: "unrelated" }),
+    );
   });
 
   it("rejects reports from a former owner resolving by thread", async () => {
@@ -369,6 +369,7 @@ describe("launch", () => {
   it("keeps lead ownership after a card enters planning", async () => {
     const { store, service } = setup();
     seed(store);
+    store.update("card_1", { issueUrl: "https://github.com/o/r/issues/1" });
 
     await service.move("card_1", "planning", "ui");
     expect(store.get("card_1")).toMatchObject({ ownerRole: "lead" });
@@ -377,17 +378,69 @@ describe("launch", () => {
     expect(store.get("card_1")).toMatchObject({ ownerRole: "lead" });
   });
 
-  it("sets lead ownership before a planning report launches", async () => {
-    const { store, service } = setup();
+  it("rejects a planning move without an issue and accepts the later intake handoff", async () => {
+    const { store, service, spawn } = setup();
     seed(store);
+    const before = store.update("card_1", { intakeThreadId: "intake" });
 
-    await service.report({ cardId: "card_1", column: "planning" });
+    await expect(service.move("card_1", "planning", "ui")).rejects.toThrow(
+      "no issue yet: let intake finish, or pass --issue <url>",
+    );
+
+    expect(store.get("card_1")).toEqual(before);
+    expect(ownerThread(store.get("card_1")!)).toBe("intake");
+    expect(spawn).not.toHaveBeenCalled();
+
+    await service.report({
+      threadId: "intake",
+      column: "planning",
+      issueUrl: "https://github.com/o/r/issues/1",
+      working: true,
+    });
+    expect(store.get("card_1")).toMatchObject({
+      column: "planning",
+      ownerRole: "lead",
+      leadThreadId: "thr_1",
+    });
+  });
+
+  it("launches once when the handoff report supplies the issue", async () => {
+    const { store, service, spawn } = setup();
+    seed(store);
+    store.update("card_1", { intakeThreadId: "intake" });
+
+    await service.report({
+      threadId: "intake",
+      column: "planning",
+      issueUrl: "https://github.com/o/r/issues/1",
+      working: true,
+    });
 
     expect(store.get("card_1")).toMatchObject({
+      column: "planning",
       ownerRole: "lead",
-      leadThreadId: null,
-      launchError: expect.stringContaining("lead: no issue yet"),
+      leadThreadId: "thr_1",
     });
+    expect(spawn).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a planning report without an issue before changing the card", async () => {
+    const { store, service, spawn } = setup();
+    seed(store);
+    const before = store.update("card_1", { intakeThreadId: "intake" });
+
+    await expect(
+      service.report({
+        threadId: "intake",
+        column: "planning",
+        working: true,
+      }),
+    ).rejects.toThrow(
+      "no issue yet: let intake finish, or pass --issue <url>",
+    );
+
+    expect(store.get("card_1")).toEqual(before);
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it("is idempotent for repeated planning reports", async () => {
@@ -443,31 +496,30 @@ describe("launch", () => {
     expect(store.get("card_1")).toMatchObject({ intakeThreadId: "intake", launchError: null });
   });
 
-  it("retries the lead after planning takes ownership", async () => {
+  it("retries the lead after a failed planning launch", async () => {
     let offline = true;
     const { store, service, spawn } = setup({
       spawn: async () => {
         if (offline) throw new Error("Mac offline");
-        return makeThreadResponse({ id: "intake-retry" });
+        return makeThreadResponse({ id: "lead-retry" });
       },
     });
     seed(store);
-
-    await service.launch("card_1", "intake");
-    await service.move("card_1", "planning", "ui");
-    expect(store.get("card_1")?.launchError).toContain("lead: no issue yet");
-    await service.report({
-      cardId: "card_1",
+    store.update("card_1", {
+      intakeThreadId: "intake",
       issueUrl: "https://github.com/o/r/issues/1",
     });
+
+    await service.move("card_1", "planning", "ui");
+    expect(store.get("card_1")?.launchError).toContain("lead: Mac offline");
 
     offline = false;
     await service.retry("card_1");
 
     expect(spawn).toHaveBeenCalledTimes(2);
     expect(store.get("card_1")).toMatchObject({
-      intakeThreadId: null,
-      leadThreadId: "intake-retry",
+      intakeThreadId: "intake",
+      leadThreadId: "lead-retry",
       launchError: null,
     });
   });
@@ -575,13 +627,15 @@ describe("launch", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("requires an issue before a lead launch and names the fix", async () => {
+  it("requires an issue before a direct lead launch", async () => {
     const { store, service, spawn } = setup();
     seed(store);
 
     await service.launch("card_1", "lead");
 
-    expect(store.get("card_1")?.launchError).toContain("bb pipeline report --card card_1 --issue <url>");
+    expect(store.get("card_1")?.launchError).toContain(
+      "no issue yet: let intake finish, or pass --issue <url>",
+    );
     expect(spawn).not.toHaveBeenCalled();
   });
 
