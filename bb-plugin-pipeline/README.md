@@ -8,7 +8,7 @@ The board tracks:
 - `implementing` → `reviewing` → `qa`
 - `pr` → `pr_ready` → `done`
 
-Cards show why the user is needed, open the owning thread, link the issue and PR, and expose launch retry when the target machine is unavailable. Explicit `bb pipeline report` calls are authoritative; Jev classifies an unsignalled lead idle as needs-you, working, or unchecked.
+Cards show why the user is needed, open the owning thread, link the issue and PR, and expose launch retry when the target machine is unavailable. Explicit `bb pipeline report` calls are authoritative; Jev classifies an unsignalled lead idle as needs-you, not waiting, or unchecked.
 
 ## Commands
 

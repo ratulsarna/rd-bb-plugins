@@ -18,6 +18,7 @@ afterEach(() => {
 function renderBoard(options?: {
   cards?: ReturnType<typeof makeCard>[];
   pending?: boolean;
+  ownerThreadId?: string;
   connection?: "connecting" | "connected" | "reconnecting";
   listCards?: ReturnType<typeof vi.fn>;
 }) {
@@ -33,7 +34,12 @@ function renderBoard(options?: {
       sidebarThreads: {
         status: "ready",
         projects: [],
-        threads: [makeSidebarThread({ hasPendingInteraction: options?.pending ?? false })],
+        threads: [
+          makeSidebarThread({
+            id: options?.ownerThreadId ?? "intake",
+            hasPendingInteraction: options?.pending ?? false,
+          }),
+        ],
       },
       rpc: {
         listProjects: () => ({ projects: [{ id: "proj_1", name: "Example" }] }),
@@ -75,12 +81,16 @@ describe("pipeline board", () => {
   });
 
   it("opens the owner thread and marks a pending question", async () => {
-    const { slot } = renderBoard({ pending: true });
+    const { slot } = renderBoard({
+      pending: true,
+      ownerThreadId: "lead",
+      cards: [makeCard({ leadThreadId: "lead" })],
+    });
     const title = await screen.findByText("A pipeline card");
 
     fireEvent.click(title.closest("button")!);
 
-    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "intake" });
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "lead" });
     expect(screen.getByLabelText("Question open")).toBeTruthy();
   });
 

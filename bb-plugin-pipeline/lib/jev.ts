@@ -29,9 +29,18 @@ export async function askJev(input: {
   fetch?: FetchLike;
   log?: (message: string) => void;
 }): Promise<JevResult> {
+  const finish = (
+    decision: JevDecision,
+    probability: number | null,
+  ): JevResult => {
+    input.log?.(
+      `Jev model=jev-latest noul=${probability === null ? "null" : probability.toFixed(4)} decision=${decision}`,
+    );
+    return { decision, probability };
+  };
   const text = input.lastText?.trim() ?? "";
   if (text === "" || !input.apiKey) {
-    return { decision: "unknown", probability: null };
+    return finish("unknown", null);
   }
 
   const controller = new AbortController();
@@ -62,10 +71,10 @@ export async function askJev(input: {
         signal: controller.signal,
       },
     );
-    if (!response.ok) return { decision: "unknown", probability: null };
+    if (!response.ok) return finish("unknown", null);
     const probability = extractProbability(await response.json());
     if (probability === null || probability < 0 || probability > 1) {
-      return { decision: "unknown", probability: null };
+      return finish("unknown", null);
     }
     const decision: JevDecision =
       probability >= input.threshold
@@ -73,12 +82,9 @@ export async function askJev(input: {
         : probability <= 1 - input.threshold
           ? "no"
           : "unknown";
-    input.log?.(
-      `Jev model=jev-latest noul=${probability.toFixed(4)} decision=${decision}`,
-    );
-    return { decision, probability };
+    return finish(decision, probability);
   } catch {
-    return { decision: "unknown", probability: null };
+    return finish("unknown", null);
   } finally {
     clearTimeout(timer);
   }
