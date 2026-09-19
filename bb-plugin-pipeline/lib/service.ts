@@ -74,7 +74,6 @@ export interface PipelineServiceDependencies {
   classify(input: {
     apiKey: string | undefined;
     threshold: number;
-    column: Column;
     lastText: string | null;
   }): Promise<JevResult>;
   log(message: string): void;
@@ -485,7 +484,6 @@ export function createPipelineService(
         : await dependencies.classify({
             apiKey: settings.jevApiKey,
             threshold: parseThreshold(settings.jevThreshold),
-            column: initial.column,
             lastText,
           });
     const current = store.get(initial.id);

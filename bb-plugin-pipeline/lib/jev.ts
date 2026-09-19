@@ -24,7 +24,6 @@ function extractProbability(value: unknown): number | null {
 export async function askJev(input: {
   apiKey: string | undefined;
   threshold: number;
-  column: string;
   lastText: string | null;
   fetch?: FetchLike;
   log?: (message: string) => void;

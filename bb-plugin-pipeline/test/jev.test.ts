@@ -11,12 +11,14 @@ function response(probability: number) {
 describe("Jev decision", () => {
   it("sends the framed needs-you question and criteria", async () => {
     const lastText = `drop${"x".repeat(4_000)}`;
-    const fetch = vi.fn(async () => response(0.9));
+    const fetch = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        response(0.9),
+    );
 
     await askJev({
       apiKey: "key",
       threshold: 0.7,
-      column: "planning",
       lastText,
       fetch,
     });
@@ -52,7 +54,6 @@ describe("Jev decision", () => {
       askJev({
         apiKey: "key",
         threshold: 0.7,
-        column: "planning",
         lastText: "Do you approve?",
         fetch,
       }),
@@ -63,10 +64,10 @@ describe("Jev decision", () => {
   it("does not fetch for null text or a missing key", async () => {
     const fetch = vi.fn();
     await expect(
-      askJev({ apiKey: "key", threshold: 0.7, column: "planning", lastText: null, fetch }),
+      askJev({ apiKey: "key", threshold: 0.7, lastText: null, fetch }),
     ).resolves.toEqual({ decision: "unknown", probability: null });
     await expect(
-      askJev({ apiKey: undefined, threshold: 0.7, column: "planning", lastText: "Question?", fetch }),
+      askJev({ apiKey: undefined, threshold: 0.7, lastText: "Question?", fetch }),
     ).resolves.toEqual({ decision: "unknown", probability: null });
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -86,7 +87,6 @@ describe("Jev decision", () => {
       askJev({
         apiKey: "key",
         threshold: 0.7,
-        column: "qa",
         lastText: "Question?",
         fetch: malformed,
         log: malformedLog,
@@ -96,7 +96,6 @@ describe("Jev decision", () => {
       askJev({
         apiKey: "key",
         threshold: 0.7,
-        column: "qa",
         lastText: "Question?",
         fetch: failed,
         log: failedLog,
