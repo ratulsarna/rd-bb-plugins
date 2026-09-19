@@ -1,6 +1,6 @@
 ---
 name: pipeline
-description: Work the pipeline board from any thread: add, list, show, and move cards. Upload attachments before adding them to a card.
+description: "Work the pipeline board from any thread: add, list, show, and move cards. Upload attachments before adding them to a card."
 ---
 
 # Pipeline: Board
