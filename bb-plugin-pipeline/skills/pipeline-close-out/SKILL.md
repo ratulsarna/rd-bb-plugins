@@ -17,7 +17,8 @@ description: Verify with fresh evidence, open a draft PR, and hand off.
    - a small fix: the owning worker, or the lead when a worker would add nothing, applies it; QA re-verifies a fix that touches behavior; then step 1 runs again before pushing.
    - a new seam or changed behavior: back through the review and QA gates in `pipeline-implement`, then close-out restarts from step 1.
    After accepted fixes, push and comment `@codex review` again; repeat until no unresolved P1 or P2 remains. A finding set aside is a ledger entry with the evidence; a repeat without new evidence is answered by that entry.
-   `bb pipeline report --column pr_ready --needs-you "PR ready to merge"`
+   `bb pipeline report --column pr_ready --needs-you "review clean; mark the PR ready and merge"`
+   The draft PR is review-clean and waits for the user in `pr_ready`.
 4. **Report to the user:** the draft PR link plus the same summary in chat, including the size line, the ledger entries, and how the PR review loop resolved. Then stop.
 5. **Close the loop on the ticket.** Add the outcome and draft-PR link, then move its state per the team's convention. Close task-scoped workers once the PR review loop is green; Oracle stays for the session.
 

@@ -8,7 +8,11 @@ The board tracks:
 - `implementing` → `reviewing` → `qa`
 - `pr` → `pr_ready` → `done`
 
+`pr_ready` means the draft PR is review-clean and waiting for the user to mark it ready and merge it.
+
 Cards show why the user is needed, open the owning thread, link the issue and PR, and expose launch retry when the target machine is unavailable. Explicit `bb pipeline report` calls are authoritative; Jev classifies an unsignalled lead idle as needs-you, not waiting, or unchecked.
+
+Retrying after a thread is deleted starts that role over. A retried lead gets a new managed worktree and the full kickoff prompt.
 
 ## Commands
 

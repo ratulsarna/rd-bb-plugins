@@ -14,4 +14,4 @@ A root cause can arrive pre-done: a ticket already carrying reproduction, eviden
 3. **Tell the user** the root cause, the evidence chain in short, the fix direction, and how a regression would be caught: a test that fails before the fix and passes after where that buys real coverage, otherwise the strongest check with captured evidence. Then stop; the user tiers the fix from there.
    `bb pipeline report --needs-you "root cause found; tier the fix"`
 
-**Exit:** the user tiers the fix → `pipeline-plan` or `pipeline-implement`.
+**Exit:** after the user tiers the fix, run `bb pipeline report --tier <t> --working` → `pipeline-plan` or `pipeline-implement`.
