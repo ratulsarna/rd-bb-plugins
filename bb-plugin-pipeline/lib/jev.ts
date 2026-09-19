@@ -65,15 +65,19 @@ export async function askJev(input: {
         },
         body: JSON.stringify({
           state: {
-            column: input.column,
-            last_message: text.slice(-4_000),
+            last_message_from_agent_to_human: text.slice(-4_000),
           },
           model: "jev-latest",
           questions: {
             needs_user: {
               type: "noul",
               instructions:
-                "The assistant's message ends its turn by asking the user a question, asking the user to decide something, or asking the user to review something before the work can continue.",
+                "The state is the last message an AI coding agent sent to its human user before it stopped. Is the agent waiting on the human to answer a question, make a decision, or review something before the work can continue?",
+              criteria: {
+                true: "The message asks the human a question, or asks them to decide, approve, or review something, and the work is paused until they reply.",
+                false:
+                  "The message only reports status, progress, or what the agent will do next, and does not need a reply.",
+              },
             },
           },
         }),

@@ -9,6 +9,39 @@ function response(probability: number) {
 }
 
 describe("Jev decision", () => {
+  it("sends the framed needs-you question and criteria", async () => {
+    const lastText = `drop${"x".repeat(4_000)}`;
+    const fetch = vi.fn(async () => response(0.9));
+
+    await askJev({
+      apiKey: "key",
+      threshold: 0.7,
+      column: "planning",
+      lastText,
+      fetch,
+    });
+
+    const request = fetch.mock.calls[0]?.[1];
+    expect(JSON.parse(String(request?.body))).toEqual({
+      state: {
+        last_message_from_agent_to_human: lastText.slice(-4_000),
+      },
+      model: "jev-latest",
+      questions: {
+        needs_user: {
+          type: "noul",
+          instructions:
+            "The state is the last message an AI coding agent sent to its human user before it stopped. Is the agent waiting on the human to answer a question, make a decision, or review something before the work can continue?",
+          criteria: {
+            true: "The message asks the human a question, or asks them to decide, approve, or review something, and the work is paused until they reply.",
+            false:
+              "The message only reports status, progress, or what the agent will do next, and does not need a reply.",
+          },
+        },
+      },
+    });
+  });
+
   it.each([
     [0.9, "needs"],
     [0.1, "no"],
