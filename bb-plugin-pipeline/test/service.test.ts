@@ -660,6 +660,37 @@ describe("launch", () => {
 });
 
 describe("startup pass", () => {
+  it("reconciles a deleted thread after an unrelated tier change", async () => {
+    let rejectLookup!: (reason: unknown) => void;
+    const lookup = new Promise<ReturnType<typeof makeThreadResponse>>(
+      (_resolve, reject) => {
+        rejectLookup = reject;
+      },
+    );
+    const getThread = vi.fn(async () => lookup);
+    const { store, service } = setup({ getThread });
+    seed(store);
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
+
+    const startup = service.startupPass();
+    await vi.waitFor(() => expect(getThread).toHaveBeenCalledOnce());
+    store.update("card_1", { tier: "small" });
+    rejectLookup(
+      Object.assign(new Error("thread not found"), {
+        status: 404,
+        code: "thread_not_found",
+      }),
+    );
+    await startup;
+
+    expect(store.get("card_1")).toMatchObject({
+      tier: "small",
+      leadThreadId: null,
+      launchError: "lead: thread deleted",
+      attentionReason: "thread deleted",
+    });
+  });
+
   it("ignores a startup observation overtaken by an intake handoff", async () => {
     let resolveLookup!: (
       value: ReturnType<typeof makeThreadResponse>,

@@ -275,12 +275,12 @@ export function createPipelineService(
     role: PipelineRole,
     observation: ReconcileInput,
   ): Promise<void> => {
-    const initial = store.get(snapshot.id);
-    if (initial === null || initial.revision !== snapshot.revision) return;
     const threadId =
       observation.kind === "thread"
         ? observation.thread.id
         : observation.threadId;
+    const initial = store.get(snapshot.id);
+    if (initial === null || roleThread(initial, role) !== threadId) return;
     if (initial.ownerRole !== role) {
       if (observation.kind === "thread") {
         const state =
