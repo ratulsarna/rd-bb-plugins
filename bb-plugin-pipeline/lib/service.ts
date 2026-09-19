@@ -284,7 +284,11 @@ export function createPipelineService(
           `unknown card or pipeline thread ${target}; run \`bb pipeline list\` to see cards`,
         );
       }
-      if (input.threadId !== undefined && ownerThread(card) !== input.threadId) {
+      if (
+        input.cardId === undefined &&
+        input.threadId !== undefined &&
+        ownerThread(card) !== input.threadId
+      ) {
         throw new Error(
           `card ${card.id} is now led by ${ownerThread(card) ?? "no thread"}`,
         );

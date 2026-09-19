@@ -259,12 +259,33 @@ describe("owner rules", () => {
     expect(store.get("card_1")).toMatchObject({ needsUser: true, attentionReason: "thread failed: boom" });
   });
 
-  it("rejects reports from the former intake owner", async () => {
+  it("allows explicit-card reports but rejects a former owner resolving by thread", async () => {
     const { store, service } = setup();
     seed(store);
     store.update("card_1", { intakeThreadId: "intake", leadThreadId: "lead" });
 
-    await expect(service.report({ threadId: "intake", working: true })).rejects.toThrow("now led by lead");
+    await service.report({
+      cardId: "card_1",
+      threadId: "unrelated",
+      issueUrl: "https://github.com/o/r/issues/2",
+      working: true,
+    });
+
+    expect(store.get("card_1")).toMatchObject({
+      issueUrl: "https://github.com/o/r/issues/2",
+    });
+    expect(store.history("card_1").at(-1)).toMatchObject({
+      kind: "attention",
+      threadId: "unrelated",
+    });
+    await expect(
+      service.report({
+        threadId: "intake",
+        issueUrl: "https://github.com/o/r/issues/3",
+        working: true,
+      }),
+    ).rejects.toThrow("now led by lead");
+    expect(store.get("card_1")?.issueUrl).toBe("https://github.com/o/r/issues/2");
   });
 });
 
