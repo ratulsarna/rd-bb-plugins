@@ -271,10 +271,12 @@ export function createPipelineService(
     | { kind: "not-found"; threadId: string };
 
   const reconcile = async (
-    initial: Card,
+    snapshot: Card,
     role: PipelineRole,
     observation: ReconcileInput,
   ): Promise<void> => {
+    const initial = store.get(snapshot.id);
+    if (initial === null || initial.revision !== snapshot.revision) return;
     const threadId =
       observation.kind === "thread"
         ? observation.thread.id

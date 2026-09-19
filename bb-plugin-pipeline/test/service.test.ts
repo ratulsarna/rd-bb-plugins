@@ -660,6 +660,43 @@ describe("launch", () => {
 });
 
 describe("startup pass", () => {
+  it("ignores a startup observation overtaken by an intake handoff", async () => {
+    let resolveLookup!: (
+      value: ReturnType<typeof makeThreadResponse>,
+    ) => void;
+    const lookup = new Promise<ReturnType<typeof makeThreadResponse>>(
+      (resolve) => {
+        resolveLookup = resolve;
+      },
+    );
+    const getThread = vi.fn(async () => lookup);
+    const { store, service } = setup({
+      getThread,
+      getThreadOutput: async () => ({ output: "Old intake question" }),
+    });
+    seed(store);
+    store.update("card_1", { intakeThreadId: "intake" });
+
+    const startup = service.startupPass();
+    await vi.waitFor(() => expect(getThread).toHaveBeenCalledOnce());
+    await service.report({
+      threadId: "intake",
+      column: "planning",
+      issueUrl: "https://github.com/o/r/issues/1",
+      working: true,
+    });
+    resolveLookup(
+      makeThreadResponse({ id: "intake", status: "idle" }),
+    );
+    await startup;
+
+    expect(store.get("card_1")).toMatchObject({
+      column: "planning",
+      ownerRole: "lead",
+      leadThreadId: "thr_1",
+    });
+  });
+
   it("leaves a live card unchanged when reading idle output fails", async () => {
     const { store, service, log } = setup({
       getThread: async ({ threadId }) =>
