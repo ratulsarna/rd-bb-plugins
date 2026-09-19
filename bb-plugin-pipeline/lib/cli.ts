@@ -188,11 +188,23 @@ export function createPipelineCli(input: {
               return failure(`unknown card ${args.positionals[0]}`, "Run `bb pipeline list` to see cards.");
             }
             const threadId = ownerThread(card);
-            const interactions =
-              threadId === null
-                ? null
-                : await input.sdk.threads.interactions.list({ threadId });
-            const value = { card, history: input.store.history(card.id), ownerThreadId: threadId, interactions };
+            let interactions = null;
+            let interactionsNote: string | undefined;
+            if (threadId !== null) {
+              try {
+                interactions = await input.sdk.threads.interactions.list({ threadId });
+              } catch (cause) {
+                interactions = [];
+                interactionsNote = `Could not load interactions for ${threadId}: ${errorMessage(cause)}`;
+              }
+            }
+            const value = {
+              card,
+              history: input.store.history(card.id),
+              ownerThreadId: threadId,
+              interactions,
+              ...(interactionsNote === undefined ? {} : { interactionsNote }),
+            };
             return success(args, value, JSON.stringify(value, null, 2));
           }
           case "move": {

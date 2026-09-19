@@ -21,7 +21,9 @@ afterEach(async () => {
   while (hosts.length > 0) await hosts.pop()!.harness.lifecycle.dispose();
 });
 
-async function setup() {
+async function setup(options?: {
+  listInteractions?: () => Promise<unknown[]>;
+}) {
   const host = createFakePluginHost({
     pluginId: "pipeline",
     agentSkillIds: skillIds,
@@ -52,6 +54,9 @@ async function setup() {
       },
       threads: {
         spawn: async () => makeThreadResponse({ id: "intake" }),
+        interactions: {
+          list: options?.listInteractions ?? (async () => []),
+        },
       },
     },
   });
@@ -98,6 +103,31 @@ describe("plugin wiring", () => {
     ).resolves.toMatchObject({
       tools: [],
       skills: ["pipeline", "pipeline-plan", "pipeline-implement", "pipeline-close-out", "pipeline-debug"],
+    });
+  });
+
+  it("shows card history when owner interactions are unavailable", async () => {
+    const host = await setup({
+      listInteractions: async () => {
+        throw new Error("thread not found");
+      },
+    });
+    const added = await host.harness.behavior.runCli(
+      ["add", "--title", "Deleted owner", "--json"],
+      { projectId: "proj_1" },
+    );
+    const card = JSON.parse(added.stdout) as { id: string };
+
+    const shown = await host.harness.behavior.runCli(
+      ["show", card.id, "--json"],
+      { projectId: "proj_1" },
+    );
+
+    expect(shown.exitCode).toBe(0);
+    expect(JSON.parse(shown.stdout)).toMatchObject({
+      card: { id: card.id },
+      interactions: [],
+      interactionsNote: "Could not load interactions for intake: thread not found",
     });
   });
 });
