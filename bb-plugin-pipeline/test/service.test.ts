@@ -373,6 +373,19 @@ describe("launch", () => {
     expect(store.get("card_1")).toMatchObject({ ownerRole: "lead" });
   });
 
+  it("sets lead ownership before a planning report launches", async () => {
+    const { store, service } = setup();
+    seed(store);
+
+    await service.report({ cardId: "card_1", column: "planning" });
+
+    expect(store.get("card_1")).toMatchObject({
+      ownerRole: "lead",
+      leadThreadId: null,
+      launchError: expect.stringContaining("lead: no issue yet"),
+    });
+  });
+
   it("is idempotent for repeated planning reports", async () => {
     const { store, service, spawn } = setup();
     seed(store);
