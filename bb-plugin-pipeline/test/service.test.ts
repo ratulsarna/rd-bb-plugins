@@ -259,7 +259,7 @@ describe("owner rules", () => {
     expect(store.get("card_1")).toMatchObject({ needsUser: true, attentionReason: "thread failed: boom" });
   });
 
-  it("allows explicit-card reports but rejects a former owner resolving by thread", async () => {
+  it("allows explicit-card reports from unrelated threads", async () => {
     const { store, service } = setup();
     seed(store);
     store.update("card_1", { intakeThreadId: "intake", leadThreadId: "lead" });
@@ -278,6 +278,17 @@ describe("owner rules", () => {
       kind: "attention",
       threadId: "unrelated",
     });
+  });
+
+  it("rejects reports from a former owner resolving by thread", async () => {
+    const { store, service } = setup();
+    seed(store);
+    store.update("card_1", {
+      intakeThreadId: "intake",
+      leadThreadId: "lead",
+      issueUrl: "https://github.com/o/r/issues/2",
+    });
+
     await expect(
       service.report({
         threadId: "intake",
