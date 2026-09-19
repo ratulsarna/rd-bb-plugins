@@ -242,6 +242,27 @@ describe("idle policy", () => {
     if (decision === "needs") expect(store.get("card_1")?.attentionReason).toBe(message.slice(-200));
   });
 
+  it.each(["needs", "no", "unknown"] as const)(
+    "does not rewrite an unchanged %s lead idle state",
+    async (decision) => {
+      const { store, service, publish } = setup({
+        classify: async () => ({ decision, probability: 0.9 }),
+      });
+      seed(store);
+      store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
+      await service.onThreadIdle(thread("lead"), "Same result");
+      const before = store.get("card_1");
+      const historyLength = store.history("card_1").length;
+      publish.mockClear();
+
+      await service.onThreadIdle(thread("lead"), "Same result");
+
+      expect(store.get("card_1")).toEqual(before);
+      expect(store.history("card_1")).toHaveLength(historyLength);
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
+
   it("discards a Jev answer overtaken by another mutation", async () => {
     let resolve!: (value: { decision: "needs"; probability: number }) => void;
     const pending = new Promise<{ decision: "needs"; probability: number }>((done) => { resolve = done; });
@@ -698,6 +719,85 @@ describe("launch", () => {
 });
 
 describe("startup pass", () => {
+  it("keeps an unknown lead verdict across startup passes", async () => {
+    const { store, service, classify, publish } = setup({
+      getThread: async ({ threadId }) =>
+        makeThreadResponse({ id: threadId, status: "idle" }),
+      getThreadOutput: async () => ({ output: "Would normally call Jev" }),
+      classify: async () => ({ decision: "needs", probability: 0.9 }),
+    });
+    seed(store);
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
+    await service.onThreadIdle(thread("lead"), null);
+    const before = store.get("card_1");
+    publish.mockClear();
+
+    await service.startupPass();
+    await service.startupPass();
+
+    expect(store.get("card_1")).toEqual(before);
+    expect(classify).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("keeps parked idle cards stable across startup passes", async () => {
+    const { store, service, classify, publish } = setup({
+      getThread: async ({ threadId }) =>
+        makeThreadResponse({ id: threadId, status: "idle" }),
+      getThreadOutput: async ({ threadId }) => ({
+        output:
+          threadId === "lead" ? "Choose a deployment target" : "Question?",
+      }),
+      classify: async () => ({ decision: "needs", probability: 0.9 }),
+    });
+    seed(store, { id: "lead-card" });
+    store.update("lead-card", { leadThreadId: "lead", ownerRole: "lead" });
+    seed(store, { id: "intake-card" });
+    store.update("intake-card", { intakeThreadId: "intake" });
+    await service.onThreadIdle(thread("lead"), "Choose a deployment target");
+    await service.onThreadIdle(thread("intake"), "Question?");
+    const leadBefore = store.get("lead-card");
+    const intakeBefore = store.get("intake-card");
+    const leadHistoryLength = store.history("lead-card").length;
+    const intakeHistoryLength = store.history("intake-card").length;
+    publish.mockClear();
+
+    await service.startupPass();
+    await service.startupPass();
+
+    expect(store.get("lead-card")).toEqual(leadBefore);
+    expect(store.get("intake-card")).toEqual(intakeBefore);
+    expect(store.history("lead-card")).toHaveLength(leadHistoryLength);
+    expect(store.history("intake-card")).toHaveLength(intakeHistoryLength);
+    expect(classify).toHaveBeenCalledOnce();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("replaces an archived warning when startup observes an idle thread", async () => {
+    const { store, service } = setup({
+      getThread: async ({ threadId }) =>
+        makeThreadResponse({
+          id: threadId,
+          status: "idle",
+          archivedAt: null,
+        }),
+      getThreadOutput: async () => ({ output: "Work complete" }),
+    });
+    seed(store);
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead" });
+    await service.onThreadGone(thread("lead", 0, { archivedAt: 1 }));
+    expect(store.get("card_1")?.attentionReason).toBe("thread archived");
+
+    await service.startupPass();
+
+    expect(store.get("card_1")).toMatchObject({
+      needsUser: false,
+      attentionReason: null,
+      attentionSource: null,
+      attentionUnknown: false,
+    });
+  });
+
   it("reconciles a deleted thread after an unrelated tier change", async () => {
     let rejectLookup!: (reason: unknown) => void;
     const lookup = new Promise<ReturnType<typeof makeThreadResponse>>(

@@ -273,6 +273,7 @@ export function createPipelineService(
         thread: PipelineThread;
         lastText?: string | null;
         error?: string | null;
+        startup?: boolean;
       }
     | { kind: "not-found"; threadId: string };
 
@@ -405,6 +406,15 @@ export function createPipelineService(
         }
         return;
       }
+      if (
+        initial.column === nextColumn &&
+        initial.needsUser &&
+        initial.attentionReason === "intake is waiting for you" &&
+        initial.attentionSource === "system" &&
+        !initial.attentionUnknown
+      ) {
+        return;
+      }
       update(
         initial.id,
         {
@@ -432,6 +442,13 @@ export function createPipelineService(
       return;
     }
     if (initial.reportSignal === "needs_you") return;
+    if (
+      observation.kind === "thread" &&
+      observation.startup &&
+      (initial.attentionSource === "jev" || initial.attentionUnknown)
+    ) {
+      return;
+    }
 
     const lastText =
       (observation.kind === "thread" ? observation.lastText : null) ?? null;
@@ -449,11 +466,20 @@ export function createPipelineService(
     if (current === null || current.revision !== initial.revision) return;
 
     if (verdict.decision === "needs") {
+      const reason = (lastText ?? "").slice(-200);
+      if (
+        initial.needsUser &&
+        initial.attentionReason === reason &&
+        initial.attentionSource === "jev" &&
+        !initial.attentionUnknown
+      ) {
+        return;
+      }
       update(
         initial.id,
         {
           needsUser: true,
-          attentionReason: (lastText ?? "").slice(-200),
+          attentionReason: reason,
           attentionSource: "jev",
           attentionUnknown: false,
         },
@@ -465,6 +491,14 @@ export function createPipelineService(
         },
       );
     } else if (verdict.decision === "no") {
+      if (
+        !initial.needsUser &&
+        initial.attentionReason === null &&
+        initial.attentionSource === null &&
+        !initial.attentionUnknown
+      ) {
+        return;
+      }
       update(initial.id, {
         needsUser: false,
         attentionReason: null,
@@ -472,6 +506,14 @@ export function createPipelineService(
         attentionUnknown: false,
       });
     } else {
+      if (
+        !initial.needsUser &&
+        initial.attentionReason === null &&
+        initial.attentionSource === null &&
+        initial.attentionUnknown
+      ) {
+        return;
+      }
       update(initial.id, {
         needsUser: false,
         attentionReason: null,
@@ -658,6 +700,7 @@ export function createPipelineService(
             kind: "thread",
             thread,
             lastText,
+            startup: true,
           });
         } catch (cause) {
           dependencies.log(
