@@ -719,6 +719,31 @@ describe("launch", () => {
 });
 
 describe("startup pass", () => {
+  it("discards an idle observation overtaken by an active event", async () => {
+    let resolveOutput!: (value: { output: string }) => void;
+    const output = new Promise<{ output: string }>((resolve) => {
+      resolveOutput = resolve;
+    });
+    const getThreadOutput = vi.fn(async () => output);
+    const { store, service } = setup({
+      getThread: async ({ threadId }) =>
+        makeThreadResponse({ id: threadId, status: "idle" }),
+      getThreadOutput,
+    });
+    seed(store);
+    store.update("card_1", { intakeThreadId: "intake" });
+    await service.report({ threadId: "intake", needsYou: "Choose a target" });
+
+    const startup = service.startupPass();
+    await vi.waitFor(() => expect(getThreadOutput).toHaveBeenCalledOnce());
+    await service.onThreadActive(thread("intake", 0, { status: "active" }));
+    const afterActive = store.get("card_1");
+    resolveOutput({ output: "Stale idle question" });
+    await startup;
+
+    expect(store.get("card_1")).toEqual(afterActive);
+  });
+
   it("keeps an unknown lead verdict across startup passes", async () => {
     const { store, service, classify, publish } = setup({
       getThread: async ({ threadId }) =>

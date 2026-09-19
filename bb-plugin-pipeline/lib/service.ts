@@ -94,6 +94,24 @@ function normalizeIssueUrl(value: string | null): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
+function sameAttention(
+  card: Card,
+  target: Pick<
+    Card,
+    | "needsUser"
+    | "attentionReason"
+    | "attentionSource"
+    | "attentionUnknown"
+  >,
+): boolean {
+  return (
+    card.needsUser === target.needsUser &&
+    card.attentionReason === target.attentionReason &&
+    card.attentionSource === target.attentionSource &&
+    card.attentionUnknown === target.attentionUnknown
+  );
+}
+
 function isThreadNotFound(cause: unknown): boolean {
   if (cause === null || typeof cause !== "object") return false;
   const error = cause as { code?: unknown; status?: unknown };
@@ -287,7 +305,13 @@ export function createPipelineService(
         ? observation.thread.id
         : observation.threadId;
     const initial = store.get(snapshot.id);
-    if (initial === null || roleThread(initial, role) !== threadId) return;
+    if (
+      initial === null ||
+      initial.revision !== snapshot.revision ||
+      roleThread(initial, role) !== threadId
+    ) {
+      return;
+    }
     if (initial.ownerRole !== role) {
       if (observation.kind === "thread") {
         const state =
@@ -408,10 +432,12 @@ export function createPipelineService(
       }
       if (
         initial.column === nextColumn &&
-        initial.needsUser &&
-        initial.attentionReason === "intake is waiting for you" &&
-        initial.attentionSource === "system" &&
-        !initial.attentionUnknown
+        sameAttention(initial, {
+          needsUser: true,
+          attentionReason: "intake is waiting for you",
+          attentionSource: "system",
+          attentionUnknown: false,
+        })
       ) {
         return;
       }
@@ -467,12 +493,12 @@ export function createPipelineService(
 
     if (verdict.decision === "needs") {
       const reason = (lastText ?? "").slice(-200);
-      if (
-        initial.needsUser &&
-        initial.attentionReason === reason &&
-        initial.attentionSource === "jev" &&
-        !initial.attentionUnknown
-      ) {
+      if (sameAttention(initial, {
+        needsUser: true,
+        attentionReason: reason,
+        attentionSource: "jev",
+        attentionUnknown: false,
+      })) {
         return;
       }
       update(
@@ -491,12 +517,12 @@ export function createPipelineService(
         },
       );
     } else if (verdict.decision === "no") {
-      if (
-        !initial.needsUser &&
-        initial.attentionReason === null &&
-        initial.attentionSource === null &&
-        !initial.attentionUnknown
-      ) {
+      if (sameAttention(initial, {
+        needsUser: false,
+        attentionReason: null,
+        attentionSource: null,
+        attentionUnknown: false,
+      })) {
         return;
       }
       update(initial.id, {
@@ -506,12 +532,12 @@ export function createPipelineService(
         attentionUnknown: false,
       });
     } else {
-      if (
-        !initial.needsUser &&
-        initial.attentionReason === null &&
-        initial.attentionSource === null &&
-        initial.attentionUnknown
-      ) {
+      if (sameAttention(initial, {
+        needsUser: false,
+        attentionReason: null,
+        attentionSource: null,
+        attentionUnknown: true,
+      })) {
         return;
       }
       update(initial.id, {
@@ -678,7 +704,13 @@ export function createPipelineService(
           thread = await sdk.threads.get({ threadId });
         } catch (cause) {
           if (isThreadNotFound(cause)) {
-            await reconcile(card, card.ownerRole, { kind: "not-found", threadId });
+            const baseline = store.get(card.id);
+            if (baseline !== null) {
+              await reconcile(baseline, baseline.ownerRole, {
+                kind: "not-found",
+                threadId,
+              });
+            }
           } else {
             dependencies.log(
               `startup pass failed for thread ${threadId}: ${errorMessage(cause)}`,
@@ -686,6 +718,8 @@ export function createPipelineService(
           }
           continue;
         }
+        const baseline = store.get(card.id);
+        if (baseline === null) continue;
         try {
           let lastText: string | null | undefined;
           if (
@@ -696,7 +730,7 @@ export function createPipelineService(
             const output = await sdk.threads.output({ threadId });
             lastText = output.output;
           }
-          await reconcile(card, card.ownerRole, {
+          await reconcile(baseline, baseline.ownerRole, {
             kind: "thread",
             thread,
             lastText,
