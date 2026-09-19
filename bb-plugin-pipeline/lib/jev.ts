@@ -29,19 +29,28 @@ export async function askJev(input: {
   fetch?: FetchLike;
   log?: (message: string) => void;
 }): Promise<JevResult> {
+  const preview = (value: string): string => {
+    let safe = value.slice(0, 200).replace(/[\r\n]+/g, " ");
+    if (input.apiKey) safe = safe.split(input.apiKey).join("[redacted]");
+    return safe;
+  };
+  const withBody = (reason: string, body: string): string => {
+    const detail = preview(body);
+    return detail === "" ? reason : `${reason} ${detail}`;
+  };
   const finish = (
     decision: JevDecision,
     probability: number | null,
+    reason?: string,
   ): JevResult => {
     input.log?.(
-      `Jev model=jev-latest noul=${probability === null ? "null" : probability.toFixed(4)} decision=${decision}`,
+      `Jev model=jev-latest noul=${probability === null ? "null" : probability.toFixed(4)} decision=${decision}${reason === undefined ? "" : ` reason=${reason}`}`,
     );
     return { decision, probability };
   };
   const text = input.lastText?.trim() ?? "";
-  if (text === "" || !input.apiKey) {
-    return finish("unknown", null);
-  }
+  if (text === "") return finish("unknown", null, "blank-text");
+  if (!input.apiKey) return finish("unknown", null, "no-key");
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5_000);
@@ -71,10 +80,21 @@ export async function askJev(input: {
         signal: controller.signal,
       },
     );
-    if (!response.ok) return finish("unknown", null);
+    if (!response.ok) {
+      return finish(
+        "unknown",
+        null,
+        withBody(`http ${response.status}`, await response.text()),
+      );
+    }
+    const body = response.clone();
     const probability = extractProbability(await response.json());
     if (probability === null || probability < 0 || probability > 1) {
-      return finish("unknown", null);
+      return finish(
+        "unknown",
+        null,
+        withBody("no-probability", await body.text()),
+      );
     }
     const decision: JevDecision =
       probability >= input.threshold
@@ -82,9 +102,19 @@ export async function askJev(input: {
         : probability <= 1 - input.threshold
           ? "no"
           : "unknown";
-    return finish(decision, probability);
-  } catch {
-    return finish("unknown", null);
+    return finish(
+      decision,
+      probability,
+      decision === "unknown" ? "threshold-gap" : undefined,
+    );
+  } catch (cause) {
+    const error =
+      cause instanceof Error ? cause : new Error(String(cause));
+    return finish(
+      "unknown",
+      null,
+      `error ${preview(error.name)}: ${preview(error.message)}`,
+    );
   } finally {
     clearTimeout(timer);
   }

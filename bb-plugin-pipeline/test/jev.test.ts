@@ -39,13 +39,41 @@ describe("Jev decision", () => {
   });
 
   it("treats malformed and failed responses as unknown", async () => {
-    const malformed = vi.fn(async () => new Response("{}", { status: 200 }));
-    const failed = vi.fn(async () => new Response("no", { status: 503 }));
+    const malformed = vi.fn(
+      async () =>
+        new Response('{"detail":"missing noul"}', { status: 200 }),
+    );
+    const failed = vi.fn(
+      async () =>
+        new Response('{"detail":"unauthorized"}', { status: 401 }),
+    );
+    const malformedLog = vi.fn();
+    const failedLog = vi.fn();
     await expect(
-      askJev({ apiKey: "key", threshold: 0.7, column: "qa", lastText: "Question?", fetch: malformed }),
+      askJev({
+        apiKey: "key",
+        threshold: 0.7,
+        column: "qa",
+        lastText: "Question?",
+        fetch: malformed,
+        log: malformedLog,
+      }),
     ).resolves.toEqual({ decision: "unknown", probability: null });
     await expect(
-      askJev({ apiKey: "key", threshold: 0.7, column: "qa", lastText: "Question?", fetch: failed }),
+      askJev({
+        apiKey: "key",
+        threshold: 0.7,
+        column: "qa",
+        lastText: "Question?",
+        fetch: failed,
+        log: failedLog,
+      }),
     ).resolves.toEqual({ decision: "unknown", probability: null });
+    expect(malformedLog).toHaveBeenCalledWith(
+      'Jev model=jev-latest noul=null decision=unknown reason=no-probability {"detail":"missing noul"}',
+    );
+    expect(failedLog).toHaveBeenCalledWith(
+      'Jev model=jev-latest noul=null decision=unknown reason=http 401 {"detail":"unauthorized"}',
+    );
   });
 });
