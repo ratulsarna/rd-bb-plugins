@@ -255,7 +255,7 @@ export function createPipelineCli(input: {
           }
           case "remove": {
             if (args.positionals.length !== 1) return failure("remove requires one card id", USAGE);
-            input.service.remove(args.positionals[0]!, "cli");
+            input.service.remove(args.positionals[0]!);
             return success(args, { removed: true, id: args.positionals[0] }, `Removed ${args.positionals[0]}`);
           }
           default:

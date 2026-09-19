@@ -56,7 +56,7 @@ export interface PipelineService {
   retry(cardId: string): Promise<Card>;
   report(input: ReportInput): Promise<Card>;
   move(cardId: string, column: Column, source: "ui" | "cli"): Promise<Card>;
-  remove(cardId: string, source: "ui" | "cli"): boolean;
+  remove(cardId: string): boolean;
   onThreadActive(thread: PipelineThread): Promise<void>;
   onThreadIdle(thread: PipelineThread, lastText: string | null): Promise<void>;
   onThreadFailed(thread: PipelineThread, error: string | null): Promise<void>;
@@ -93,7 +93,7 @@ function errorMessage(cause: unknown): string {
 
 function parseThreshold(value: string): number {
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0.7;
+  return Number.isFinite(parsed) && parsed >= 0.5 && parsed <= 1 ? parsed : 0.7;
 }
 
 function launchSettings(settings: PipelineSettings): PipelineLaunchSettings {
@@ -341,9 +341,9 @@ export function createPipelineService(
       return next;
     },
     move,
-    remove(cardId, source) {
+    remove(cardId) {
       const card = required(cardId);
-      const removed = store.remove(cardId, source);
+      const removed = store.remove(cardId);
       if (removed) dependencies.publish(card.projectId);
       return removed;
     },

@@ -14,7 +14,9 @@ export function leadPrompt(
   card: Card,
   issue: IssueDetails,
 ): string {
-  const kind = issue.labels.includes("bug") ? "bug" : "feature";
+  const kind = issue.labels.some((label) => label.toLowerCase() === "bug")
+    ? "bug"
+    : "feature";
   return `You are the lead for pipeline card ${card.id}: ${card.title}.
 Ticket: ${card.issueUrl}. Kind: ${kind}. Tier: ${card.tier ?? "unsized"}.
 Read the pipeline README (references/pipeline-README.md in the pipeline-plan skill) first and follow its routing by kind and tier. Report every column change and every stop for the user with \`bb pipeline report\` before you end the turn.

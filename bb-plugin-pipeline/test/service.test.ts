@@ -534,4 +534,18 @@ describe("report and active state", () => {
     });
   });
 
+  it("defaults a Jev threshold below 0.5", async () => {
+    const { store, service, classify } = setup({
+      settings: { ...settings, jevThreshold: "0.3" },
+    });
+    seed(store);
+    store.update("card_1", { leadThreadId: "lead" });
+
+    await service.onThreadIdle(thread("lead"), "Need a decision?");
+
+    expect(classify).toHaveBeenCalledWith(
+      expect.objectContaining({ threshold: 0.7 }),
+    );
+  });
+
 });

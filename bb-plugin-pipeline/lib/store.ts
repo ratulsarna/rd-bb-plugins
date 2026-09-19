@@ -194,7 +194,7 @@ export interface CardStore {
   update(id: string, patch: CardPatch, history?: HistoryInput): Card;
   recordHistory(id: string, history: HistoryInput): void;
   history(id: string): CardHistory[];
-  remove(id: string, source: string): boolean;
+  remove(id: string): boolean;
 }
 
 export function createCardStore(db: Database, now = Date.now): CardStore {
@@ -318,9 +318,8 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
           .all(id) as HistoryRow[]
       ).map(historyFromRow);
     },
-    remove: db.transaction((id: string, source: string) => {
+    remove: db.transaction((id: string) => {
       if (read(id) === null) return false;
-      addHistory(id, { kind: "removed", source });
       db.prepare("DELETE FROM cards WHERE id = ?").run(id);
       return true;
     }),

@@ -47,7 +47,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     jevThreshold: {
       type: "string",
-      label: "Jev needs-you threshold (0..1)",
+      label: "Jev needs-you threshold (0.5..1)",
       default: "0.7",
     },
   });
@@ -87,7 +87,7 @@ export default async function plugin(bb: BbPluginApi) {
       return service.retry(cardId);
     },
     removeCard({ cardId }) {
-      return { removed: service.remove(cardId, "ui") };
+      return { removed: service.remove(cardId) };
     },
     showCard({ cardId }) {
       const card = store.get(cardId);
