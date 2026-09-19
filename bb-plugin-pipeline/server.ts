@@ -65,6 +65,7 @@ export default async function plugin(bb: BbPluginApi) {
         ...input,
         log: (message) => bb.log.info(message),
       }),
+    log: (message) => bb.log.warn(message),
     publish: (projectId) => bb.realtime.publish(CARDS_CHANGED, { projectId }),
   });
 

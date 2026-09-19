@@ -46,6 +46,8 @@ afterEach(async () => {
 
 function setup(options?: {
   spawn?: (request: unknown) => Promise<ReturnType<typeof makeThreadResponse>>;
+  getThread?: (input: { threadId: string }) => Promise<ReturnType<typeof makeThreadResponse>>;
+  getThreadOutput?: (input: { threadId: string }) => Promise<{ output: string }>;
   project?: typeof project;
   readIssue?: (url: string) => Promise<{ title: string; body: string; labels: string[] }>;
   classify?: (input: unknown) => Promise<{ decision: "needs" | "no" | "unknown"; probability: number | null }>;
@@ -64,6 +66,12 @@ function setup(options?: {
       },
       threads: {
         spawn: spawn as never,
+        ...(options?.getThread === undefined
+          ? {}
+          : { get: options.getThread as never }),
+        ...(options?.getThreadOutput === undefined
+          ? {}
+          : { output: options.getThreadOutput as never }),
       },
     },
   });
@@ -83,16 +91,18 @@ function setup(options?: {
       (async () => ({ title: "Issue", body: "Details", labels: [] })),
   );
   const publish = vi.fn();
+  const log = vi.fn();
   const service = createPipelineService({
     store,
     sdk: host.bb.sdk as PluginBbSdk,
     getSettings: async () => options?.settings ?? settings,
     readIssue,
     classify,
+    log,
     publish,
     id: () => "card_new",
   });
-  return { host, store, service, spawn, classify, readIssue, publish };
+  return { host, store, service, spawn, classify, readIssue, publish, log };
 }
 
 function seed(
@@ -354,6 +364,57 @@ describe("launch", () => {
     expect(store.get("card_1")).toMatchObject({ intakeThreadId: "intake", launchError: null });
   });
 
+  it("retries intake after a failed lead launch overwrites the error", async () => {
+    let offline = true;
+    const { store, service, spawn } = setup({
+      spawn: async () => {
+        if (offline) throw new Error("Mac offline");
+        return makeThreadResponse({ id: "intake-retry" });
+      },
+    });
+    seed(store);
+
+    await service.launch("card_1", "intake");
+    await service.move("card_1", "planning", "ui");
+    expect(store.get("card_1")?.launchError).toContain("lead: no issue yet");
+
+    offline = false;
+    await service.retry("card_1");
+
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(store.get("card_1")).toMatchObject({
+      intakeThreadId: "intake-retry",
+      leadThreadId: null,
+      launchError: null,
+    });
+  });
+
+  it("relaunches a deleted lead on retry", async () => {
+    const { store, service, spawn } = setup();
+    seed(store);
+    store.update("card_1", {
+      intakeThreadId: "intake",
+      leadThreadId: "deleted-lead",
+      issueUrl: "https://github.com/o/r/issues/1",
+    });
+
+    await service.onThreadGone(thread("deleted-lead"), "deleted");
+    expect(store.get("card_1")).toMatchObject({
+      leadThreadId: null,
+      launchError: "lead: thread deleted",
+      needsUser: true,
+      attentionReason: "thread deleted",
+    });
+
+    await service.retry("card_1");
+
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(store.get("card_1")).toMatchObject({
+      leadThreadId: "thr_1",
+      launchError: null,
+    });
+  });
+
   it("rejects retry without a launch error", async () => {
     const { store, service } = setup();
     seed(store);
@@ -412,6 +473,27 @@ describe("launch", () => {
   });
 });
 
+describe("startup pass", () => {
+  it("leaves a live card unchanged when reading idle output fails", async () => {
+    const { store, service, log } = setup({
+      getThread: async ({ threadId }) =>
+        makeThreadResponse({ id: threadId, status: "idle" }),
+      getThreadOutput: async () => {
+        throw new Error("temporary output failure");
+      },
+    });
+    seed(store);
+    const before = store.update("card_1", { leadThreadId: "lead" });
+
+    await service.startupPass();
+
+    expect(store.get("card_1")).toEqual(before);
+    expect(log).toHaveBeenCalledWith(
+      "startup pass failed for thread lead: temporary output failure",
+    );
+  });
+});
+
 describe("report and active state", () => {
   it.each(["intake", "lead"])("resolves a report by %s thread id", async (role) => {
     const { store, service } = setup();
@@ -451,4 +533,5 @@ describe("report and active state", () => {
       reportSignal: null,
     });
   });
+
 });

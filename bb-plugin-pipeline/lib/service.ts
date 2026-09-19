@@ -78,6 +78,7 @@ export interface PipelineServiceDependencies {
     column: Column;
     lastText: string | null;
   }): Promise<JevResult>;
+  log(message: string): void;
   publish(projectId: string): void;
   id?: () => string;
 }
@@ -265,7 +266,7 @@ export function createPipelineService(
     async retry(cardId) {
       const card = required(cardId);
       if (card.launchError === null) throw new Error("nothing to retry");
-      const role = card.launchError.startsWith("lead:") ? "lead" : "intake";
+      const role = card.intakeThreadId === null ? "intake" : "lead";
       return launch(cardId, role);
     },
     async report(input) {
@@ -482,6 +483,7 @@ export function createPipelineService(
         nonOwnerHistory(card, thread.id, "thread_gone", action);
         return;
       }
+      const role = card.leadThreadId === thread.id ? "lead" : "intake";
       update(
         card.id,
         {
@@ -489,6 +491,12 @@ export function createPipelineService(
           attentionReason: `thread ${action}`,
           attentionSource: "system",
           attentionUnknown: false,
+          ...(action === "deleted"
+            ? {
+                [role === "lead" ? "leadThreadId" : "intakeThreadId"]: null,
+                launchError: `${role}: thread deleted`,
+              }
+            : {}),
         },
         {
           kind: "thread_gone",
@@ -501,8 +509,17 @@ export function createPipelineService(
     async startupPass() {
       for (const card of store.listActiveWithOwner()) {
         const threadId = ownerThread(card)!;
+        let thread;
         try {
-          const thread = await sdk.threads.get({ threadId });
+          thread = await sdk.threads.get({ threadId });
+        } catch {
+          await service.onThreadGone(
+            { id: threadId, activeBackgroundAgentCount: 0 },
+            "archived",
+          );
+          continue;
+        }
+        try {
           if (thread.status === "error") {
             await service.onThreadFailed(thread, "thread is in error state");
           } else if (thread.status === "active" || thread.status === "starting") {
@@ -516,10 +533,9 @@ export function createPipelineService(
             const output = await sdk.threads.output({ threadId });
             await service.onThreadIdle(thread, output.output);
           }
-        } catch {
-          await service.onThreadGone(
-            { id: threadId, activeBackgroundAgentCount: 0 },
-            "archived",
+        } catch (cause) {
+          dependencies.log(
+            `startup pass failed for thread ${threadId}: ${errorMessage(cause)}`,
           );
         }
       }
