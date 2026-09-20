@@ -11,12 +11,15 @@ import type { PipelineService } from "./service";
 import type { PipelineCapacity } from "./capacity";
 import type { PipelineControls } from "./controls";
 import { ownerThread } from "./card";
+import type { MachineQueue } from "./contract";
 import type { Card, CardAttachment, CardStore } from "./store";
 
 const USAGE = `Usage:
   bb pipeline add --title <text> --machine <id-or-name> [--body <text>] [--attachment <uploaded-path>]... [--project <id>] [--json]
   bb pipeline list [--project <id>] [--all] [--json]
   bb pipeline show <card-id> [--json]
+  bb pipeline queue [--project <id>] [--json]
+  bb pipeline run-next <card-id> [--clear] [--json]
   bb pipeline move <card-id> <column> [--json]
   bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>] [--json]
   bb pipeline retry <card-id> [--json]
@@ -54,7 +57,7 @@ const VALUE_OPTIONS = new Set([
   "tier",
   "paused",
 ]);
-const BOOLEAN_OPTIONS = new Set(["json", "all", "working"]);
+const BOOLEAN_OPTIONS = new Set(["json", "all", "working", "clear"]);
 const MACHINE_COMMANDS = new Set(["add", "set-machine"]);
 
 interface ParsedArgs {
@@ -145,11 +148,38 @@ function attachment(path: string): CardAttachment {
   };
 }
 
-function formatCard(card: Card, queued = false): string {
+interface CardQueueDetails {
+  queued: boolean;
+  waitingReasons: string[];
+  runNext: boolean;
+}
+
+function queueDetails(queue: MachineQueue[], cardId: string): CardQueueDetails {
+  const reasons = new Set<string>();
+  let queued = false;
+  let runNext = false;
+  for (const machine of queue) {
+    if (machine.nextCardId === cardId) runNext = true;
+    for (const waiting of machine.waiting) {
+      if (waiting.cardId !== cardId) continue;
+      queued = true;
+      for (const reason of waiting.reasons) reasons.add(reason);
+    }
+  }
+  return { queued, waitingReasons: [...reasons], runNext };
+}
+
+function formatCard(
+  card: Card,
+  queue: CardQueueDetails = { queued: false, waitingReasons: [], runNext: false },
+): string {
   const flags = [
     card.runState === "running" ? null : card.runState.replaceAll("_", " "),
     card.controlError,
-    queued ? "queued" : null,
+    queue.queued
+      ? `queued${queue.waitingReasons.length === 0 ? "" : `: ${queue.waitingReasons.join(", ")}`}`
+      : null,
+    queue.runNext ? "run next" : null,
     card.tier,
     card.hostId === null ? "machine: unassigned" : `machine: ${card.hostId}`,
     card.needsUser ? `needs you: ${card.attentionReason ?? "unknown"}` : null,
@@ -157,6 +187,32 @@ function formatCard(card: Card, queued = false): string {
     card.launchError,
   ].filter((value): value is string => value !== null);
   return `${card.id}  ${card.column.padEnd(12)}  ${card.title}${flags.length === 0 ? "" : `  [${flags.join("; ")}]`}`;
+}
+
+function formatQueue(queue: MachineQueue[]): string {
+  if (queue.length === 0) return "No Pipeline work is running or waiting.";
+  return queue.map((machine) => {
+    const occupied = machine.occupied.length === 0
+      ? ["  Running: none"]
+      : ["  Running:", ...machine.occupied.map((task) => `    ${task.cardId}  ${task.title}`)];
+    const waiting = machine.waiting.length === 0
+      ? ["  Waiting: none"]
+      : [
+          "  Waiting:",
+          ...machine.waiting.map((task) => {
+            const flags = [
+              machine.nextCardId === task.cardId ? "NEXT" : null,
+              ...task.reasons,
+            ].filter((value): value is string => value !== null);
+            return `    ${task.cardId}  ${task.title}${flags.length === 0 ? "" : `  [${flags.join("; ")}]`}`;
+          }),
+        ];
+    return [
+      `${machine.hostName} (${machine.hostId}) — ${machine.occupied.length}/${machine.limit} slots occupied`,
+      ...occupied,
+      ...waiting,
+    ].join("\n");
+  }).join("\n\n");
 }
 
 export function createPipelineCli(input: {
@@ -173,6 +229,8 @@ export function createPipelineCli(input: {
       { name: "add", summary: "Add a card", usage: "bb pipeline add --title <text> --machine <id-or-name> [options]" },
       { name: "list", summary: "List cards", usage: "bb pipeline list [--project <id>] [--all] [--json]" },
       { name: "show", summary: "Show a card", usage: "bb pipeline show <card-id> [--json]" },
+      { name: "queue", summary: "Show running and waiting work by machine", usage: "bb pipeline queue [--project <id>] [--json]" },
+      { name: "run-next", summary: "Choose or clear the next task for its machine", usage: "bb pipeline run-next <card-id> [--clear] [--json]" },
       { name: "move", summary: "Move a card", usage: "bb pipeline move <card-id> <column> [--json]" },
       { name: "report", summary: "Report phase or attention", usage: "bb pipeline report [options]" },
       { name: "retry", summary: "Retry a failed launch", usage: "bb pipeline retry <card-id> [--json]" },
@@ -207,6 +265,7 @@ export function createPipelineCli(input: {
         return failure("intake and lead execution options are only accepted by add", USAGE);
       }
       if (args.options.has("paused") && args.command !== "report") return failure("--paused is only accepted by report", USAGE);
+      if (args.options.has("clear") && args.command !== "run-next") return failure("--clear is only accepted by run-next", USAGE);
 
       try {
         switch (args.command) {
@@ -233,15 +292,18 @@ export function createPipelineCli(input: {
           }
           case "list": {
             if (args.positionals.length > 0) return failure("list takes no positional arguments", USAGE);
+            const project = projectId(args, context);
             const cards = input.store.list(
-              projectId(args, context),
+              project,
               args.options.has("all"),
             );
-            const queued = new Set(await input.capacity.queuedCardIds(projectId(args, context)));
+            const queue = await input.capacity.snapshot(project);
             return success(
               args,
-              cards.map((card) => ({ ...card, queued: queued.has(card.id) })),
-              cards.length === 0 ? "No pipeline cards." : cards.map((card) => formatCard(card, queued.has(card.id))).join("\n"),
+              cards.map((card) => ({ ...card, ...queueDetails(queue, card.id) })),
+              cards.length === 0
+                ? "No pipeline cards."
+                : cards.map((card) => formatCard(card, queueDetails(queue, card.id))).join("\n"),
             );
           }
           case "show": {
@@ -261,15 +323,35 @@ export function createPipelineCli(input: {
                 interactionsNote = `Could not load interactions for ${threadId}: ${errorMessage(cause)}`;
               }
             }
+            const queue = await input.capacity.snapshot(card.projectId);
+            const details = queueDetails(queue, card.id);
             const value = {
               card,
-              queued: (await input.capacity.queuedCardIds(card.projectId)).includes(card.id),
+              ...details,
               history: input.store.history(card.id),
               ownerThreadId: threadId,
               interactions,
               ...(interactionsNote === undefined ? {} : { interactionsNote }),
             };
             return success(args, value, JSON.stringify(value, null, 2));
+          }
+          case "queue": {
+            if (args.positionals.length > 0) return failure("queue takes no positional arguments", USAGE);
+            const queue = await input.capacity.snapshot(projectId(args, context));
+            return success(args, queue, formatQueue(queue));
+          }
+          case "run-next": {
+            if (args.positionals.length !== 1) return failure("run-next requires one card id", USAGE);
+            const cardId = args.positionals[0]!;
+            const enabled = !args.options.has("clear");
+            await input.capacity.setRunNext(cardId, enabled);
+            return success(
+              args,
+              { cardId, runNext: enabled },
+              enabled
+                ? `Set ${cardId} to run next when capacity opens.`
+                : `Cleared run-next for ${cardId}.`,
+            );
           }
           case "move": {
             if (args.positionals.length !== 2 || !isColumn(args.positionals[1]!)) {

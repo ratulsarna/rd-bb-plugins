@@ -13,6 +13,9 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 - `bb pipeline set-machine <card-id> --machine <id-or-name>` — assign a machine to a card that has none. An assigned machine cannot be changed.
 - `bb pipeline list [--project <id>] [--all]` — the board's cards; `done` is hidden unless `--all`.
 - `bb pipeline show <card-id>` — the card, its history, and its threads.
+- `bb pipeline queue [--project <id>]` — running and waiting tasks by machine, including each wait reason and the selected next task.
+- `bb pipeline run-next <card-id>` — favor this waiting task when a slot opens on its project and machine.
+- `bb pipeline run-next <card-id> --clear` — clear that selection if it is still current.
 - `bb pipeline retry <card-id>` — retry a failed or cancelled kickoff. A cancelled kickoff uses its existing thread and waits for capacity.
 - `bb pipeline pause <card-id>` — ask the owner to pause gracefully and hold new work.
 - `bb pipeline resume <card-id>` — continue a Paused task through the normal capacity gate.
@@ -39,7 +42,15 @@ bb pipeline add --title "Improve startup" --machine <id-or-name> \
 
 When spawning workers for a card, use `--parent-self` so they belong to the task, and use its existing environment or explicitly select its stored machine for a new environment.
 
-Two Pipeline tasks can run at once per project and machine. A card's intake, lead, and children share one slot until their running work, tracked background work, and active autonomous goals stop. Further starts, replies, and retries queue automatically when both slots are occupied. `bb pipeline list` and `show` expose whether work is queued. Send now cannot bypass this limit. Ordinary BB threads are outside it.
+Two Pipeline tasks can run at once per project and machine. A card's intake, lead, and children share one slot until their running work, tracked background work, and active autonomous goals stop. Further starts, replies, and retries queue automatically when both slots are occupied. Use `bb pipeline queue` to read the occupants and wait reasons before choosing a card with `run-next`. The saved choice applies only to that project and machine, replaces an earlier choice there, and does not interrupt running work. It clears when the task starts. A nominee blocked for another reason does not prevent eligible work from running. `list` and `show` expose `queued`, `waitingReasons`, and `runNext` with `--json`. Send now cannot bypass the limit. Ordinary BB threads are outside it.
+
+```sh
+bb pipeline queue --project <project-id>
+bb pipeline run-next <card-id>
+bb pipeline run-next <card-id> --clear
+```
+
+Run next is a preference, not a start-order guarantee: concurrent queue claims can let another task start first. Priority waits are bounded so a blocked nominee cannot stall the queue.
 
 `bb pipeline report --needs-you <reason>` marks the task as needing user input and sends an alert through Notify when attention begins. Use `--working` when that blocker clears. Repeated attention reports do not resend the alert. Notify must be installed and enabled; its foreground and sound preferences apply. Pipeline also alerts for intake waiting, confirmed lead attention, failures, and pending questions or approvals on the owning thread. Do not send an extra `bb notify` for the same blocker.
 

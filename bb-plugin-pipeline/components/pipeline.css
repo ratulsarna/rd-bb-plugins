@@ -34,6 +34,10 @@
 .pipeline-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; min-height: 49px; padding: 10px 24px; color: var(--muted-foreground); font-size: 12px; }
 .pipeline-summary-label { color: var(--foreground); font-weight: 500; }
 .pipeline-summary-item { display: inline-flex; align-items: center; gap: 6px; }
+.pipeline-machine-queues { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.pipeline-queue-trigger { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--muted-foreground); font-size: 11px; }
+.pipeline-queue-trigger:hover, .pipeline-queue-trigger[data-state="open"] { background: var(--accent); color: var(--foreground); }
+.pipeline-queue-usage { color: var(--foreground); font-variant-numeric: tabular-nums; }
 .pipeline-error { display: flex; align-items: flex-start; gap: 8px; margin: 0 24px 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--destructive) 30%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--destructive) 7%, var(--background)); color: var(--destructive); overflow-wrap: anywhere; }
 .pipeline-error .pipeline-icon { margin-top: 2px; }
 .pipeline-scroll { min-height: 0; flex: 1; overflow-x: auto; overflow-y: hidden; padding: 0 24px 20px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
@@ -80,10 +84,24 @@
 .pipeline-machine .pipeline-icon { width: 13px; height: 13px; }
 .pipeline-tier { font-size: 10px; border-radius: 4px; padding: 1px 5px; background: var(--muted); text-transform: capitalize; }
 .pipeline-working, .pipeline-queued { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted-foreground); }
+.pipeline-next { display: inline-flex; align-items: center; padding: 1px 5px; border-radius: 999px; background: color-mix(in srgb, var(--primary) 12%, var(--card)); color: var(--primary); font-size: 9px; font-weight: 600; line-height: 1.4; text-transform: uppercase; letter-spacing: .03em; }
 .pipeline-run-state { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px; background: var(--muted); color: var(--foreground); font-size: 10px; white-space: nowrap; }
 .pipeline-working::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #6f9f85; }
 .pipeline-queued::before { content: ""; box-sizing: border-box; width: 5px; height: 5px; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--muted-foreground) 65%, transparent); }
 .pipeline-popover { z-index: 60; width: 224px; border: 1px solid var(--border); border-radius: 9px; background: var(--popover, var(--card)); color: var(--foreground); box-shadow: 0 8px 24px rgb(0 0 0 / .18); padding: 12px; }
+.pipeline-queue-popover { width: min(320px, calc(100vw - 24px)); padding: 6px; }
+.pipeline-queue-list { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.pipeline-queue-row { display: flex; align-items: flex-start; gap: 7px; min-width: 0; padding: 6px 7px; border-radius: 5px; }
+.pipeline-queue-row > .pipeline-icon { width: 13px; height: 13px; margin-top: 2px; color: var(--muted-foreground); }
+.pipeline-queue-slot { width: 11px; height: 11px; margin: 3px 1px 0; flex: none; border: 1px dashed var(--muted-foreground); border-radius: 50%; opacity: .65; }
+.pipeline-queue-title, .pipeline-queue-thread { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pipeline-queue-thread { border: 0; padding: 0; background: transparent; color: var(--foreground); text-align: left; }
+.pipeline-queue-thread:hover { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; }
+.pipeline-queue-empty { color: var(--muted-foreground); }
+.pipeline-queue-waiting { border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.pipeline-queue-task { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; }
+.pipeline-queue-task-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.pipeline-queue-reason { color: var(--muted-foreground); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pipeline-card-controls { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
 .pipeline-card-controls .pipeline-button { justify-content: flex-start; width: 100%; }
 .pipeline-stop { color: var(--destructive); }

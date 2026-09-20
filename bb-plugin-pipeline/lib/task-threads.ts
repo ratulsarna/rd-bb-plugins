@@ -37,15 +37,21 @@ export function createTaskThreads(bb: BbPluginApi, store: CardStore) {
     };
   }
 
-  async function occupied(cardId: string): Promise<TaskThread[]> {
+  async function occupancy(hostId?: string) {
     const taskFor = resolver();
-    const threads: TaskThread[] = [];
+    const entries: Array<{ thread: TaskThread; task: PipelineTask; hostId: string | null }> = [];
     for (const entry of await bb.sdk.threads.listRunning({ experimental_includeDispatchOccupancy: true })) {
+      if (hostId !== undefined && entry.hostId !== hostId) continue;
       const thread = await bb.sdk.threads.get({ threadId: entry.id, experimental_includeDeleted: true });
-      if ((await taskFor(thread))?.cardId === cardId) threads.push(thread);
+      const task = await taskFor(thread);
+      if (task !== null) entries.push({ thread, task, hostId: entry.hostId });
     }
-    return threads;
+    return entries;
   }
 
-  return { resolver, occupied };
+  async function occupied(cardId: string): Promise<TaskThread[]> {
+    return (await occupancy()).filter((entry) => entry.task.cardId === cardId).map((entry) => entry.thread);
+  }
+
+  return { resolver, occupancy, occupied };
 }
