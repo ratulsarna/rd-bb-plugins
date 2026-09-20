@@ -8,6 +8,7 @@ import {
 } from "@get-bb/plugin-sdk/testing";
 import type { Database } from "better-sqlite3";
 import plugin from "../server";
+import type { Card } from "../lib/store";
 
 const skillIds = [
   "pipeline",
@@ -107,6 +108,65 @@ function seedLegacyCard(db: Database, id = "card_legacy"): void {
 }
 
 describe("plugin wiring", () => {
+  it("remembers UI selections across reload and lets CLI override each role independently", async () => {
+    const { host } = await setup();
+    const intake = { providerId: "pi", model: "zai/glm-5.3-flash", reasoningLevel: "none" };
+    const lead = { providerId: "codex", model: "gpt-5.6-sol", reasoningLevel: "ultra", serviceTier: "fast" };
+    const added = await host.harness.behavior.callRpc("addCard", {
+      projectId: "proj_1", hostId: "host_wt5difpwsy", title: "Separate roles",
+      body: "", attachments: [], intake, lead,
+    }) as Card;
+    expect(added).toMatchObject({ intake, lead });
+
+    const reloaded = await host.harness.lifecycle.reload(plugin);
+    hosts.push(reloaded);
+    expect(await reloaded.harness.behavior.callRpc("executionDefaults", null)).toEqual({ intake, lead });
+    const inherited = await reloaded.harness.behavior.runCli(
+      ["add", "--title", "Remembered roles", "--machine", "Work laptop", "--json"],
+      { projectId: "proj_1" },
+    );
+    expect(inherited.exitCode).toBe(0);
+    expect(JSON.parse(inherited.stdout)).toMatchObject({ intake, lead });
+
+    const changed = await reloaded.harness.behavior.runCli([
+      "add", "--title", "Updated roles", "--machine", "Work laptop", "--json",
+      "--intake-provider", "codex", "--intake-model", "gpt-5.6-luna", "--intake-reasoning", "medium", "--intake-service-tier", "fast",
+      "--lead-provider", "claude-code", "--lead-model", "claude-fable-5-1", "--lead-reasoning", "high",
+    ], { projectId: "proj_1" });
+    expect(changed.exitCode).toBe(0);
+    const nextIntake = { providerId: "codex", model: "gpt-5.6-luna", reasoningLevel: "medium", serviceTier: "fast" };
+    const nextLead = { providerId: "claude-code", model: "claude-fable-5-1", reasoningLevel: "high" };
+    expect(await reloaded.harness.behavior.callRpc("executionDefaults", null)).toEqual({ intake: nextIntake, lead: nextLead });
+    expect(await reloaded.harness.behavior.callRpc("showCard", { cardId: added.id })).toMatchObject({ card: { intake, lead } });
+
+    const partial = await reloaded.harness.behavior.runCli([
+      "add", "--title", "One override", "--machine", "Work laptop", "--intake-reasoning", "low", "--intake-service-tier", "default", "--json",
+    ], { projectId: "proj_1" });
+    expect(partial.exitCode).toBe(0);
+    expect(JSON.parse(partial.stdout)).toMatchObject({ intake: { ...nextIntake, reasoningLevel: "low", serviceTier: "default" }, lead: nextLead });
+  });
+
+  it("rejects malformed role options without changing cards or remembered settings", async () => {
+    const { host, db } = await setup();
+    const before = await host.harness.behavior.callRpc("executionDefaults", null);
+    for (const options of [["--intake-reasoning", "impossible"], ["--lead-model", "   "]]) {
+      const result = await host.harness.behavior.runCli(
+        ["add", "--title", "Bad selection", "--machine", "Work laptop", ...options],
+        { projectId: "proj_1" },
+      );
+      expect(result.exitCode).toBe(1);
+    }
+    const misplaced = await host.harness.behavior.runCli(["list", "--lead-model", "gpt-5.6-sol"], { projectId: "proj_1" });
+    expect(misplaced.exitCode).toBe(1);
+    expect(misplaced.stderr).toContain("only accepted by add");
+    await expect(host.harness.behavior.callRpc("addCard", {
+      projectId: "proj_1", hostId: "host_wt5difpwsy", title: "Bad RPC",
+      body: "", attachments: [], lead: { reasoningLevel: "impossible" },
+    })).rejects.toThrow("rpc input validation failed");
+    expect(db.prepare("SELECT count(*) AS count FROM cards").get()).toEqual({ count: 0 });
+    expect(await host.harness.behavior.callRpc("executionDefaults", null)).toEqual(before);
+  });
+
   it("surfaces a cancelled kickoff and clears that attention when the same pending thread queues again", async () => {
     const { host } = await setup();
     const added = await host.harness.behavior.runCli(

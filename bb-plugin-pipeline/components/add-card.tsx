@@ -1,5 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { experimental_ProviderModelPicker as ProviderModelPicker } from "@get-bb/plugin-sdk/app";
+import type { ExecutionDefaults, ExecutionSelection } from "@/lib/execution";
 import type { PipelineMachine } from "@/lib/machines";
 import { usePortalScopeProps } from "@/lib/portal-scope";
 import { Icon } from "./icon";
@@ -9,31 +11,66 @@ export function AddCard(props: {
   disabled: boolean;
   projectName: string;
   machines: PipelineMachine[];
-  onAdd(title: string, body: string, files: File[], hostId: string): Promise<void>;
+  loadExecutionDefaults(): Promise<ExecutionDefaults>;
+  onAdd(
+    title: string,
+    body: string,
+    files: File[],
+    hostId: string,
+    intake: ExecutionSelection,
+    lead: ExecutionSelection,
+  ): Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [hostId, setHostId] = useState("");
+  const [intake, setIntake] = useState<ExecutionSelection | null>(null);
+  const [lead, setLead] = useState<ExecutionSelection | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const defaultsRequest = useRef(0);
   const portalScope = usePortalScopeProps();
   const formError = files.length > 20 ? "Choose at most 20 attachments." : error;
   const selectedHostId = props.machines.some((machine) => machine.id === hostId) ? hostId : "";
+  const executionReady = intake !== null && lead !== null;
+
+  useEffect(() => () => {
+    defaultsRequest.current += 1;
+  }, []);
+
+  function loadDefaults() {
+    const request = ++defaultsRequest.current;
+    setIntake(null);
+    setLead(null);
+    void props.loadExecutionDefaults().then(
+      (defaults) => {
+        if (request !== defaultsRequest.current) return;
+        setIntake(defaults.intake);
+        setLead(defaults.lead);
+      },
+      (cause) => {
+        if (request !== defaultsRequest.current) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+      },
+    );
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (title.trim() === "" || selectedHostId === "" || props.disabled || pending) return;
+    if (title.trim() === "" || selectedHostId === "" || !executionReady || props.disabled || pending) return;
     if (files.length > 20) return;
     setPending(true);
     setError(null);
     try {
-      await props.onAdd(title.trim(), body, files, selectedHostId);
+      await props.onAdd(title.trim(), body, files, selectedHostId, intake, lead);
       setTitle("");
       setBody("");
       setFiles([]);
       setHostId("");
+      setIntake(null);
+      setLead(null);
       setOpen(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -48,6 +85,9 @@ export function AddCard(props: {
       if (next) {
         setHostId("");
         setError(null);
+        loadDefaults();
+      } else {
+        defaultsRequest.current += 1;
       }
       setOpen(next);
     }}>
@@ -105,6 +145,32 @@ export function AddCard(props: {
               {props.machines.length === 0 ? (
                 <p className="pipeline-field-hint">This project has no machine with a checkout.</p>
               ) : null}
+              {selectedHostId !== "" && intake !== null && lead !== null ? (
+                <div className="pipeline-execution">
+                  <div className="pipeline-execution-row" role="group" aria-label="Intake">
+                    <span className="pipeline-field-label">Intake</span>
+                    <ProviderModelPicker
+                      key={`intake-${selectedHostId}`}
+                      className="pipeline-execution-picker"
+                      value={intake}
+                      onChange={setIntake}
+                      routing={{ kind: "host", hostId: selectedHostId }}
+                      disabled={pending}
+                    />
+                  </div>
+                  <div className="pipeline-execution-row" role="group" aria-label="Lead">
+                    <span className="pipeline-field-label">Lead</span>
+                    <ProviderModelPicker
+                      key={`lead-${selectedHostId}`}
+                      className="pipeline-execution-picker"
+                      value={lead}
+                      onChange={setLead}
+                      routing={{ kind: "host", hostId: selectedHostId }}
+                      disabled={pending}
+                    />
+                  </div>
+                </div>
+              ) : null}
               <label className="pipeline-attach">
                 <Icon name="Paperclip" /> Attach files or screenshots
                 <input
@@ -139,7 +205,7 @@ export function AddCard(props: {
                   <button type="button" className="pipeline-button pipeline-ghost" disabled={pending}>Cancel</button>
                 </Dialog.Close>
                 <button type="submit" className="pipeline-button pipeline-primary"
-                  disabled={props.disabled || pending || title.trim() === "" || selectedHostId === "" || files.length > 20}>
+                  disabled={props.disabled || pending || title.trim() === "" || selectedHostId === "" || !executionReady || files.length > 20}>
                   <Icon name={pending ? "Loading" : "Plus"} className={pending ? "pipeline-spin" : ""} />
                   {pending ? "Creating…" : "Create task"}
                 </button>

@@ -5,6 +5,7 @@ import {
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
 import type { PluginBbSdk } from "@get-bb/plugin-sdk";
+import type { ExecutionDefaults } from "../lib/execution";
 import {
   createPipelineService,
   type PipelineSettings,
@@ -89,6 +90,8 @@ function setup(options?: {
   readIssue?: (url: string) => Promise<{ title: string; body: string; labels: string[] }>;
   classify?: (input: unknown) => Promise<{ decision: "needs" | "no" | "unknown"; probability: number | null }>;
   settings?: PipelineSettings;
+  getSettings?: () => Promise<PipelineSettings>;
+  rememberExecution?: (defaults: ExecutionDefaults) => Promise<void>;
 }) {
   let nextThread = 1;
   const spawn = vi.fn(
@@ -136,27 +139,37 @@ function setup(options?: {
   );
   const publish = vi.fn();
   const log = vi.fn();
+  const rememberExecution = vi.fn(options?.rememberExecution ?? (async () => {}));
   const service = createPipelineService({
     store,
     sdk: host.bb.sdk as PluginBbSdk,
-    getSettings: async () => options?.settings ?? settings,
+    getSettings: options?.getSettings ?? (async () => options?.settings ?? settings),
+    rememberExecution,
     readIssue,
     classify,
     log,
     publish,
     id: () => "card_new",
   });
-  return { host, db: host.bb.storage.database(), store, service, spawn, send, classify, readIssue, publish, log };
+  return { host, db: host.bb.storage.database(), store, service, spawn, send, classify, readIssue, publish, log, rememberExecution };
 }
 
 function seed(
   store: ReturnType<typeof setup>["store"],
-  options?: { id?: string; hostId?: string; attachments?: CardAttachment[] },
+  options?: {
+    id?: string;
+    hostId?: string;
+    attachments?: CardAttachment[];
+    intake?: ExecutionDefaults["intake"];
+    lead?: ExecutionDefaults["lead"];
+  },
 ) {
   return store.create({
     id: options?.id ?? "card_1",
     projectId: "proj_1",
     hostId: options?.hostId ?? "host_mac",
+    intake: options?.intake,
+    lead: options?.lead,
     title: "Build it",
     body: "Body",
     attachments: options?.attachments ?? [],
@@ -1269,6 +1282,244 @@ describe("report and active state", () => {
     );
   });
 
+});
+
+describe("execution selection", () => {
+  it("falls back to intake defaults only while every lead setting is unset", async () => {
+    const inherited = setup({
+      settings: { ...settings, serviceTier: "fast" },
+    });
+    await expect(inherited.service.getExecutionDefaults()).resolves.toEqual({
+      intake: {
+        providerId: "claude-code",
+        model: "claude-fable-5-1",
+        reasoningLevel: "high",
+        serviceTier: "fast",
+      },
+      lead: {
+        providerId: "claude-code",
+        model: "claude-fable-5-1",
+        reasoningLevel: "high",
+        serviceTier: "fast",
+      },
+    });
+
+    const explicitLead = setup({
+      settings: {
+        ...settings,
+        serviceTier: "fast",
+        leadProviderId: "pi",
+        leadModel: "zai/glm-5.3-flash",
+        leadReasoningLevel: "high",
+      },
+    });
+    expect((await explicitLead.service.getExecutionDefaults()).lead).toEqual({
+      providerId: "pi",
+      model: "zai/glm-5.3-flash",
+      reasoningLevel: "high",
+    });
+  });
+
+  it("captures distinct resolved choices for intake, lead, and ordinary retries", async () => {
+    const mutableSettings: PipelineSettings = {
+      ...settings,
+      providerId: "claude-code",
+      model: "claude-fable-5-1",
+      reasoningLevel: "medium",
+      serviceTier: "default",
+      leadProviderId: "pi",
+      leadModel: "zai/glm-5.3-flash",
+      leadReasoningLevel: "high",
+    };
+    let failLead = true;
+    let threadNumber = 1;
+    const { service, store, spawn, rememberExecution } = setup({
+      settings: mutableSettings,
+      spawn: async (request) => {
+        if (
+          (request as { pluginMetadata?: { role?: string } }).pluginMetadata
+            ?.role === "lead" &&
+          failLead
+        ) {
+          throw new Error("offline");
+        }
+        return makeThreadResponse({ id: `thread_${threadNumber++}` });
+      },
+    });
+
+    const created = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      intake: { reasoningLevel: "ultracode", serviceTier: "fast" },
+      lead: { model: "zai/glm-5.3-air", reasoningLevel: "max" },
+      title: "Ship it",
+      source: "ui",
+    });
+    const captured = {
+      intake: {
+        providerId: "claude-code",
+        model: "claude-fable-5-1",
+        reasoningLevel: "ultracode" as const,
+        serviceTier: "fast" as const,
+      },
+      lead: {
+        providerId: "pi",
+        model: "zai/glm-5.3-air",
+        reasoningLevel: "max" as const,
+      },
+    };
+    expect(store.get(created.id)).toMatchObject(captured);
+    expect(rememberExecution).toHaveBeenCalledOnce();
+    expect(rememberExecution).toHaveBeenCalledWith(captured);
+    expect(spawn.mock.calls[0]![0]).toMatchObject({
+      providerId: "claude-code",
+      model: "claude-fable-5-1",
+      reasoningLevel: "ultracode",
+      serviceTier: "fast",
+    });
+
+    Object.assign(mutableSettings, {
+      providerId: "changed-intake",
+      model: "changed-model",
+      reasoningLevel: "none",
+      serviceTier: undefined,
+      leadProviderId: "changed-lead",
+      leadModel: "changed-lead-model",
+      leadReasoningLevel: "low",
+      leadServiceTier: "fast",
+    });
+    await service.report({
+      cardId: created.id,
+      issueUrl: "https://github.com/o/r/issues/1",
+      column: "planning",
+    });
+    expect(store.get(created.id)?.launchError).toContain("lead: offline");
+
+    failLead = false;
+    Object.assign(mutableSettings, {
+      leadProviderId: "changed-again",
+      leadModel: "changed-again-model",
+      leadReasoningLevel: "ultra",
+    });
+    await service.retry(created.id);
+
+    for (const request of spawn.mock.calls.slice(1).map(([request]) => request)) {
+      expect(request).toMatchObject({
+        providerId: "pi",
+        model: "zai/glm-5.3-air",
+        reasoningLevel: "max",
+      });
+      expect(request).not.toHaveProperty("serviceTier");
+    }
+  });
+
+  it("clears an inherited service tier when a provider override changes", async () => {
+    const { service, store, rememberExecution } = setup({
+      settings: { ...settings, serviceTier: "fast" },
+    });
+
+    const card = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      lead: { providerId: "pi", model: "zai/glm-5.3-flash" },
+      title: "Ship it",
+      source: "cli",
+    });
+
+    expect(store.get(card.id)?.lead).toEqual({
+      providerId: "pi",
+      model: "zai/glm-5.3-flash",
+      reasoningLevel: "high",
+    });
+    expect(rememberExecution.mock.calls[0]![0].lead).not.toHaveProperty(
+      "serviceTier",
+    );
+  });
+
+  it("retries a cancelled kickoff with its captured model, reasoning, and tier", async () => {
+    const mutableSettings: PipelineSettings = { ...settings };
+    const { service, store, send } = setup({
+      settings: mutableSettings,
+      getThread: async ({ threadId }) =>
+        thread(threadId, 0, { status: "pending", queuedMessageCount: 0 }),
+    });
+    const selected = {
+      providerId: "codex",
+      model: "gpt-6-astra",
+      reasoningLevel: "ultra" as const,
+      serviceTier: "fast" as const,
+    };
+    seed(store, { intake: selected });
+    await service.launch("card_1", "intake");
+    const threadId = store.get("card_1")!.intakeThreadId!;
+    await service.onThreadQueueChanged(
+      thread(threadId, 0, { status: "pending", queuedMessageCount: 0 }),
+    );
+    Object.assign(mutableSettings, {
+      providerId: "pi",
+      model: "changed",
+      reasoningLevel: "low",
+      serviceTier: "default",
+    });
+
+    await service.retry("card_1");
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith({
+      threadId,
+      mode: "auto",
+      input: expect.any(Array),
+      model: "gpt-6-astra",
+      reasoningLevel: "ultra",
+      serviceTier: "fast",
+      permissionMode: "full",
+    });
+  });
+
+  it.each([
+    { role: "intake", selection: { providerId: "   " } },
+    { role: "lead", selection: { reasoningLevel: "turbo" } },
+    { role: "lead", selection: { providerId: "pi" } },
+  ])("rejects an invalid $role choice before creating or spawning", async ({ role, selection }) => {
+    const { service, store, spawn, rememberExecution } = setup();
+
+    await expect(
+      service.createCard({
+        projectId: "proj_1",
+        hostId: "host_mac",
+        [role]: selection,
+        title: "Ship it",
+        source: "cli",
+      } as Parameters<typeof service.createCard>[0]),
+    ).rejects.toThrow();
+
+    expect(store.list("proj_1", true)).toHaveLength(0);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(rememberExecution).not.toHaveBeenCalled();
+  });
+
+  it("keeps an inserted card and launches once when remembering fails", async () => {
+    const { service, store, spawn, rememberExecution, log } = setup({
+      rememberExecution: async () => {
+        throw new Error("settings unavailable");
+      },
+    });
+
+    const card = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship it",
+      source: "ui",
+    });
+
+    expect(store.list("proj_1", true)).toHaveLength(1);
+    expect(card.intakeThreadId).toBe("thr_1");
+    expect(rememberExecution).toHaveBeenCalledOnce();
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining("could not remember execution for card card_new: settings unavailable"),
+    );
+  });
 });
 
 describe("machine selection", () => {

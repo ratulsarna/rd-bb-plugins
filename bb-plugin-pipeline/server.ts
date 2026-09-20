@@ -2,6 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createPipelineCli } from "./lib/cli";
 import { createPipelineCapacity } from "./lib/capacity";
 import { rpcContract } from "./lib/contract";
+import { REASONING_LEVELS } from "./lib/execution";
 import { readIssue } from "./lib/issue";
 import { askJev } from "./lib/jev";
 import { listProjectMachines } from "./lib/machines";
@@ -17,19 +18,36 @@ export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     providerId: {
       type: "string",
-      label: "Provider",
+      label: "Intake provider",
       default: "claude-code",
     },
     model: {
       type: "string",
-      label: "Model",
+      label: "Intake model",
       default: "claude-fable-5-1",
     },
     reasoningLevel: {
       type: "select",
-      label: "Reasoning",
-      options: ["low", "medium", "high", "xhigh", "max"],
+      label: "Intake reasoning",
+      options: [...REASONING_LEVELS],
       default: "high",
+    },
+    serviceTier: {
+      type: "select",
+      label: "Intake service tier",
+      options: ["default", "fast"],
+    },
+    leadProviderId: { type: "string", label: "Lead provider" },
+    leadModel: { type: "string", label: "Lead model" },
+    leadReasoningLevel: {
+      type: "select",
+      label: "Lead reasoning",
+      options: [...REASONING_LEVELS],
+    },
+    leadServiceTier: {
+      type: "select",
+      label: "Lead service tier",
+      options: ["default", "fast"],
     },
     permissionMode: {
       type: "select",
@@ -58,6 +76,18 @@ export default async function plugin(bb: BbPluginApi) {
     store,
     sdk: bb.sdk,
     getSettings: () => settings.get(),
+    async rememberExecution({ intake, lead }) {
+      await settings.experimental_set({
+        providerId: intake.providerId,
+        model: intake.model,
+        reasoningLevel: intake.reasoningLevel,
+        serviceTier: intake.serviceTier ?? null,
+        leadProviderId: lead.providerId,
+        leadModel: lead.model,
+        leadReasoningLevel: lead.reasoningLevel,
+        leadServiceTier: lead.serviceTier ?? null,
+      });
+    },
     readIssue,
     classify: (input) =>
       askJev({
@@ -69,6 +99,9 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
+    executionDefaults() {
+      return service.getExecutionDefaults();
+    },
     async listProjects() {
       const projects = await bb.sdk.projects.list();
       return { projects: projects.map(({ id, name }) => ({ id, name })) };

@@ -1,6 +1,7 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { COLUMNS } from "./columns";
+import { executionSelectionSchema } from "./execution";
 
 export const columnSchema = z.enum(COLUMNS);
 export const tierSchema = z.enum(["trivial", "small", "standard"]);
@@ -20,6 +21,8 @@ export const cardSchema = z
     id: z.string(),
     projectId: z.string(),
     hostId: z.string().nullable(),
+    intake: executionSelectionSchema.nullable(),
+    lead: executionSelectionSchema.nullable(),
     title: z.string(),
     body: z.string(),
     attachments: z.array(attachmentSchema),
@@ -58,6 +61,13 @@ export const historySchema = z
   .strict();
 
 export const rpcContract = defineRpcContract({
+  executionDefaults: {
+    input: z.null(),
+    output: z.object({
+      intake: executionSelectionSchema,
+      lead: executionSelectionSchema,
+    }).strict(),
+  },
   listProjects: {
     input: z.null(),
     output: z.object({
@@ -81,6 +91,8 @@ export const rpcContract = defineRpcContract({
       .object({
         projectId: z.string().min(1),
         hostId: z.string().trim().min(1),
+        intake: executionSelectionSchema.partial().optional(),
+        lead: executionSelectionSchema.partial().optional(),
         title: z.string().trim().min(1).max(500),
         body: z.string().max(20_000),
         attachments: z.array(attachmentSchema).max(20),

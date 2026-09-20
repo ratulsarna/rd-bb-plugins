@@ -6,6 +6,7 @@ import type {
   PluginCliResult,
 } from "@get-bb/plugin-sdk";
 import { COLUMNS, isColumn } from "./columns";
+import { executionSelectionSchema, type ExecutionSelection } from "./execution";
 import type { PipelineService } from "./service";
 import type { PipelineCapacity } from "./capacity";
 import { ownerThread } from "./store";
@@ -21,9 +22,20 @@ const USAGE = `Usage:
   bb pipeline set-machine <card-id> --machine <id-or-name> [--json]
   bb pipeline remove <card-id> [--json]
 
+Add execution options (optional; omitted fields use remembered Pipeline settings):
+  --intake-provider <id> --intake-model <id> --intake-reasoning <level>
+  --lead-provider <id> --lead-model <id> --lead-reasoning <level>
+  --intake-service-tier <default|fast> --lead-service-tier <default|fast>
+
 Columns: ${COLUMNS.join(", ")}`;
 
+const EXECUTION_OPTIONS = [
+  "intake-provider", "intake-model", "intake-reasoning",
+  "lead-provider", "lead-model", "lead-reasoning",
+  "intake-service-tier", "lead-service-tier",
+];
 const VALUE_OPTIONS = new Set([
+  ...EXECUTION_OPTIONS,
   "title",
   "body",
   "attachment",
@@ -77,6 +89,19 @@ function option(args: ParsedArgs, name: string): string | undefined {
 
 function jsonEnabled(args: ParsedArgs): boolean {
   return args.options.has("json");
+}
+
+function executionOptions(args: ParsedArgs, role: "intake" | "lead"): Partial<ExecutionSelection> {
+  const providerId = option(args, `${role}-provider`);
+  const model = option(args, `${role}-model`);
+  const reasoningLevel = option(args, `${role}-reasoning`);
+  const serviceTier = option(args, `${role}-service-tier`);
+  return executionSelectionSchema.partial().parse({
+    ...(providerId === undefined ? {} : { providerId }),
+    ...(model === undefined ? {} : { model }),
+    ...(reasoningLevel === undefined ? {} : { reasoningLevel }),
+    ...(serviceTier === undefined ? {} : { serviceTier }),
+  });
 }
 
 function success(
@@ -166,6 +191,9 @@ export function createPipelineCli(input: {
           USAGE,
         );
       }
+      if (args.command !== "add" && EXECUTION_OPTIONS.some((name) => args.options.has(name))) {
+        return failure("intake and lead execution options are only accepted by add", USAGE);
+      }
 
       try {
         switch (args.command) {
@@ -181,6 +209,8 @@ export function createPipelineCli(input: {
             const card = await input.service.createCard({
               projectId: projectId(args, context),
               hostId: machine,
+              intake: executionOptions(args, "intake"),
+              lead: executionOptions(args, "lead"),
               title,
               body: option(args, "body") ?? "",
               attachments: (args.options.get("attachment") ?? []).map(attachment),

@@ -1,5 +1,9 @@
 import type { Database } from "better-sqlite3";
 import type { Column } from "./columns";
+import {
+  executionSelectionSchema,
+  type ExecutionSelection,
+} from "./execution";
 
 export type CardOwnerRole = "intake" | "lead";
 
@@ -16,6 +20,8 @@ export interface Card {
   projectId: string;
   /** Machine the card runs on; null only for rows created before machines were mandatory. */
   hostId: string | null;
+  intake: ExecutionSelection | null;
+  lead: ExecutionSelection | null;
   title: string;
   body: string;
   attachments: CardAttachment[];
@@ -83,6 +89,8 @@ interface CardRow {
   id: string;
   project_id: string;
   host_id: string | null;
+  intake_execution: string | null;
+  lead_execution: string | null;
   title: string;
   body: string;
   attachments: string;
@@ -145,6 +153,8 @@ export const MIGRATIONS = [
           AND card_history.to_column = 'planning'
       );`,
   `ALTER TABLE cards ADD COLUMN host_id TEXT;`,
+  `ALTER TABLE cards ADD COLUMN intake_execution TEXT;
+   ALTER TABLE cards ADD COLUMN lead_execution TEXT;`,
 ] as const;
 
 export function roleThread(card: Card, role: CardOwnerRole): string | null {
@@ -164,11 +174,23 @@ function parseAttachments(value: string): CardAttachment[] {
   }
 }
 
+function parseExecution(value: string | null): ExecutionSelection | null {
+  if (value === null) return null;
+  try {
+    const parsed = executionSelectionSchema.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 function cardFromRow(row: CardRow): Card {
   return {
     id: row.id,
     projectId: row.project_id,
     hostId: row.host_id,
+    intake: parseExecution(row.intake_execution),
+    lead: parseExecution(row.lead_execution),
     title: row.title,
     body: row.body,
     attachments: parseAttachments(row.attachments),
@@ -211,6 +233,8 @@ export interface CardStore {
     id: string;
     projectId: string;
     hostId: string;
+    intake?: ExecutionSelection;
+    lead?: ExecutionSelection;
     title: string;
     body: string;
     attachments: CardAttachment[];
@@ -293,12 +317,14 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       const at = now();
       db.prepare(
         `INSERT INTO cards
-          (id, project_id, host_id, title, body, attachments, "column", created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'backlog', ?, ?)`,
+          (id, project_id, host_id, intake_execution, lead_execution, title, body, attachments, "column", created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'backlog', ?, ?)`,
       ).run(
         input.id,
         input.projectId,
         input.hostId,
+        input.intake === undefined ? null : JSON.stringify(input.intake),
+        input.lead === undefined ? null : JSON.stringify(input.lead),
         input.title,
         input.body,
         JSON.stringify(input.attachments),

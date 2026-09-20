@@ -6,6 +6,8 @@ export function makeCard(overrides: Partial<Card> = {}): Card {
     id: "card_1",
     projectId: "proj_1",
     hostId: "host_mac",
+    intake: null,
+    lead: null,
     title: "A pipeline card",
     body: "",
     attachments: [],

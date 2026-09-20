@@ -2,6 +2,19 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { createCardStore, MIGRATIONS } from "../lib/store";
 
+const intake = {
+  providerId: "codex",
+  model: "gpt-6-astra",
+  reasoningLevel: "xhigh" as const,
+  serviceTier: "fast" as const,
+};
+
+const lead = {
+  providerId: "pi",
+  model: "zai/glm-5.3-flash",
+  reasoningLevel: "high" as const,
+};
+
 describe("card migrations", () => {
   it("backfills lead ownership after an earlier planning move", () => {
     const db = new Database(":memory:");
@@ -38,6 +51,59 @@ describe("card migrations", () => {
       db.exec(MIGRATIONS[2]);
 
       expect(createCardStore(db).get("card_1")?.hostId).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("preserves legacy rows with null execution snapshots", () => {
+    const db = new Database(":memory:");
+    try {
+      for (const migration of MIGRATIONS.slice(0, 3)) db.exec(migration);
+      db.prepare(
+        `INSERT INTO cards
+          (id, project_id, host_id, title, body, attachments, "column", created_at, updated_at)
+         VALUES ('card_1', 'proj_1', 'host_mac', 'Existing card', 'Keep me', '[]', 'todo', 1, 2)`,
+      ).run();
+
+      db.exec(MIGRATIONS[3]);
+
+      expect(createCardStore(db).get("card_1")).toMatchObject({
+        id: "card_1",
+        hostId: "host_mac",
+        title: "Existing card",
+        body: "Keep me",
+        column: "todo",
+        intake: null,
+        lead: null,
+      });
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("card execution", () => {
+  it("round-trips distinct intake and lead snapshots", () => {
+    const db = new Database(":memory:");
+    for (const migration of MIGRATIONS) db.exec(migration);
+    try {
+      const store = createCardStore(db);
+      const card = store.create({
+        id: "card_1",
+        projectId: "proj_1",
+        hostId: "host_mac",
+        intake,
+        lead,
+        title: "Ship it",
+        body: "",
+        attachments: [],
+        source: "cli",
+      });
+
+      expect(card.intake).toEqual(intake);
+      expect(card.lead).toEqual(lead);
+      expect(createCardStore(db).get(card.id)).toMatchObject({ intake, lead });
     } finally {
       db.close();
     }
