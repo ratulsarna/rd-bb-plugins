@@ -1,6 +1,6 @@
 # bb-plugin-pipeline
 
-Pipeline gives each project a ten-column delivery board backed by BB threads. A new card starts an intake thread in the project's existing checkout. Moving the card to planning starts a lead in its own managed worktree, carrying the filed issue and the card's attachments into the work.
+Pipeline gives each project a ten-column delivery board backed by BB threads. Each card requires an explicit machine choice. A new card starts an intake thread in the project's existing checkout on that machine. Moving the card to planning starts a lead in its own managed worktree on the same machine, carrying the filed issue and the card's attachments into the work.
 
 The board tracks:
 
@@ -17,7 +17,8 @@ Retrying after a thread is deleted starts that role over. A retried lead gets a 
 ## Commands
 
 ```text
-bb pipeline add --title <text> [--body <text>] [--attachment <uploaded-path>]... [--project <id>]
+bb pipeline add --title <text> --machine <id-or-name> [--body <text>] [--attachment <uploaded-path>]... [--project <id>]
+bb pipeline set-machine <card-id> --machine <id-or-name>
 bb pipeline list [--project <id>] [--all]
 bb pipeline show <card-id>
 bb pipeline move <card-id> <column>
@@ -34,13 +35,17 @@ bb project attachment upload <project-id> --client-file <path>
 
 Pass the returned path to `bb pipeline add --attachment`.
 
+Choose a machine in Add card or pass its ID or unambiguous name with `--machine`. Run `bb machine list` to find IDs and names. The project must have a checkout on the chosen machine. The choice stays with the card for intake, lead work, and retries.
+
+Cards without a machine show a machine picker on the board. Assign one there or with `set-machine` before launching further work. Assignment does not relocate existing threads, and an assigned card's machine cannot be changed.
+
 Removing a card removes only its board data. It does not stop the intake or lead threads; archive those threads in BB if needed.
 
 ## Configuration
 
-The defaults launch Claude Code on `host_wt5difpwsy` with `claude-fable-5-1`, high reasoning, and full permission. Change them in the plugin settings or with `bb plugin config pipeline set`:
+Launch settings use Claude Code with `claude-fable-5-1`, high reasoning, and full permission. Change them in the plugin settings or with `bb plugin config pipeline set`:
 
-- `hostId`, `providerId`, `model`
+- `providerId`, `model`
 - `reasoningLevel`, `permissionMode`
 - `jevApiKey` (secret), `jevThreshold`
 

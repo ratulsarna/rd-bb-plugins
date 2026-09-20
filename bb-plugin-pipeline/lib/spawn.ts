@@ -4,7 +4,6 @@ import type { Card, CardAttachment } from "./store";
 export type PipelineRole = "intake" | "lead";
 
 export interface PipelineLaunchSettings {
-  hostId: string;
   providerId: string;
   model: string;
   reasoningLevel: "low" | "medium" | "high" | "xhigh" | "max";

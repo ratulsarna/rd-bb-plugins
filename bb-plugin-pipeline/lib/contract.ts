@@ -19,6 +19,7 @@ export const cardSchema = z
   .object({
     id: z.string(),
     projectId: z.string(),
+    hostId: z.string().nullable(),
     title: z.string(),
     body: z.string(),
     attachments: z.array(attachmentSchema),
@@ -67,10 +68,19 @@ export const rpcContract = defineRpcContract({
     input: z.object({ projectId: z.string(), includeDone: z.boolean() }).strict(),
     output: z.object({ cards: z.array(cardSchema) }).strict(),
   },
+  listMachines: {
+    input: z.object({ projectId: z.string().min(1) }).strict(),
+    output: z.object({
+      machines: z.array(
+        z.object({ id: z.string(), name: z.string(), status: z.string() }).strict(),
+      ),
+    }),
+  },
   addCard: {
     input: z
       .object({
         projectId: z.string().min(1),
+        hostId: z.string().trim().min(1),
         title: z.string().trim().min(1).max(500),
         body: z.string().max(20_000),
         attachments: z.array(attachmentSchema).max(20),
@@ -84,6 +94,12 @@ export const rpcContract = defineRpcContract({
   },
   retryLaunch: {
     input: z.object({ cardId: z.string() }).strict(),
+    output: cardSchema,
+  },
+  setMachine: {
+    input: z
+      .object({ cardId: z.string(), hostId: z.string().trim().min(1) })
+      .strict(),
     output: cardSchema,
   },
   removeCard: {

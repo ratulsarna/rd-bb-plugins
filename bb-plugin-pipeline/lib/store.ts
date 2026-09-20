@@ -14,6 +14,8 @@ export interface CardAttachment {
 export interface Card {
   id: string;
   projectId: string;
+  /** Machine the card runs on; null only for rows created before machines were mandatory. */
+  hostId: string | null;
   title: string;
   body: string;
   attachments: CardAttachment[];
@@ -80,6 +82,7 @@ export type CardPatch = Partial<
 interface CardRow {
   id: string;
   project_id: string;
+  host_id: string | null;
   title: string;
   body: string;
   attachments: string;
@@ -141,6 +144,7 @@ export const MIGRATIONS = [
         WHERE card_history.card_id = cards.id
           AND card_history.to_column = 'planning'
       );`,
+  `ALTER TABLE cards ADD COLUMN host_id TEXT;`,
 ] as const;
 
 export function roleThread(card: Card, role: CardOwnerRole): string | null {
@@ -164,6 +168,7 @@ function cardFromRow(row: CardRow): Card {
   return {
     id: row.id,
     projectId: row.project_id,
+    hostId: row.host_id,
     title: row.title,
     body: row.body,
     attachments: parseAttachments(row.attachments),
@@ -205,11 +210,14 @@ export interface CardStore {
   create(input: {
     id: string;
     projectId: string;
+    hostId: string;
     title: string;
     body: string;
     attachments: CardAttachment[];
     source: string;
   }): Card;
+  /** One-time machine assignment for legacy cards; refuses to move an assigned card. */
+  setHost(id: string, hostId: string): Card;
   get(id: string): Card | null;
   getByThread(threadId: string): Card | null;
   list(projectId: string, includeDone?: boolean): Card[];
@@ -285,11 +293,12 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       const at = now();
       db.prepare(
         `INSERT INTO cards
-          (id, project_id, title, body, attachments, "column", created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'backlog', ?, ?)`,
+          (id, project_id, host_id, title, body, attachments, "column", created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'backlog', ?, ?)`,
       ).run(
         input.id,
         input.projectId,
+        input.hostId,
         input.title,
         input.body,
         JSON.stringify(input.attachments),
@@ -298,6 +307,21 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       );
       addHistory(input.id, { kind: "created", source: input.source });
       return read(input.id)!;
+    }),
+    setHost: db.transaction((id: string, hostId: string): Card => {
+      const current = read(id);
+      if (current === null) throw new Error(`unknown card ${id}`);
+      if (current.hostId === hostId) return current;
+      if (current.hostId !== null) {
+        throw new Error(
+          `card ${id} is already assigned to machine ${current.hostId}`,
+        );
+      }
+      db.prepare(
+        "UPDATE cards SET host_id = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
+      ).run(hostId, now(), id);
+      addHistory(id, { kind: "machine_assigned", source: "system", note: hostId });
+      return read(id)!;
     }),
     get: read,
     getByThread(threadId) {

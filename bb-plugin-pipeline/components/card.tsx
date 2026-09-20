@@ -1,6 +1,8 @@
 import { useRef, type DragEventHandler, type MouseEvent } from "react";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import { ownerThread, type Card } from "@/lib/store";
+import type { PipelineMachine } from "@/lib/machines";
+import { MachineSelect } from "./machine-select";
 
 function attention(card: Card): string | null {
   if (card.needsUser) return card.attentionReason ?? "needs you";
@@ -11,9 +13,11 @@ function attention(card: Card): string | null {
 
 export function PipelineCard(props: {
   card: Card;
+  machines: PipelineMachine[];
+  onSetMachine(hostId: string): void;
   questionOpen: boolean;
   dragging: boolean;
-  moving: boolean;
+  pending: boolean;
   onDragStart: DragEventHandler<HTMLElement>;
   onDragEnd(): void;
   onOpen(threadId: string): void;
@@ -28,8 +32,8 @@ export function PipelineCard(props: {
   return (
     <article
       aria-label={props.card.title}
-      aria-busy={props.moving}
-      draggable={!props.moving}
+      aria-busy={props.pending}
+      draggable={!props.pending}
       onPointerDownCapture={(event) => {
         dragAllowed.current = !actionsRef.current?.contains(event.target as Node);
       }}
@@ -41,7 +45,7 @@ export function PipelineCard(props: {
         props.onDragStart(event);
       }}
       onDragEnd={props.onDragEnd}
-      className={`rounded-lg border border-border bg-card p-3 shadow-sm ${props.moving ? "cursor-wait" : "cursor-grab active:cursor-grabbing"} ${props.dragging ? "opacity-50" : ""}`}
+      className={`rounded-lg border border-border bg-card p-3 shadow-sm ${props.pending ? "cursor-wait" : "cursor-grab active:cursor-grabbing"} ${props.dragging ? "opacity-50" : ""}`}
     >
       <button
         type="button"
@@ -78,6 +82,19 @@ export function PipelineCard(props: {
         className="mt-2 flex flex-wrap items-center gap-2 text-xs"
         onClick={stop}
       >
+        {props.card.hostId === null ? (
+          <MachineSelect
+            machines={props.machines}
+            value=""
+            onChange={props.onSetMachine}
+            disabled={props.pending}
+            label={`Machine for ${props.card.title}`}
+          />
+        ) : (
+          <span className="w-full text-muted-foreground" title={props.card.hostId}>
+            Machine: {props.machines.find((machine) => machine.id === props.card.hostId)?.name ?? props.card.hostId}
+          </span>
+        )}
         {props.card.issueUrl === null ? null : (
           <a className="text-primary underline" href={props.card.issueUrl} target="_blank" rel="noreferrer">
             Issue
@@ -94,7 +111,7 @@ export function PipelineCard(props: {
             aria-label={`Move ${props.card.title}`}
             className="rounded border border-input bg-background px-1.5 py-1"
             value={props.card.column}
-            disabled={props.moving}
+            disabled={props.pending}
             onChange={(event) => props.onMove(event.target.value as Column)}
           >
             {COLUMNS.map((column) => (
@@ -108,6 +125,7 @@ export function PipelineCard(props: {
           <button
             type="button"
             className="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent hover:text-accent-foreground"
+            disabled={props.pending}
             onClick={props.onRetry}
           >
             Retry
@@ -116,6 +134,7 @@ export function PipelineCard(props: {
         <button
           type="button"
           className="inline-flex h-7 items-center justify-center rounded-md px-2 text-xs hover:bg-accent hover:text-accent-foreground"
+          disabled={props.pending}
           onClick={props.onRemove}
         >
           Remove

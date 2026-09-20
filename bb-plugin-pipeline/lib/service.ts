@@ -7,6 +7,7 @@ import type { Column } from "./columns";
 import type { IssueDetails } from "./issue";
 import type { JevResult } from "./jev";
 import { intakePrompt, leadPrompt } from "./prompts";
+import { resolveMachine } from "./machines";
 import {
   environmentFor,
   spawnRequest,
@@ -22,7 +23,6 @@ import type {
 import { ownerThread, roleThread } from "./store";
 
 export interface PipelineSettings {
-  hostId: string;
   providerId: string;
   model: string;
   reasoningLevel: string;
@@ -48,11 +48,13 @@ export interface ReportInput {
 export interface PipelineService {
   createCard(input: {
     projectId: string;
+    hostId: string;
     title: string;
     body?: string;
     attachments?: CardAttachment[];
     source: "ui" | "cli";
   }): Promise<Card>;
+  setMachine(cardId: string, hostId: string): Promise<Card>;
   launch(cardId: string, role: PipelineRole): Promise<Card>;
   retry(cardId: string): Promise<Card>;
   report(input: ReportInput): Promise<Card>;
@@ -123,7 +125,6 @@ function parseThreshold(value: string): number {
 }
 
 function launchSettings(settings: PipelineSettings): PipelineLaunchSettings {
-  if (settings.hostId.trim() === "") throw new Error("host id is empty");
   if (settings.providerId.trim() === "") throw new Error("provider id is empty");
   if (settings.model.trim() === "") throw new Error("model is empty");
   if (!(["low", "medium", "high", "xhigh", "max"] as const).includes(
@@ -186,11 +187,16 @@ export function createPipelineService(
     try {
       const configured = await dependencies.getSettings();
       const settings = launchSettings(configured);
+      if (card.hostId === null) {
+        throw new Error(
+          "card has no machine assigned; run `bb pipeline set-machine <card-id> --machine <id-or-name>`",
+        );
+      }
       const project = await sdk.projects.get({ projectId: card.projectId });
       const environment = await environmentFor(
         sdk,
         card.projectId,
-        settings.hostId,
+        card.hostId,
         role,
         project,
       );
@@ -558,10 +564,20 @@ export function createPipelineService(
     async createCard(input) {
       const title = input.title.trim();
       if (title === "") throw new Error("title is required");
+      const hostReference = input.hostId.trim();
+      if (hostReference === "") {
+        throw new Error("choose a machine for this card");
+      }
+      const machine = await resolveMachine(
+        dependencies.sdk,
+        input.projectId,
+        hostReference,
+      );
       const card = changed(
         store.create({
           id: (dependencies.id ?? (() => randomUUID().slice(0, 12)))(),
           projectId: input.projectId,
+          hostId: machine.id,
           title,
           body: input.body ?? "",
           attachments: input.attachments ?? [],
@@ -569,6 +585,20 @@ export function createPipelineService(
         }),
       );
       return launch(card.id, "intake");
+    },
+    async setMachine(cardId, hostId) {
+      const card = required(cardId);
+      const hostReference = hostId.trim();
+      if (hostReference === "") {
+        throw new Error("choose a machine for this card");
+      }
+      const machine = await resolveMachine(
+        dependencies.sdk,
+        card.projectId,
+        hostReference,
+      );
+      if (card.hostId === machine.id) return card;
+      return changed(store.setHost(card.id, machine.id));
     },
     launch,
     async retry(cardId) {

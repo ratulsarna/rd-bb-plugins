@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
+  makeHostResponse,
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
 import type { PluginBbSdk } from "@get-bb/plugin-sdk";
@@ -14,15 +15,26 @@ import {
   ownerThread,
   type CardAttachment,
 } from "../lib/store";
+import type { Database } from "better-sqlite3";
 
 const settings: PipelineSettings = {
-  hostId: "host_mac",
   providerId: "claude-code",
   model: "claude-fable-5-1",
   reasoningLevel: "high",
   permissionMode: "full",
   jevApiKey: "jev-key",
   jevThreshold: "0.7",
+};
+
+const projectSource = {
+  id: "source_1",
+  projectId: "proj_1",
+  type: "local_path",
+  hostId: "host_mac",
+  path: "/repo",
+  isDefault: true,
+  createdAt: 1,
+  updatedAt: 1,
 };
 
 const project = {
@@ -32,19 +44,34 @@ const project = {
   gitRemoteUrl: "https://github.com/example/repo",
   createdAt: 1,
   updatedAt: 1,
+  sources: [projectSource],
+};
+
+const twoMachineProject = {
+  ...project,
   sources: [
+    projectSource,
     {
-      id: "source_1",
+      id: "source_2",
       projectId: "proj_1",
       type: "local_path",
-      hostId: "host_mac",
-      path: "/repo",
-      isDefault: true,
+      hostId: "host_linux",
+      path: "/repo-linux",
+      isDefault: false,
       createdAt: 1,
       updatedAt: 1,
     },
   ],
 };
+
+const hostList = [
+  makeHostResponse({ id: "host_mac", name: "Mac", status: "connected" }),
+  makeHostResponse({
+    id: "host_linux",
+    name: "Linux box",
+    status: "disconnected",
+  }),
+];
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
@@ -57,6 +84,7 @@ function setup(options?: {
   getThread?: (input: { threadId: string }) => Promise<ReturnType<typeof makeThreadResponse>>;
   getThreadOutput?: (input: { threadId: string }) => Promise<{ output: string }>;
   project?: typeof project;
+  hosts?: typeof hostList;
   readIssue?: (url: string) => Promise<{ title: string; body: string; labels: string[] }>;
   classify?: (input: unknown) => Promise<{ decision: "needs" | "no" | "unknown"; probability: number | null }>;
   settings?: PipelineSettings;
@@ -71,6 +99,9 @@ function setup(options?: {
     sdk: {
       projects: {
         get: async () => (options?.project ?? project) as never,
+      },
+      hosts: {
+        list: async () => (options?.hosts ?? hostList) as never,
       },
       threads: {
         spawn: spawn as never,
@@ -110,21 +141,30 @@ function setup(options?: {
     publish,
     id: () => "card_new",
   });
-  return { host, store, service, spawn, classify, readIssue, publish, log };
+  return { host, db: host.bb.storage.database(), store, service, spawn, classify, readIssue, publish, log };
 }
 
 function seed(
   store: ReturnType<typeof setup>["store"],
-  options?: { id?: string; attachments?: CardAttachment[] },
+  options?: { id?: string; hostId?: string; attachments?: CardAttachment[] },
 ) {
   return store.create({
     id: options?.id ?? "card_1",
     projectId: "proj_1",
+    hostId: options?.hostId ?? "host_mac",
     title: "Build it",
     body: "Body",
     attachments: options?.attachments ?? [],
     source: "cli",
   });
+}
+
+/** A row from before machines were mandatory: no host_id. */
+function seedLegacyRow(db: Database, id = "card_legacy"): void {
+  db.prepare(
+    `INSERT INTO cards (id, project_id, title, "column", created_at, updated_at)
+     VALUES (?, 'proj_1', 'Legacy card', 'backlog', 100, 100)`,
+  ).run(id);
 }
 
 function thread(
@@ -1044,4 +1084,219 @@ describe("report and active state", () => {
     );
   });
 
+});
+
+describe("machine selection", () => {
+  it.each(["", "   "])(
+    "rejects a %j machine before creating a card or thread",
+    async (hostId) => {
+      const { store, service, spawn } = setup();
+
+      await expect(
+        service.createCard({
+          projectId: "proj_1",
+          hostId,
+          title: "Ship it",
+          source: "cli",
+        }),
+      ).rejects.toThrow("choose a machine for this card");
+
+      expect(store.list("proj_1", true)).toHaveLength(0);
+      expect(spawn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects an unknown machine before creating a card or thread", async () => {
+    const { store, service, spawn } = setup();
+
+    await expect(
+      service.createCard({
+        projectId: "proj_1",
+        hostId: "host_missing",
+        title: "Ship it",
+        source: "cli",
+      }),
+    ).rejects.toThrow('unknown machine "host_missing"');
+
+    expect(store.list("proj_1", true)).toHaveLength(0);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a machine without a project checkout before creating a card or thread", async () => {
+    const { store, service, spawn } = setup();
+
+    await expect(
+      service.createCard({
+        projectId: "proj_1",
+        hostId: "host_linux",
+        title: "Ship it",
+        source: "cli",
+      }),
+    ).rejects.toThrow('unknown machine "host_linux"');
+
+    expect(store.list("proj_1", true)).toHaveLength(0);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects an ambiguous machine name before creating a card or thread", async () => {
+    const { store, service, spawn } = setup({
+      project: twoMachineProject,
+      hosts: [
+        makeHostResponse({ id: "host_mac", name: "Box", status: "connected" }),
+        makeHostResponse({ id: "host_linux", name: "Box", status: "connected" }),
+      ],
+    });
+
+    await expect(
+      service.createCard({
+        projectId: "proj_1",
+        hostId: "Box",
+        title: "Ship it",
+        source: "cli",
+      }),
+    ).rejects.toThrow('machine "Box" is ambiguous');
+
+    expect(store.list("proj_1", true)).toHaveLength(0);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("launches intake on the selected machine when several have checkouts", async () => {
+    const { service, spawn } = setup({ project: twoMachineProject });
+
+    const card = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_linux",
+      title: "Ship it",
+      source: "cli",
+    });
+
+    expect(card.hostId).toBe("host_linux");
+    expect(spawn).toHaveBeenCalledOnce();
+    const request = spawn.mock.calls[0]![0] as {
+      environment: { hostId: string; workspace: { type: string; path: string } };
+    };
+    expect(request.environment.hostId).toBe("host_linux");
+    expect(request.environment.workspace).toEqual({
+      type: "unmanaged",
+      path: "/repo-linux",
+    });
+  });
+
+  it("keeps the selected machine for the lead launch and a retry", async () => {
+    let leadFails = true;
+    let nextThread = 1;
+    const { store, service, spawn } = setup({
+      project: twoMachineProject,
+      spawn: async (request) => {
+        const role = (
+          request as { pluginMetadata?: { role?: string } }
+        ).pluginMetadata?.role;
+        if (role === "lead" && leadFails) throw new Error("host offline");
+        return makeThreadResponse({ id: `thr_${nextThread++}` });
+      },
+    });
+    const card = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_linux",
+      title: "Ship it",
+      source: "cli",
+    });
+
+    await service.report({
+      cardId: card.id,
+      issueUrl: "https://github.com/o/r/issues/1",
+      column: "planning",
+    });
+    expect(store.get(card.id)?.launchError).toContain("lead: host offline");
+
+    leadFails = false;
+    const retried = await service.retry(card.id);
+    expect(retried.leadThreadId).not.toBeNull();
+
+    const launchedHosts = spawn.mock.calls.map(
+      (call) =>
+        (call[0] as { environment: { hostId: string } }).environment.hostId,
+    );
+    expect(launchedHosts).toEqual([
+      "host_linux",
+      "host_linux",
+      "host_linux",
+    ]);
+  });
+
+  it("fails a legacy card's launch clearly until a machine is assigned", async () => {
+    const { db, store, service, spawn } = setup();
+    seedLegacyRow(db);
+
+    await service.launch("card_legacy", "intake");
+
+    expect(store.get("card_legacy")?.launchError).toContain(
+      "card has no machine assigned",
+    );
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("assigns a machine to a legacy card once and enables launches", async () => {
+    const { db, store, service, spawn } = setup();
+    seedLegacyRow(db);
+
+    const assigned = await service.setMachine("card_legacy", "Mac");
+
+    expect(assigned.hostId).toBe("host_mac");
+    expect(assigned.revision).toBe(1);
+    expect(store.history("card_legacy").at(-1)).toMatchObject({
+      kind: "machine_assigned",
+      note: "host_mac",
+    });
+
+    await service.launch("card_legacy", "intake");
+
+    expect(spawn).toHaveBeenCalledOnce();
+    const request = spawn.mock.calls[0]![0] as {
+      environment: { hostId: string };
+    };
+    expect(request.environment.hostId).toBe("host_mac");
+  });
+
+  it("rejects changing an assigned card's machine but allows the same machine", async () => {
+    const { store, service } = setup({ project: twoMachineProject });
+    seed(store);
+    const before = store.get("card_1")!;
+    const historyLength = store.history("card_1").length;
+
+    await expect(
+      service.setMachine("card_1", "host_linux"),
+    ).rejects.toThrow("already assigned to machine host_mac");
+
+    await service.setMachine("card_1", "host_mac");
+
+    expect(store.get("card_1")).toEqual(before);
+    expect(store.history("card_1")).toHaveLength(historyLength);
+  });
+
+  it("rejects setMachine for an unknown machine without changing the card", async () => {
+    const { db, store, service } = setup();
+    seedLegacyRow(db);
+
+    await expect(
+      service.setMachine("card_legacy", "host_missing"),
+    ).rejects.toThrow('unknown machine "host_missing"');
+    expect(store.get("card_legacy")?.hostId).toBeNull();
+  });
+
+  it("resolves an exact machine id before its name", async () => {
+    const { db, store, service } = setup({
+      project: twoMachineProject,
+      hosts: [
+        makeHostResponse({ id: "host_mac", name: "host_linux" }),
+        makeHostResponse({ id: "host_linux", name: "Linux box" }),
+      ],
+    });
+    seedLegacyRow(db);
+
+    const assigned = await service.setMachine("card_legacy", "host_linux");
+
+    expect(assigned.hostId).toBe("host_linux");
+    expect(store.get("card_legacy")?.hostId).toBe("host_linux");
+  });
 });

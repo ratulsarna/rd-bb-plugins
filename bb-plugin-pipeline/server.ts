@@ -3,6 +3,7 @@ import { createPipelineCli } from "./lib/cli";
 import { rpcContract } from "./lib/contract";
 import { readIssue } from "./lib/issue";
 import { askJev } from "./lib/jev";
+import { listProjectMachines } from "./lib/machines";
 import { createPipelineService } from "./lib/service";
 import { createCardStore, MIGRATIONS } from "./lib/store";
 
@@ -13,11 +14,6 @@ const CARDS_CHANGED = "cards:changed";
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
-    hostId: {
-      type: "string",
-      label: "Machine id for pipeline threads",
-      default: "host_wt5difpwsy",
-    },
     providerId: {
       type: "string",
       label: "Provider",
@@ -76,6 +72,12 @@ export default async function plugin(bb: BbPluginApi) {
     },
     listCards({ projectId, includeDone }) {
       return { cards: store.list(projectId, includeDone) };
+    },
+    async listMachines({ projectId }) {
+      return { machines: await listProjectMachines(bb.sdk, projectId) };
+    },
+    setMachine({ cardId, hostId }) {
+      return service.setMachine(cardId, hostId);
     },
     addCard(input) {
       return service.createCard({ ...input, source: "ui" });

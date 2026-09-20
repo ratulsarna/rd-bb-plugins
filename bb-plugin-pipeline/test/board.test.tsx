@@ -24,8 +24,10 @@ function renderBoard(options?: {
   connection?: "connecting" | "connected" | "reconnecting";
   listProjects?: ReturnType<typeof vi.fn>;
   listCards?: ReturnType<typeof vi.fn>;
+  listMachines?: ReturnType<typeof vi.fn>;
   addCard?: ReturnType<typeof vi.fn>;
   moveCard?: ReturnType<typeof vi.fn>;
+  setMachine?: ReturnType<typeof vi.fn>;
 }) {
   const listProjects =
     options?.listProjects ??
@@ -54,6 +56,10 @@ function renderBoard(options?: {
       rpc: {
         listProjects,
         listCards,
+        listMachines: options?.listMachines ?? (() => ({
+          machines: [{ id: "host_mac", name: "MacBook", status: "connected" }],
+        })),
+        setMachine: options?.setMachine ?? (() => makeCard()),
         addCard: options?.addCard ?? (() => makeCard()),
         moveCard:
           options?.moveCard ??
@@ -190,6 +196,9 @@ describe("pipeline board", () => {
     fireEvent.change(screen.getByLabelText("Card title"), {
       target: { value: "Broken card" },
     });
+    fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), {
+      target: { value: "host_mac" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain(
@@ -198,6 +207,78 @@ describe("pipeline board", () => {
     expect((screen.getByLabelText("Card title") as HTMLInputElement).value).toBe(
       "Broken card",
     );
+    expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe("host_mac");
+  });
+
+  it("requires an explicit machine for every new card, even with only one available", async () => {
+    const addCard = vi.fn(() => makeCard());
+    renderBoard({ addCard });
+    await screen.findByText("A pipeline card");
+    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
+    fireEvent.change(screen.getByLabelText("Card title"), { target: { value: "Task" } });
+
+    const machine = screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement;
+    expect(machine.value).toBe("");
+    fireEvent.submit(machine.closest("form")!);
+    expect(addCard).not.toHaveBeenCalled();
+
+    fireEvent.change(machine, { target: { value: "host_mac" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(addCard).toHaveBeenCalledExactlyOnceWith({
+      projectId: "proj_1", hostId: "host_mac", title: "Task", body: "", attachments: [],
+    }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add card" }));
+    expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe("");
+  });
+
+  it("requires a fresh machine choice after switching projects", async () => {
+    const addCard = vi.fn(() => makeCard());
+    renderBoard({
+      projects: [{ id: "proj_1", name: "One" }, { id: "proj_2", name: "Two" }],
+      addCard,
+    });
+    await screen.findByText("A pipeline card");
+    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "host_mac" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Project" }), { target: { value: "proj_2" } });
+    await waitFor(() => expect((screen.getByRole("button", { name: "Add card" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
+    const machine = screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement;
+    expect(machine.value).toBe("");
+    fireEvent.change(screen.getByLabelText("Card title"), { target: { value: "New project task" } });
+    fireEvent.submit(machine.closest("form")!);
+    expect(addCard).not.toHaveBeenCalled();
+  });
+
+  it("cannot create a card when the project has no machine checkout", async () => {
+    const addCard = vi.fn(() => makeCard());
+    renderBoard({ addCard, listMachines: vi.fn(() => ({ machines: [] })) });
+    await screen.findByText("A pipeline card");
+    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
+    fireEvent.change(screen.getByLabelText("Card title"), { target: { value: "Task" } });
+    expect(screen.getByText("This project has no machine with a checkout.")).toBeTruthy();
+    const machine = screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement;
+    expect(machine.disabled).toBe(true);
+    fireEvent.submit(machine.closest("form")!);
+    expect(addCard).not.toHaveBeenCalled();
+  });
+
+  it("assigns an existing card only after a machine is explicitly selected", async () => {
+    let card = makeCard({ hostId: null });
+    const setMachine = vi.fn((input: unknown) => {
+      card = { ...card, hostId: (input as { hostId: string }).hostId };
+      return card;
+    });
+    renderBoard({ listCards: vi.fn(() => ({ cards: [card] })), setMachine });
+    const machine = await screen.findByRole("combobox", { name: "Machine for A pipeline card" });
+    expect((machine as HTMLSelectElement).value).toBe("");
+    expect(setMachine).not.toHaveBeenCalled();
+
+    fireEvent.change(machine, { target: { value: "host_mac" } });
+
+    await screen.findByText("Machine: MacBook");
+    expect(setMachine).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1", hostId: "host_mac" });
+    expect(screen.queryByRole("combobox", { name: "Machine for A pipeline card" })).toBeNull();
   });
 
   it("shows the error from a rejected move", async () => {
@@ -238,6 +319,7 @@ describe("pipeline board", () => {
 
     await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: card.id, column: "todo" }));
     expect(drag.card.draggable).toBe(false);
+    expect((within(drag.card).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("combobox", { name: `Move ${card.title}` }) as HTMLSelectElement).disabled).toBe(true);
     fireEvent.drop(target, drag);
     expect(moveCard).toHaveBeenCalledTimes(1);
@@ -420,6 +502,9 @@ describe("pipeline board", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add card" }));
     fireEvent.change(screen.getByLabelText("Card title"), {
       target: { value: "Too many files" },
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), {
+      target: { value: "host_mac" },
     });
     fireEvent.change(screen.getByLabelText("Card attachments"), {
       target: {

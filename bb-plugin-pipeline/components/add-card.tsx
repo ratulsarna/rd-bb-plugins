@@ -1,20 +1,25 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
+import type { PipelineMachine } from "@/lib/machines";
+import { MachineSelect } from "./machine-select";
 
 export function AddCard(props: {
   disabled: boolean;
-  onAdd(title: string, body: string, files: File[]): Promise<void>;
+  machines: PipelineMachine[];
+  onAdd(title: string, body: string, files: File[], hostId: string): Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [hostId, setHostId] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const selectedHostId = props.machines.some((machine) => machine.id === hostId) ? hostId : "";
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (title.trim() === "" || pending) return;
+    if (title.trim() === "" || selectedHostId === "" || props.disabled || pending) return;
     if (files.length > 20) {
       setError("Choose at most 20 attachments.");
       return;
@@ -22,10 +27,11 @@ export function AddCard(props: {
     setPending(true);
     setError(null);
     try {
-      await props.onAdd(title.trim(), body, files);
+      await props.onAdd(title.trim(), body, files, selectedHostId);
       setTitle("");
       setBody("");
       setFiles([]);
+      setHostId("");
       setError(null);
       setOpen(false);
     } catch {
@@ -40,7 +46,10 @@ export function AddCard(props: {
         type="button"
         className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
         disabled={props.disabled}
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          setHostId("");
+          setOpen(true);
+        }}
       >
         Add card
       </button>
@@ -49,6 +58,15 @@ export function AddCard(props: {
 
   return (
     <form onSubmit={submit} className="space-y-2 rounded-lg border border-border bg-card p-3">
+      <MachineSelect
+        machines={props.machines}
+        value={selectedHostId}
+        onChange={setHostId}
+        disabled={pending || props.disabled}
+      />
+      {props.machines.length === 0 ? (
+        <p className="text-xs text-muted-foreground">This project has no machine with a checkout.</p>
+      ) : null}
       <input
         aria-label="Card title"
         placeholder="Card title"
@@ -83,7 +101,7 @@ export function AddCard(props: {
         <button
           type="submit"
           className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
-          disabled={pending || title.trim() === ""}
+          disabled={props.disabled || pending || title.trim() === "" || selectedHostId === ""}
         >
           {pending ? "Adding…" : "Add"}
         </button>

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createFakePluginHost,
+  makeHostResponse,
   makePluginAgentConfigurationContext,
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
+import type { Database } from "better-sqlite3";
 import plugin from "../server";
 
 const skillIds = [
@@ -23,6 +25,7 @@ afterEach(async () => {
 
 async function setup(options?: {
   listInteractions?: () => Promise<unknown[]>;
+  secondCheckout?: boolean;
 }) {
   const host = createFakePluginHost({
     pluginId: "pipeline",
@@ -49,8 +52,37 @@ async function setup(options?: {
                 createdAt: 1,
                 updatedAt: 1,
               },
+              ...(options?.secondCheckout
+                ? [
+                    {
+                      id: "source_2",
+                      projectId: "proj_1",
+                      type: "local_path",
+                      hostId: "host_no_checkout",
+                      path: "/repo-2",
+                      isDefault: false,
+                      createdAt: 1,
+                      updatedAt: 1,
+                    },
+                  ]
+                : []),
             ],
           }) as never,
+      },
+      hosts: {
+        list: async () =>
+          [
+            makeHostResponse({
+              id: "host_wt5difpwsy",
+              name: "Work laptop",
+              status: "connected",
+            }),
+            makeHostResponse({
+              id: "host_no_checkout",
+              name: "Headless box",
+              status: "connected",
+            }),
+          ] as never,
       },
       threads: {
         spawn: async () => makeThreadResponse({ id: "intake" }),
@@ -62,15 +94,22 @@ async function setup(options?: {
   });
   hosts.push(host);
   await plugin(host.bb);
-  return host;
+  return { host, db: host.bb.storage.database() as Database };
+}
+
+function seedLegacyCard(db: Database, id = "card_legacy"): void {
+  db.prepare(
+    `INSERT INTO cards (id, project_id, title, "column", created_at, updated_at)
+     VALUES (?, 'proj_1', 'Legacy card', 'backlog', 1, 1)`,
+  ).run(id);
 }
 
 describe("plugin wiring", () => {
   it("creates a card through the CLI and exposes it through RPC", async () => {
-    const host = await setup();
+    const { host } = await setup();
 
     const result = await host.harness.behavior.runCli(
-      ["add", "--title", "Ship it", "--json"],
+      ["add", "--title", "Ship it", "--machine", "Work laptop", "--json"],
       { projectId: "proj_1" },
     );
     const cards = (await host.harness.behavior.callRpc("listCards", {
@@ -79,12 +118,131 @@ describe("plugin wiring", () => {
     })) as { cards: unknown[] };
 
     expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ title: "Ship it", intakeThreadId: "intake" });
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      title: "Ship it",
+      hostId: "host_wt5difpwsy",
+      intakeThreadId: "intake",
+    });
     expect(cards.cards).toHaveLength(1);
   });
 
+  it("rejects add without an explicit machine", async () => {
+    const { host } = await setup();
+
+    const result = await host.harness.behavior.runCli(
+      ["add", "--title", "Ship it"],
+      { projectId: "proj_1" },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("add requires --machine");
+  });
+
+  it("rejects an unknown machine name without creating a card", async () => {
+    const { host } = await setup();
+
+    const result = await host.harness.behavior.runCli(
+      ["add", "--title", "Ship it", "--machine", "Ghost rig"],
+      { projectId: "proj_1" },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('unknown machine "Ghost rig"');
+    expect(
+      (await host.harness.behavior.callRpc("listCards", {
+        projectId: "proj_1",
+        includeDone: true,
+      })) as { cards: unknown[] },
+    ).toMatchObject({ cards: [] });
+  });
+
+  it("rejects --machine on commands that do not accept it", async () => {
+    const { host } = await setup();
+
+    const result = await host.harness.behavior.runCli(
+      ["list", "--machine", "host_wt5difpwsy"],
+      { projectId: "proj_1" },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--machine is only accepted by add and set-machine");
+  });
+
+  it("requires hostId on the addCard RPC", async () => {
+    const { host } = await setup();
+
+    await expect(
+      host.harness.behavior.callRpc("addCard", {
+        projectId: "proj_1",
+        title: "Ship it",
+        body: "",
+        attachments: [],
+      }),
+    ).rejects.toThrow("rpc input validation failed");
+  });
+
+  it("lists only machines with a local project checkout", async () => {
+    const { host } = await setup();
+
+    await expect(
+      host.harness.behavior.callRpc("listMachines", { projectId: "proj_1" }),
+    ).resolves.toEqual({
+      machines: [
+        { id: "host_wt5difpwsy", name: "Work laptop", status: "connected" },
+      ],
+    });
+  });
+
+  it("rejects setMachine on a card that already has a machine", async () => {
+    const { host, db } = await setup({ secondCheckout: true });
+    seedLegacyCard(db);
+    await host.harness.behavior.callRpc("setMachine", {
+      cardId: "card_legacy",
+      hostId: "host_wt5difpwsy",
+    });
+
+    await expect(
+      host.harness.behavior.callRpc("setMachine", {
+        cardId: "card_legacy",
+        hostId: "host_no_checkout",
+      }),
+    ).rejects.toThrow("already assigned to machine host_wt5difpwsy");
+  });
+
+  it("rejects setMachine for a machine without a project checkout", async () => {
+    const { host, db } = await setup();
+    seedLegacyCard(db);
+
+    await expect(
+      host.harness.behavior.callRpc("setMachine", {
+        cardId: "card_legacy",
+        hostId: "host_no_checkout",
+      }),
+    ).rejects.toThrow('unknown machine "host_no_checkout"');
+  });
+
+  it("assigns a legacy card through the set-machine CLI and exposes the machine", async () => {
+    const { host, db } = await setup();
+    seedLegacyCard(db);
+
+    const result = await host.harness.behavior.runCli(
+      ["set-machine", "card_legacy", "--machine", "Work laptop", "--json"],
+      { projectId: "proj_1" },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      id: "card_legacy",
+      hostId: "host_wt5difpwsy",
+    });
+    const shown = (await host.harness.behavior.callRpc("showCard", {
+      cardId: "card_legacy",
+    })) as { card: { hostId: string | null } };
+    expect(shown.card.hostId).toBe("host_wt5difpwsy");
+  });
+
   it("selects role-specific skills with an explicit empty tool set", async () => {
-    const host = await setup();
+    const { host } = await setup();
     const base = makePluginAgentConfigurationContext({
       origin: { kind: null, pluginId: "pipeline" },
     });
@@ -107,13 +265,13 @@ describe("plugin wiring", () => {
   });
 
   it("shows card history when owner interactions are unavailable", async () => {
-    const host = await setup({
+    const { host } = await setup({
       listInteractions: async () => {
         throw new Error("thread not found");
       },
     });
     const added = await host.harness.behavior.runCli(
-      ["add", "--title", "Deleted owner", "--json"],
+      ["add", "--title", "Deleted owner", "--machine", "host_wt5difpwsy", "--json"],
       { projectId: "proj_1" },
     );
     const card = JSON.parse(added.stdout) as { id: string };

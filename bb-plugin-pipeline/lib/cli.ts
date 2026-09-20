@@ -11,12 +11,13 @@ import { ownerThread } from "./store";
 import type { Card, CardAttachment, CardStore } from "./store";
 
 const USAGE = `Usage:
-  bb pipeline add --title <text> [--body <text>] [--attachment <uploaded-path>]... [--project <id>] [--json]
+  bb pipeline add --title <text> --machine <id-or-name> [--body <text>] [--attachment <uploaded-path>]... [--project <id>] [--json]
   bb pipeline list [--project <id>] [--all] [--json]
   bb pipeline show <card-id> [--json]
   bb pipeline move <card-id> <column> [--json]
   bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>] [--json]
   bb pipeline retry <card-id> [--json]
+  bb pipeline set-machine <card-id> --machine <id-or-name> [--json]
   bb pipeline remove <card-id> [--json]
 
 Columns: ${COLUMNS.join(", ")}`;
@@ -26,6 +27,7 @@ const VALUE_OPTIONS = new Set([
   "body",
   "attachment",
   "project",
+  "machine",
   "card",
   "column",
   "needs-you",
@@ -34,6 +36,7 @@ const VALUE_OPTIONS = new Set([
   "tier",
 ]);
 const BOOLEAN_OPTIONS = new Set(["json", "all", "working"]);
+const MACHINE_COMMANDS = new Set(["add", "set-machine"]);
 
 interface ParsedArgs {
   command?: string;
@@ -113,6 +116,7 @@ function attachment(path: string): CardAttachment {
 function formatCard(card: Card): string {
   const flags = [
     card.tier,
+    card.hostId === null ? "machine: unassigned" : `machine: ${card.hostId}`,
     card.needsUser ? `needs you: ${card.attentionReason ?? "unknown"}` : null,
     card.attentionUnknown ? "idle, unchecked" : null,
     card.launchError,
@@ -129,12 +133,13 @@ export function createPipelineCli(input: {
     name: "pipeline",
     summary: "Manage pipeline cards and report delivery progress",
     commands: [
-      { name: "add", summary: "Add a card", usage: "bb pipeline add --title <text> [options]" },
+      { name: "add", summary: "Add a card", usage: "bb pipeline add --title <text> --machine <id-or-name> [options]" },
       { name: "list", summary: "List cards", usage: "bb pipeline list [--project <id>] [--all] [--json]" },
       { name: "show", summary: "Show a card", usage: "bb pipeline show <card-id> [--json]" },
       { name: "move", summary: "Move a card", usage: "bb pipeline move <card-id> <column> [--json]" },
       { name: "report", summary: "Report phase or attention", usage: "bb pipeline report [options]" },
       { name: "retry", summary: "Retry a failed launch", usage: "bb pipeline retry <card-id> [--json]" },
+      { name: "set-machine", summary: "Assign a machine to a card that has none", usage: "bb pipeline set-machine <card-id> --machine <id-or-name> [--json]" },
       { name: "remove", summary: "Remove a card", usage: "bb pipeline remove <card-id> [--json]" },
     ],
     async run(argv, context) {
@@ -152,6 +157,12 @@ export function createPipelineCli(input: {
       ) {
         return { exitCode: 0, stdout: USAGE };
       }
+      if (args.options.has("machine") && !MACHINE_COMMANDS.has(args.command!)) {
+        return failure(
+          `--machine is only accepted by add and set-machine, not ${args.command}`,
+          USAGE,
+        );
+      }
 
       try {
         switch (args.command) {
@@ -160,8 +171,13 @@ export function createPipelineCli(input: {
             if (title === undefined || args.positionals.length > 0) {
               return failure("add requires --title and no positional arguments", USAGE);
             }
+            const machine = option(args, "machine");
+            if (machine === undefined) {
+              return failure("add requires --machine <id-or-name>", USAGE);
+            }
             const card = await input.service.createCard({
               projectId: projectId(args, context),
+              hostId: machine,
               title,
               body: option(args, "body") ?? "",
               attachments: (args.options.get("attachment") ?? []).map(attachment),
@@ -252,6 +268,15 @@ export function createPipelineCli(input: {
             if (args.positionals.length !== 1) return failure("retry requires one card id", USAGE);
             const card = await input.service.retry(args.positionals[0]!);
             return success(args, card, formatCard(card));
+          }
+          case "set-machine": {
+            if (args.positionals.length !== 1) return failure("set-machine requires one card id", USAGE);
+            const machine = option(args, "machine");
+            if (machine === undefined) {
+              return failure("set-machine requires --machine <id-or-name>", USAGE);
+            }
+            const card = await input.service.setMachine(args.positionals[0]!, machine);
+            return success(args, card, `Assigned ${formatCard(card)}`);
           }
           case "remove": {
             if (args.positionals.length !== 1) return failure("remove requires one card id", USAGE);

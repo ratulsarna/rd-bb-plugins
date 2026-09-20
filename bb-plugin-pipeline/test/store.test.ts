@@ -24,4 +24,62 @@ describe("card migrations", () => {
       db.close();
     }
   });
+
+  it("reads preexisting rows as unassigned after the host_id migration", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(MIGRATIONS[0]);
+      db.exec(MIGRATIONS[1]);
+      db.prepare(
+        `INSERT INTO cards (id, project_id, title, "column", created_at, updated_at)
+         VALUES ('card_1', 'proj_1', 'Existing card', 'todo', 1, 1)`,
+      ).run();
+
+      db.exec(MIGRATIONS[2]);
+
+      expect(createCardStore(db).get("card_1")?.hostId).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("card machines", () => {
+  it("assigns a legacy card exactly once: history plus revision on first, no-op on same, refusal on change", () => {
+    const db = new Database(":memory:");
+    for (const migration of MIGRATIONS) db.exec(migration);
+    try {
+      const store = createCardStore(db, (() => {
+        let now = 100;
+        return () => now++;
+      })());
+      db.prepare(
+        `INSERT INTO cards (id, project_id, title, "column", created_at, updated_at)
+         VALUES ('card_1', 'proj_1', 'Legacy card', 'backlog', 1, 1)`,
+      ).run();
+      const unassigned = store.get("card_1")!;
+      expect(unassigned.hostId).toBeNull();
+      const historyLength = store.history("card_1").length;
+
+      const assigned = store.setHost("card_1", "host_mac");
+      expect(assigned).toMatchObject({
+        hostId: "host_mac",
+        revision: unassigned.revision + 1,
+      });
+      expect(store.history("card_1").at(-1)).toMatchObject({
+        kind: "machine_assigned",
+        note: "host_mac",
+      });
+
+      expect(store.setHost("card_1", "host_mac")).toEqual(assigned);
+      expect(store.history("card_1")).toHaveLength(historyLength + 1);
+
+      expect(() => store.setHost("card_1", "host_linux")).toThrow(
+        "already assigned to machine host_mac",
+      );
+      expect(store.get("card_1")?.hostId).toBe("host_mac");
+    } finally {
+      db.close();
+    }
+  });
 });

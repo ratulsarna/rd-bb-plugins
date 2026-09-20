@@ -12,6 +12,7 @@ import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import { ownerThread, type Card, type CardAttachment } from "@/lib/store";
 import { AddCard } from "./add-card";
 import { PipelineCard } from "./card";
+import type { PipelineMachine } from "@/lib/machines";
 
 const PROJECT_KEY = "pipeline:selected-project";
 const CARD_DRAG_TYPE = "application/x-bb-pipeline-card";
@@ -50,13 +51,14 @@ export function PipelineBoard() {
   const connection = useRealtimeConnectionState();
   const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [machines, setMachines] = useState<PipelineMachine[]>([]);
   const [includeDone, setIncludeDone] = useState(false);
   const [cards, setCards] = useState<Awaited<ReturnType<typeof rpc.call<"listCards">>>["cards"]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
   const [dropColumn, setDropColumn] = useState<Column | null>(null);
-  const [movingCards, setMovingCards] = useState<Set<string>>(new Set());
+  const [pendingCards, setPendingCards] = useState<Set<string>>(new Set());
   const requestSequence = useRef(0);
   const projectIdRef = useRef<string | null>(null);
   const includeDoneRef = useRef(false);
@@ -82,13 +84,18 @@ export function PipelineBoard() {
 
       if (selected === null) {
         setCards([]);
+        setMachines([]);
       } else {
-        const result = await rpc.call("listCards", {
-          projectId: selected,
-          includeDone: includeDoneRef.current,
-        });
+        const [result, machineResult] = await Promise.all([
+          rpc.call("listCards", {
+            projectId: selected,
+            includeDone: includeDoneRef.current,
+          }),
+          rpc.call("listMachines", { projectId: selected }),
+        ]);
         if (request !== requestSequence.current) return;
         setCards(result.cards);
+        setMachines(machineResult.machines);
       }
       setError(null);
       setLoading(false);
@@ -132,19 +139,19 @@ export function PipelineBoard() {
     setDropColumn(null);
   }
 
-  async function move(card: Card, column: Column) {
-    if (card.column === column || movingCards.has(card.id) || card.projectId !== projectIdRef.current) return;
-    setMovingCards((current) => new Set(current).add(card.id));
+  async function updateCard(card: Card, update: () => Promise<unknown>) {
+    if (pendingCards.has(card.id) || card.projectId !== projectIdRef.current) return;
+    setPendingCards((current) => new Set(current).add(card.id));
     setError(null);
     try {
-      await rpc.call("moveCard", { cardId: card.id, column });
+      await update();
       await load();
     } catch (cause) {
       if (projectIdRef.current === card.projectId) {
         setError(cause instanceof Error ? cause.message : String(cause));
       }
     } finally {
-      setMovingCards((current) => {
+      setPendingCards((current) => {
         const next = new Set(current);
         next.delete(card.id);
         return next;
@@ -152,22 +159,23 @@ export function PipelineBoard() {
     }
   }
 
-  async function add(title: string, body: string, files: File[]) {
+  function move(card: Card, column: Column) {
+    if (card.column === column) return;
+    void updateCard(card, () => rpc.call("moveCard", { cardId: card.id, column }));
+  }
+
+  async function add(title: string, body: string, files: File[], hostId: string) {
     const targetProjectId = projectIdRef.current;
     if (targetProjectId === null) return;
     try {
       const attachments = await Promise.all(files.map((file) => upload(targetProjectId, file)));
-      await rpc.call("addCard", { projectId: targetProjectId, title, body, attachments });
+      await rpc.call("addCard", { projectId: targetProjectId, hostId, title, body, attachments });
       await load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       throw cause;
     }
   }
-
-  const mutate = (promise: Promise<unknown>) => {
-    promise.then(load, (cause) => setError(cause instanceof Error ? cause.message : String(cause)));
-  };
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden p-4">
@@ -185,6 +193,7 @@ export function PipelineBoard() {
               localStorage.setItem(PROJECT_KEY, next);
               setProjectId(next);
               setCards([]);
+              setMachines([]);
               clearDrag();
               void load();
             }}
@@ -209,7 +218,7 @@ export function PipelineBoard() {
           Show done
         </label>
         <div className="ml-auto w-full max-w-md">
-          <AddCard disabled={projectId === null} onAdd={add} />
+          <AddCard key={projectId} disabled={projectId === null || loading} machines={machines} onAdd={add} />
         </div>
       </div>
       {error === null ? null : <p role="alert" className="mb-3 text-sm text-destructive">{error}</p>}
@@ -223,7 +232,7 @@ export function PipelineBoard() {
                 aria-label={COLUMN_LABELS[column]}
                 className={`flex w-72 flex-col rounded-lg p-2 ${draggedCard && dropColumn === column ? "bg-primary/10 ring-2 ring-inset ring-primary" : "bg-muted/40"}`}
                 onDragOver={(event) => {
-                  if (!draggedCard || draggedCard.column === column || movingCards.has(draggedCard.id) || !event.dataTransfer.types.includes(CARD_DRAG_TYPE)) return;
+                  if (!draggedCard || draggedCard.column === column || pendingCards.has(draggedCard.id) || !event.dataTransfer.types.includes(CARD_DRAG_TYPE)) return;
                   event.preventDefault();
                   event.dataTransfer.dropEffect = "move";
                   setDropColumn(column);
@@ -250,10 +259,12 @@ export function PipelineBoard() {
                       <PipelineCard
                         key={card.id}
                         card={card}
+                        machines={machines}
+                        onSetMachine={(hostId) => void updateCard(card, () => rpc.call("setMachine", { cardId: card.id, hostId }))}
                         dragging={draggedCardId === card.id}
-                        moving={movingCards.has(card.id)}
+                        pending={pendingCards.has(card.id)}
                         onDragStart={(event) => {
-                          if (movingCards.has(card.id)) {
+                          if (pendingCards.has(card.id)) {
                             event.preventDefault();
                             return;
                           }
@@ -265,8 +276,8 @@ export function PipelineBoard() {
                         questionOpen={owner !== null && pendingThreads.has(owner)}
                         onOpen={(threadId) => navigate.toThread(threadId)}
                         onMove={(next) => void move(card, next)}
-                        onRetry={() => mutate(rpc.call("retryLaunch", { cardId: card.id }))}
-                        onRemove={() => mutate(rpc.call("removeCard", { cardId: card.id }))}
+                        onRetry={() => void updateCard(card, () => rpc.call("retryLaunch", { cardId: card.id }))}
+                        onRemove={() => void updateCard(card, () => rpc.call("removeCard", { cardId: card.id }))}
                       />
                     );
                   })}
