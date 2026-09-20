@@ -568,4 +568,11 @@ describe("pipeline board", () => {
     expect(screen.getByText("Launch failed: lead: host unavailable")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
+
+  it("does not show a stale working signal when an idle thread needs classification", async () => {
+    renderBoard({ cards: [makeCard({ reportSignal: "working", attentionUnknown: true })] });
+
+    await screen.findByText("Idle · awaiting status");
+    expect(screen.queryByText("Working")).toBeNull();
+  });
 });

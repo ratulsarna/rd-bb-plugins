@@ -17,18 +17,6 @@ import type { PipelineMachine } from "@/lib/machines";
 
 const PROJECT_KEY = "pipeline:selected-project";
 const CARD_DRAG_TYPE = "application/x-bb-pipeline-card";
-const EMPTY_LABELS: Record<Column, string> = {
-  backlog: "New ideas start here",
-  todo: "Ready to plan",
-  planning: "Work through the approach",
-  plan_ready: "Plans awaiting approval",
-  implementing: "Implementation in progress",
-  reviewing: "Ready for code review",
-  qa: "Ready to test",
-  pr: "Prepare the pull request",
-  pr_ready: "Ready to merge",
-  done: "Completed tasks",
-};
 
 interface UploadedAttachment {
   type: "localImage" | "localFile";
@@ -239,18 +227,8 @@ export function PipelineBoard() {
         {needsAttention === 0 ? null : <span className="pipeline-summary-item"><Icon name="MessageQuestion" />{needsAttention} need your attention</span>}
         {loading ? <span role="status" className="pipeline-summary-item"><Icon name="Loading" className="pipeline-spin" />Updating…</span> : null}
         {connection === "connected" ? null : <span role="status">Reconnecting…</span>}
-        <span className="pipeline-hint">Drag tasks between stages</span>
       </div>
       {error === null ? null : <p role="alert" className="pipeline-error"><Icon name="AlertCircle" />{error}</p>}
-      {!loading && error === null && cards.length === 0 ? (
-        <div className="pipeline-empty-board">
-          <Icon name="Archive" />
-          <div>
-            <h2>{projectId === null ? "Your pipeline starts with a project" : "Make room for your next idea"}</h2>
-            <p>{projectId === null ? "Add a project in BB to start a task pipeline." : "Create a task, choose its machine, and follow it from first idea to shipped."}</p>
-          </div>
-        </div>
-      ) : null}
       <div className="pipeline-scroll">
         <div className="pipeline-columns">
           {visibleColumns.map((column) => {
@@ -314,11 +292,8 @@ export function PipelineBoard() {
                       />
                     );
                   })}
-                  {!loading && columnCards.length === 0 ? (
-                    <div className="pipeline-empty">
-                      <strong>{draggedCard && draggedCard.column !== column ? "Drop task here" : EMPTY_LABELS[column]}</strong>
-                      <span>{draggedCard && draggedCard.column !== column ? `Move to ${COLUMN_LABELS[column]}` : "No tasks yet"}</span>
-                    </div>
+                  {draggedCard && draggedCard.column !== column && columnCards.length === 0 ? (
+                    <div className="pipeline-empty">Drop here</div>
                   ) : null}
                 </div>
               </section>

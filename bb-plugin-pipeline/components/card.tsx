@@ -137,7 +137,7 @@ export function PipelineCard(props: {
           </span>
         )}
         {props.pending ? <span className="pipeline-working"><Icon name="Loading" className="pipeline-spin" /> Saving</span>
-          : card.reportSignal === "working" && !card.needsUser && !props.questionOpen && card.threadError === null && card.launchError === null
+          : card.reportSignal === "working" && !card.needsUser && !card.attentionUnknown && !props.questionOpen && card.threadError === null && card.launchError === null
             ? <span className="pipeline-working">Working</span> : null}
         {card.tier === null ? null : <span className="pipeline-tier">{card.tier}</span>}
       </div>

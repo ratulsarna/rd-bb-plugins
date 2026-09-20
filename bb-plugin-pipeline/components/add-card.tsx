@@ -63,7 +63,7 @@ export function AddCard(props: {
             <div className="pipeline-dialog-header">
               <div className="pipeline-dialog-heading">
                 <Dialog.Title>New task</Dialog.Title>
-                <Dialog.Description>{props.projectName} · Starts in Backlog</Dialog.Description>
+                <Dialog.Description className="sr-only">New task for {props.projectName}</Dialog.Description>
               </div>
               <Dialog.Close asChild>
                 <button type="button" className="pipeline-icon-button" aria-label="Close new task" disabled={pending}>
@@ -89,7 +89,7 @@ export function AddCard(props: {
                 <span className="pipeline-field-label">Context <span>optional</span></span>
                 <textarea
                   aria-label="Task context"
-                  placeholder="Share what you know: the problem, an idea, or a link…"
+                  placeholder="Context, notes, or links"
                   className="pipeline-input"
                   value={body}
                   disabled={pending}
@@ -102,11 +102,9 @@ export function AddCard(props: {
                 onChange={setHostId}
                 disabled={pending || props.disabled}
               />
-              <p className="pipeline-field-hint">
-                {props.machines.length === 0
-                  ? "This project has no machine with a checkout."
-                  : "Choose where this task will run. The machine stays with the task."}
-              </p>
+              {props.machines.length === 0 ? (
+                <p className="pipeline-field-hint">This project has no machine with a checkout.</p>
+              ) : null}
               <label className="pipeline-attach">
                 <Icon name="Paperclip" /> Attach files or screenshots
                 <input
