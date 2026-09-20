@@ -1,0 +1,311 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  experimental_useSidebarThreads as useSidebarThreads,
+  useBbContext,
+  useBbNavigate,
+  useRealtime,
+  useRealtimeConnectionState,
+  useRpc,
+} from "@get-bb/plugin-sdk/app";
+import type { rpcContract } from "@/lib/contract";
+import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
+import { ownerThread, type Card, type CardAttachment } from "@/lib/store";
+import { AddCard } from "./add-card";
+import { Icon } from "./icon";
+import { PipelineCard } from "./card";
+import type { PipelineMachine } from "@/lib/machines";
+
+const PROJECT_KEY = "pipeline:selected-project";
+const CARD_DRAG_TYPE = "application/x-bb-pipeline-card";
+
+interface UploadedAttachment {
+  type: "localImage" | "localFile";
+  path: string;
+  name: string;
+  mimeType?: string;
+  sizeBytes: number;
+}
+
+async function upload(projectId: string, file: File): Promise<CardAttachment> {
+  const form = new FormData();
+  form.set("file", file);
+  const response = await fetch(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/attachments`,
+    { method: "POST", body: form },
+  );
+  if (!response.ok) throw new Error(`Could not upload ${file.name}`);
+  const value = (await response.json()) as UploadedAttachment;
+  return {
+    path: value.path,
+    filename: value.name,
+    mimeType: value.mimeType,
+    sizeBytes: value.sizeBytes,
+    isImage: value.type === "localImage",
+  };
+}
+
+export function PipelineBoard() {
+  const rpc = useRpc<typeof rpcContract>();
+  const context = useBbContext();
+  const navigate = useBbNavigate();
+  const sidebar = useSidebarThreads();
+  const connection = useRealtimeConnectionState();
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [machines, setMachines] = useState<PipelineMachine[]>([]);
+  const [includeDone, setIncludeDone] = useState(false);
+  const [cards, setCards] = useState<Awaited<ReturnType<typeof rpc.call<"listCards">>>["cards"]>([]);
+  const [queuedCardIds, setQueuedCardIds] = useState<ReadonlySet<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
+  const [dropColumn, setDropColumn] = useState<Column | null>(null);
+  const [pendingCards, setPendingCards] = useState<Set<string>>(new Set());
+  const requestSequence = useRef(0);
+  const projectIdRef = useRef<string | null>(null);
+  const includeDoneRef = useRef(false);
+  const contextProjectIdRef = useRef(context.projectId);
+  contextProjectIdRef.current = context.projectId;
+
+  const load = useCallback(async () => {
+    const request = ++requestSequence.current;
+    setLoading(true);
+    try {
+      const { projects: nextProjects } = await rpc.call("listProjects");
+      if (request !== requestSequence.current) return;
+
+      const current = projectIdRef.current;
+      const remembered = localStorage.getItem(PROJECT_KEY);
+      const preferred = current ?? remembered ?? contextProjectIdRef.current;
+      const selected = nextProjects.some((project) => project.id === preferred)
+        ? preferred
+        : (nextProjects[0]?.id ?? null);
+      projectIdRef.current = selected;
+      setProjects(nextProjects);
+      setProjectId(selected);
+
+      if (selected === null) {
+        setCards([]);
+        setMachines([]);
+        setQueuedCardIds(new Set());
+      } else {
+        const [result, machineResult] = await Promise.all([
+          rpc.call("listCards", {
+            projectId: selected,
+            includeDone: includeDoneRef.current,
+          }),
+          rpc.call("listMachines", { projectId: selected }),
+        ]);
+        if (request !== requestSequence.current) return;
+        setCards(result.cards);
+        setQueuedCardIds(new Set(result.queuedCardIds));
+        setMachines(machineResult.machines);
+      }
+      setError(null);
+      setLoading(false);
+    } catch (cause) {
+      if (request !== requestSequence.current) return;
+      setError(cause instanceof Error ? cause.message : String(cause));
+      setLoading(false);
+    }
+  }, [rpc]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+  useRealtime("cards:changed", load);
+
+  const previousConnection = useRef<typeof connection | null>(null);
+  useEffect(() => {
+    if (
+      connection === "connected" &&
+      previousConnection.current !== "connected"
+    ) {
+      void load();
+    }
+    previousConnection.current = connection;
+  }, [connection, load]);
+
+  const pendingThreads = useMemo(
+    () =>
+      new Set(
+        sidebar.threads
+          .filter((thread) => thread.hasPendingInteraction)
+          .map((thread) => thread.id),
+      ),
+    [sidebar.threads],
+  );
+  const visibleColumns = includeDone ? COLUMNS : COLUMNS.filter((column) => column !== "done");
+  const draggedCard = cards.find((card) => card.id === draggedCardId && card.projectId === projectId);
+
+  function clearDrag() {
+    setDraggedCardId(null);
+    setDropColumn(null);
+  }
+
+  async function updateCard(card: Card, update: () => Promise<unknown>) {
+    if (pendingCards.has(card.id) || card.projectId !== projectIdRef.current) return;
+    setPendingCards((current) => new Set(current).add(card.id));
+    setError(null);
+    try {
+      await update();
+      await load();
+    } catch (cause) {
+      if (projectIdRef.current === card.projectId) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    } finally {
+      setPendingCards((current) => {
+        const next = new Set(current);
+        next.delete(card.id);
+        return next;
+      });
+    }
+  }
+
+  function move(card: Card, column: Column) {
+    if (card.column === column) return;
+    void updateCard(card, () => rpc.call("moveCard", { cardId: card.id, column }));
+  }
+
+  async function add(title: string, body: string, files: File[], hostId: string) {
+    const targetProjectId = projectIdRef.current;
+    if (targetProjectId === null) return;
+    const attachments = await Promise.all(files.map((file) => upload(targetProjectId, file)));
+    await rpc.call("addCard", { projectId: targetProjectId, hostId, title, body, attachments });
+    await load();
+  }
+
+  const needsAttention = cards.filter((card) => {
+    const owner = ownerThread(card);
+    return card.needsUser || card.launchError !== null || card.threadError !== null || (owner !== null && pendingThreads.has(owner));
+  }).length;
+  const projectName = projects.find((project) => project.id === projectId)?.name ?? "";
+
+  return (
+    <div className="pipeline-ui pipeline-board">
+      <header className="pipeline-toolbar">
+        <div className="pipeline-heading"><Icon name="Columns2" /><h1>Pipeline</h1></div>
+        <label className="pipeline-project">
+          <Icon name="Folder" />
+          <select
+            aria-label="Project"
+            value={projectId ?? ""}
+            disabled={projects.length === 0}
+            onChange={(event) => {
+              const next = event.target.value;
+              requestSequence.current += 1;
+              projectIdRef.current = next;
+              localStorage.setItem(PROJECT_KEY, next);
+              setProjectId(next);
+              setCards([]);
+              setMachines([]);
+              setQueuedCardIds(new Set());
+              clearDrag();
+              void load();
+            }}
+          >
+            {projects.length === 0 ? <option value="">{loading ? "Loading projects…" : "No projects"}</option> : null}
+            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+          </select>
+          <Icon name="ChevronDown" />
+        </label>
+        <div className="pipeline-toolbar-actions">
+          <label className="pipeline-toggle">
+            <input type="checkbox" checked={includeDone}
+              onChange={(event) => {
+                requestSequence.current += 1;
+                includeDoneRef.current = event.target.checked;
+                setIncludeDone(event.target.checked);
+                clearDrag();
+                void load();
+              }} />
+            Show done
+          </label>
+          <AddCard key={projectId} projectName={projectName} disabled={projectId === null || loading} machines={machines} onAdd={add} />
+        </div>
+      </header>
+      <div className="pipeline-summary">
+        <span className="pipeline-summary-label">Board</span>
+        <span>{cards.length} {cards.length === 1 ? "task" : "tasks"}</span>
+        {needsAttention === 0 ? null : <span className="pipeline-summary-item"><Icon name="MessageQuestion" />{needsAttention} need your attention</span>}
+        {loading ? <span role="status" className="pipeline-summary-item"><Icon name="Loading" className="pipeline-spin" />Updating…</span> : null}
+        {connection === "connected" ? null : <span role="status">Reconnecting…</span>}
+      </div>
+      {error === null ? null : <p role="alert" className="pipeline-error"><Icon name="AlertCircle" />{error}</p>}
+      <div className="pipeline-scroll">
+        <div className="pipeline-columns">
+          {visibleColumns.map((column) => {
+            const columnCards = cards.filter((card) => card.column === column);
+            return (
+              <section
+                key={column}
+                aria-label={COLUMN_LABELS[column]}
+                className="pipeline-column"
+                data-drop={Boolean(draggedCard && dropColumn === column)}
+                onDragOver={(event) => {
+                  if (!draggedCard || draggedCard.column === column || pendingCards.has(draggedCard.id) || !event.dataTransfer.types.includes(CARD_DRAG_TYPE)) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDropColumn(column);
+                }}
+                onDragLeave={(event) => {
+                  if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
+                    setDropColumn((current) => current === column ? null : current);
+                  }
+                }}
+                onDrop={(event) => {
+                  if (!draggedCard || event.dataTransfer.getData(CARD_DRAG_TYPE) !== draggedCard.id) return;
+                  event.preventDefault();
+                  void move(draggedCard, column);
+                  clearDrag();
+                }}
+              >
+                <div className="pipeline-column-header">
+                  <span className="pipeline-stage" data-stage={column} aria-hidden="true" />
+                  <h2>{COLUMN_LABELS[column]}</h2>
+                  <span className="pipeline-column-count">{columnCards.length}</span>
+                </div>
+                <div className="pipeline-column-body">
+                  {loading && cards.length === 0 ? <div className="pipeline-skeleton" aria-hidden="true" /> : null}
+                  {columnCards.map((card) => {
+                    const owner = ownerThread(card);
+                    return (
+                      <PipelineCard
+                        key={card.id}
+                        card={card}
+                        machines={machines}
+                        onSetMachine={(hostId) => void updateCard(card, () => rpc.call("setMachine", { cardId: card.id, hostId }))}
+                        dragging={draggedCardId === card.id}
+                        pending={pendingCards.has(card.id)}
+                        queued={queuedCardIds.has(card.id)}
+                        onDragStart={(event) => {
+                          if (pendingCards.has(card.id)) {
+                            event.preventDefault();
+                            return;
+                          }
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData(CARD_DRAG_TYPE, card.id);
+                          setDraggedCardId(card.id);
+                        }}
+                        onDragEnd={clearDrag}
+                        questionOpen={owner !== null && pendingThreads.has(owner)}
+                        onOpen={(threadId) => navigate.toThread(threadId)}
+                        onMove={(next) => void move(card, next)}
+                        onRetry={() => void updateCard(card, () => rpc.call("retryLaunch", { cardId: card.id }))}
+                        onRemove={() => void updateCard(card, () => rpc.call("removeCard", { cardId: card.id }))}
+                      />
+                    );
+                  })}
+                  {draggedCard && draggedCard.column !== column && columnCards.length === 0 ? (
+                    <div className="pipeline-empty">Drop here</div>
+                  ) : null}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
