@@ -202,6 +202,8 @@ describe("Pipeline task capacity", () => {
       thread: older.thread, host: s.machines[0]!, queuedMessages: [older.entry],
     }));
     expect(await recheck()).toEqual(waiting);
+    s.queue.splice(s.queue.findIndex((row) => row.threadId === "urgent"), 1);
+    expect(await recheck()).toEqual(waiting);
     older.entry.sendAt = Date.now() - 1;
     expect(await recheck()).toEqual({ action: "proceed" });
     s.thread("busy-a", { cardId: "busy-a", running: true });

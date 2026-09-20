@@ -185,6 +185,8 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
     }
     const current = store.get(nextId);
     if (store.getRunNext(projectId, hostId) !== nextId || current?.runState !== "running" || current.column === "done") return false;
+    // Claimed rows disappear from the public queue. The bounded yield also covers that dispatch window.
+    if (rows.length === 0) return true;
     return [...groups.values()].some((list) => list.some((group) => group.every((row) =>
       row.hostId === hostId && row.thread.deletedAt === null && row.thread.archivedAt === null &&
       ["idle", "pending", "error"].includes(row.thread.status) && !row.interaction &&
