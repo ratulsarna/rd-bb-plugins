@@ -13,10 +13,19 @@ import {
 import {
   createCardStore,
   MIGRATIONS,
-  ownerThread,
   type CardAttachment,
 } from "../lib/store";
+import { ownerThread } from "../lib/card";
 import type { Database } from "better-sqlite3";
+import {
+  makeCatalogProvider,
+  testCatalogProviders,
+  testProviderModels,
+  type TestProviderListInput,
+  type TestProviderListResult,
+  type TestProviderModelsInput,
+  type TestProviderModelsResult,
+} from "./sdk-fake";
 
 const settings: PipelineSettings = {
   providerId: "claude-code",
@@ -92,6 +101,8 @@ function setup(options?: {
   settings?: PipelineSettings;
   getSettings?: () => Promise<PipelineSettings>;
   rememberExecution?: (defaults: ExecutionDefaults) => Promise<void>;
+  listProviders?: (input: TestProviderListInput) => Promise<TestProviderListResult>;
+  listProviderModels?: (input: TestProviderModelsInput) => Promise<TestProviderModelsResult>;
 }) {
   let nextThread = 1;
   const spawn = vi.fn(
@@ -101,6 +112,14 @@ function setup(options?: {
   const send = vi.fn(
     options?.send ?? (async () => ({ ok: true as const, delivery: "sent" as const })),
   );
+  const listProviders = vi.fn(
+    options?.listProviders ?? (async () => testCatalogProviders),
+  );
+  const listProviderModels = vi.fn(
+    options?.listProviderModels ??
+      (async ({ providerId }: TestProviderModelsInput) =>
+        testProviderModels(providerId)),
+  );
   const host = createFakePluginHost({
     pluginId: "pipeline",
     sdk: {
@@ -109,6 +128,10 @@ function setup(options?: {
       },
       hosts: {
         list: async () => (options?.hosts ?? hostList) as never,
+      },
+      providers: {
+        list: listProviders as never,
+        models: listProviderModels as never,
       },
       threads: {
         spawn: spawn as never,
@@ -151,7 +174,7 @@ function setup(options?: {
     publish,
     id: () => "card_new",
   });
-  return { host, db: host.bb.storage.database(), store, service, spawn, send, classify, readIssue, publish, log, rememberExecution };
+  return { host, db: host.bb.storage.database(), store, service, spawn, send, classify, readIssue, publish, log, rememberExecution, listProviders, listProviderModels };
 }
 
 function seed(
@@ -1287,19 +1310,25 @@ describe("report and active state", () => {
 describe("execution selection", () => {
   it("falls back to intake defaults only while every lead setting is unset", async () => {
     const inherited = setup({
-      settings: { ...settings, serviceTier: "fast" },
+      settings: {
+        ...settings,
+        providerId: "codex",
+        model: "gpt-6-astra",
+        reasoningLevel: "ultra",
+        serviceTier: "fast",
+      },
     });
     await expect(inherited.service.getExecutionDefaults()).resolves.toEqual({
       intake: {
-        providerId: "claude-code",
-        model: "claude-fable-5-1",
-        reasoningLevel: "high",
+        providerId: "codex",
+        model: "gpt-6-astra",
+        reasoningLevel: "ultra",
         serviceTier: "fast",
       },
       lead: {
-        providerId: "claude-code",
-        model: "claude-fable-5-1",
-        reasoningLevel: "high",
+        providerId: "codex",
+        model: "gpt-6-astra",
+        reasoningLevel: "ultra",
         serviceTier: "fast",
       },
     });
@@ -1307,6 +1336,9 @@ describe("execution selection", () => {
     const explicitLead = setup({
       settings: {
         ...settings,
+        providerId: "codex",
+        model: "gpt-6-astra",
+        reasoningLevel: "ultra",
         serviceTier: "fast",
         leadProviderId: "pi",
         leadModel: "zai/glm-5.3-flash",
@@ -1320,12 +1352,215 @@ describe("execution selection", () => {
     });
   });
 
+  it("rejects an unavailable lead model before inserting or launching intake", async () => {
+    const {
+      service,
+      store,
+      spawn,
+      rememberExecution,
+      listProviders,
+      listProviderModels,
+    } = setup();
+
+    await expect(
+      service.createCard({
+        projectId: "proj_1",
+        hostId: "host_mac",
+        lead: { providerId: "pi", model: "zai/missing" },
+        title: "Ship it",
+        source: "ui",
+      }),
+    ).rejects.toThrow(
+      'lead model "zai/missing" is unavailable for provider "pi" on machine "Mac" (host_mac)',
+    );
+
+    expect(listProviders).toHaveBeenCalledWith({ hostId: "host_mac" });
+    expect(listProviderModels).toHaveBeenCalledWith({
+      hostId: "host_mac",
+      providerId: "pi",
+    });
+    expect(store.list("proj_1", true)).toHaveLength(0);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(rememberExecution).not.toHaveBeenCalled();
+  });
+
+  it("rejects reasoning unsupported by the selected model", async () => {
+    const { service, store, spawn, rememberExecution } = setup();
+
+    await expect(
+      service.createCard({
+        projectId: "proj_1",
+        hostId: "host_mac",
+        intake: { reasoningLevel: "low" },
+        title: "Ship it",
+        source: "cli",
+      }),
+    ).rejects.toThrow(
+      'intake reasoning "low" is unsupported by model "claude-fable-5-1" on machine "Mac" (host_mac)',
+    );
+
+    expect(store.list("proj_1", true)).toHaveLength(0);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(rememberExecution).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates same-provider discovery and routes it to the selected host", async () => {
+    const { service, listProviders, listProviderModels } = setup();
+
+    await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship it",
+      source: "cli",
+    });
+
+    expect(listProviders).toHaveBeenCalledOnce();
+    expect(listProviders).toHaveBeenCalledWith({ hostId: "host_mac" });
+    expect(listProviderModels).toHaveBeenCalledOnce();
+    expect(listProviderModels).toHaveBeenCalledWith({
+      hostId: "host_mac",
+      providerId: "claude-code",
+    });
+  });
+
+  it("rejects an unknown provider before model discovery or insertion", async () => {
+    const {
+      service,
+      store,
+      spawn,
+      rememberExecution,
+      listProviderModels,
+    } = setup();
+
+    await expect(
+      service.createCard({
+        projectId: "proj_1",
+        hostId: "host_mac",
+        intake: { providerId: "missing", model: "missing-model" },
+        title: "Ship it",
+        source: "cli",
+      }),
+    ).rejects.toThrow(
+      'intake provider "missing" is not installed on machine "Mac" (host_mac)',
+    );
+
+    expect(listProviderModels).not.toHaveBeenCalled();
+    expect(store.list("proj_1", true)).toHaveLength(0);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(rememberExecution).not.toHaveBeenCalled();
+  });
+
+  it("rejects a provider unavailable on the selected host", async () => {
+    const { service, store, spawn, listProviderModels } = setup({
+      listProviders: async () => [
+        makeCatalogProvider("claude-code", false, false),
+        ...testCatalogProviders.filter(
+          (candidate) => candidate.id !== "claude-code",
+        ),
+      ],
+    });
+
+    await expect(
+      service.createCard({
+        projectId: "proj_1",
+        hostId: "host_mac",
+        title: "Ship it",
+        source: "cli",
+      }),
+    ).rejects.toThrow(
+      'intake provider "claude-code" is unavailable on machine "Mac" (host_mac)',
+    );
+
+    expect(listProviderModels).not.toHaveBeenCalled();
+    expect(store.list("proj_1", true)).toHaveLength(0);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects service tiers unsupported by the provider", async () => {
+    const { service, store, spawn, rememberExecution } = setup();
+
+    await expect(
+      service.createCard({
+        projectId: "proj_1",
+        hostId: "host_mac",
+        intake: { serviceTier: "fast" },
+        title: "Ship it",
+        source: "ui",
+      }),
+    ).rejects.toThrow(
+      'intake service tier "fast" is unsupported by provider "claude-code" on machine "Mac" (host_mac)',
+    );
+
+    expect(store.list("proj_1", true)).toHaveLength(0);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(rememberExecution).not.toHaveBeenCalled();
+  });
+
+  it("rejects catalog load failures before insertion", async () => {
+    const { service, store, spawn, rememberExecution } = setup({
+      listProviderModels: async () => {
+        throw new Error("catalog timed out");
+      },
+    });
+
+    await expect(
+      service.createCard({
+        projectId: "proj_1",
+        hostId: "host_mac",
+        title: "Ship it",
+        source: "cli",
+      }),
+    ).rejects.toThrow(
+      'could not load intake models for provider "claude-code" on machine "Mac" (host_mac): catalog timed out',
+    );
+
+    expect(store.list("proj_1", true)).toHaveLength(0);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(rememberExecution).not.toHaveBeenCalled();
+  });
+
+  it("preserves offline creation without catalog validation", async () => {
+    const {
+      service,
+      store,
+      spawn,
+      rememberExecution,
+      listProviders,
+      listProviderModels,
+    } = setup({
+      project: twoMachineProject,
+      spawn: async () => {
+        throw new Error("machine offline");
+      },
+    });
+
+    const card = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_linux",
+      intake: { providerId: "offline-provider", model: "offline-model" },
+      lead: { providerId: "offline-provider", model: "offline-model" },
+      title: "Ship it later",
+      source: "cli",
+    });
+
+    expect(card).toMatchObject({
+      hostId: "host_linux",
+      intake: { providerId: "offline-provider", model: "offline-model" },
+      launchError: "intake: machine offline",
+    });
+    expect(store.list("proj_1", true)).toHaveLength(1);
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(rememberExecution).toHaveBeenCalledOnce();
+    expect(listProviders).not.toHaveBeenCalled();
+    expect(listProviderModels).not.toHaveBeenCalled();
+  });
+
   it("captures distinct resolved choices for intake, lead, and ordinary retries", async () => {
     const mutableSettings: PipelineSettings = {
       ...settings,
-      providerId: "claude-code",
-      model: "claude-fable-5-1",
-      reasoningLevel: "medium",
+      providerId: "codex",
+      model: "gpt-6-astra",
+      reasoningLevel: "ultra",
       serviceTier: "default",
       leadProviderId: "pi",
       leadModel: "zai/glm-5.3-flash",
@@ -1350,16 +1585,16 @@ describe("execution selection", () => {
     const created = await service.createCard({
       projectId: "proj_1",
       hostId: "host_mac",
-      intake: { reasoningLevel: "ultracode", serviceTier: "fast" },
+      intake: { serviceTier: "fast" },
       lead: { model: "zai/glm-5.3-air", reasoningLevel: "max" },
       title: "Ship it",
       source: "ui",
     });
     const captured = {
       intake: {
-        providerId: "claude-code",
-        model: "claude-fable-5-1",
-        reasoningLevel: "ultracode" as const,
+        providerId: "codex",
+        model: "gpt-6-astra",
+        reasoningLevel: "ultra" as const,
         serviceTier: "fast" as const,
       },
       lead: {
@@ -1372,9 +1607,9 @@ describe("execution selection", () => {
     expect(rememberExecution).toHaveBeenCalledOnce();
     expect(rememberExecution).toHaveBeenCalledWith(captured);
     expect(spawn.mock.calls[0]![0]).toMatchObject({
-      providerId: "claude-code",
-      model: "claude-fable-5-1",
-      reasoningLevel: "ultracode",
+      providerId: "codex",
+      model: "gpt-6-astra",
+      reasoningLevel: "ultra",
       serviceTier: "fast",
     });
 
@@ -1415,13 +1650,23 @@ describe("execution selection", () => {
 
   it("clears an inherited service tier when a provider override changes", async () => {
     const { service, store, rememberExecution } = setup({
-      settings: { ...settings, serviceTier: "fast" },
+      settings: {
+        ...settings,
+        providerId: "codex",
+        model: "gpt-6-astra",
+        reasoningLevel: "ultra",
+        serviceTier: "fast",
+      },
     });
 
     const card = await service.createCard({
       projectId: "proj_1",
       hostId: "host_mac",
-      lead: { providerId: "pi", model: "zai/glm-5.3-flash" },
+      lead: {
+        providerId: "pi",
+        model: "zai/glm-5.3-flash",
+        reasoningLevel: "high",
+      },
       title: "Ship it",
       source: "cli",
     });
@@ -1479,7 +1724,6 @@ describe("execution selection", () => {
   it.each([
     { role: "intake", selection: { providerId: "   " } },
     { role: "lead", selection: { reasoningLevel: "turbo" } },
-    { role: "lead", selection: { providerId: "pi" } },
   ])("rejects an invalid $role choice before creating or spawning", async ({ role, selection }) => {
     const { service, store, spawn, rememberExecution } = setup();
 
@@ -1519,6 +1763,29 @@ describe("execution selection", () => {
     expect(log).toHaveBeenCalledWith(
       expect.stringContaining("could not remember execution for card card_new: settings unavailable"),
     );
+  });
+
+  it("links intake while remembering remains pending", async () => {
+    let releaseRemember!: () => void;
+    const remembering = new Promise<void>((resolve) => {
+      releaseRemember = resolve;
+    });
+    const { service, store, spawn, rememberExecution } = setup({
+      rememberExecution: async () => remembering,
+    });
+
+    const creating = service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship it",
+      source: "ui",
+    });
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
+    expect(store.get("card_new")?.intakeThreadId).toBe("thr_1");
+    expect(rememberExecution).toHaveBeenCalledOnce();
+
+    releaseRemember();
+    await expect(creating).resolves.toMatchObject({ intakeThreadId: "thr_1" });
   });
 });
 

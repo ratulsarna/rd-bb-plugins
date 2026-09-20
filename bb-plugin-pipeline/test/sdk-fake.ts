@@ -1,5 +1,104 @@
-import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
+import type { PluginBbSdk, PluginSidebarThread } from "@get-bb/plugin-sdk";
+import type { ExecutionSelection } from "../lib/execution";
 import type { Card } from "../lib/store";
+
+export type TestProviderListResult = Awaited<
+  ReturnType<PluginBbSdk["providers"]["list"]>
+>;
+export type TestProviderModelsResult = Awaited<
+  ReturnType<PluginBbSdk["providers"]["models"]>
+>;
+export type TestProviderListInput = NonNullable<
+  Parameters<PluginBbSdk["providers"]["list"]>[0]
+>;
+export type TestProviderModelsInput = NonNullable<
+  Parameters<PluginBbSdk["providers"]["models"]>[0]
+>;
+
+export function makeCatalogProvider(
+  id: string,
+  supportsServiceTier = false,
+  available = true,
+): TestProviderListResult[number] {
+  return {
+    id,
+    displayName: id,
+    available,
+    pluginId: `provider-${id}`,
+    logoUrl: null,
+    completedTurnDisplay: "flat",
+    composerActions: [],
+    maintenance: { health: false, installation: false, usage: false },
+    capabilities: {
+      modelCatalogScope: "host",
+      permissionModes: ["accept-edits", "auto", "full"],
+      supportsFork: true,
+      supportsNativeUserQuestion: true,
+      supportsServiceTier,
+      supportsSessionRewind: false,
+      supportsThreadArchive: true,
+      supportsThreadRename: true,
+    },
+    ...(supportsServiceTier
+      ? {
+          serviceTiers: [
+            { id: "default", label: "Default" },
+            { id: "fast", label: "Fast" },
+          ],
+        }
+      : {}),
+  };
+}
+
+export function makeCatalogModel(
+  model: string,
+  reasoningLevels: ExecutionSelection["reasoningLevel"][],
+): TestProviderModelsResult["models"][number] {
+  return {
+    id: model,
+    model,
+    displayName: model,
+    description: model,
+    isDefault: true,
+    defaultReasoningEffort: reasoningLevels[0]!,
+    supportedReasoningEfforts: reasoningLevels.map((reasoningEffort) => ({
+      reasoningEffort,
+      description: reasoningEffort,
+    })),
+  };
+}
+
+export const testCatalogProviders: TestProviderListResult = [
+  makeCatalogProvider("claude-code"),
+  makeCatalogProvider("pi"),
+  makeCatalogProvider("codex", true),
+];
+
+export function testProviderModels(
+  providerId: string | undefined,
+): TestProviderModelsResult {
+  const modelsByProvider: Record<string, TestProviderModelsResult["models"]> = {
+    "claude-code": [makeCatalogModel("claude-fable-5-1", ["high"])],
+    pi: [
+      makeCatalogModel("zai/glm-5.3-flash", ["none", "high"]),
+      makeCatalogModel("zai/glm-5.3-air", ["max"]),
+    ],
+    codex: [
+      makeCatalogModel("gpt-6-astra", ["ultra"]),
+      makeCatalogModel("gpt-5.6-sol", ["ultra"]),
+    ],
+  };
+  return {
+    providers: testCatalogProviders,
+    models: modelsByProvider[providerId ?? ""] ?? [],
+    selectedOnlyModels:
+      providerId === "codex"
+        ? [makeCatalogModel("gpt-5.6-luna", ["medium", "low"])]
+        : [],
+    modelLoadError: null,
+    permissionCeiling: "full",
+  };
+}
 
 export function makeCard(overrides: Partial<Card> = {}): Card {
   return {

@@ -214,7 +214,9 @@ describe("pipeline board", () => {
     renderBoard({ addCard });
     await screen.findByText("A pipeline card");
 
-    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    });
     fireEvent.change(screen.getByLabelText("Task title"), {
       target: { value: "Broken card" },
     });
@@ -234,6 +236,9 @@ describe("pipeline board", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Could not create card",
     );
+    expect(addCard).toHaveBeenCalledWith(expect.objectContaining({
+      intake: expect.objectContaining({ model: "claude-opus-4-7", reasoningLevel: "max" }),
+    }));
     expect((screen.getByLabelText("Task title") as HTMLInputElement).value).toBe(
       "Broken card",
     );

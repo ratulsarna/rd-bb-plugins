@@ -10,7 +10,8 @@ import {
 import type { rpcContract } from "@/lib/contract";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import type { ExecutionSelection } from "@/lib/execution";
-import { ownerThread, type Card, type CardAttachment } from "@/lib/store";
+import { ownerThread } from "@/lib/card";
+import type { Card, CardAttachment } from "@/lib/store";
 import { AddCard } from "./add-card";
 import { Icon } from "./icon";
 import { PipelineCard } from "./card";

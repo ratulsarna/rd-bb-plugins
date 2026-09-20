@@ -9,6 +9,7 @@ import {
 import type { Database } from "better-sqlite3";
 import plugin from "../server";
 import type { Card } from "../lib/store";
+import { testCatalogProviders, testProviderModels } from "./sdk-fake";
 
 const skillIds = [
   "pipeline",
@@ -85,6 +86,10 @@ async function setup(options?: {
               status: "connected",
             }),
           ] as never,
+      },
+      providers: {
+        list: async () => testCatalogProviders,
+        models: async (input) => testProviderModels(input?.providerId),
       },
       threads: {
         spawn: async () => makeThreadResponse({ id: "intake" }),
@@ -165,6 +170,53 @@ describe("plugin wiring", () => {
     })).rejects.toThrow("rpc input validation failed");
     expect(db.prepare("SELECT count(*) AS count FROM cards").get()).toEqual({ count: 0 });
     expect(await host.harness.behavior.callRpc("executionDefaults", null)).toEqual(before);
+  });
+
+  it("rejects catalog-invalid CLI and RPC selections before persistence", async () => {
+    const { host, db } = await setup();
+    const before = await host.harness.behavior.callRpc("executionDefaults", null);
+
+    const unknownProvider = await host.harness.behavior.runCli(
+      [
+        "add",
+        "--title",
+        "Unknown provider",
+        "--machine",
+        "Work laptop",
+        "--intake-provider",
+        "missing",
+        "--intake-model",
+        "missing-model",
+      ],
+      { projectId: "proj_1" },
+    );
+    expect(unknownProvider.exitCode).toBe(1);
+    expect(unknownProvider.stderr).toContain(
+      'intake provider "missing" is not installed on machine "Work laptop" (host_wt5difpwsy)',
+    );
+
+    await expect(
+      host.harness.behavior.callRpc("addCard", {
+        projectId: "proj_1",
+        hostId: "host_wt5difpwsy",
+        title: "Unavailable lead model",
+        body: "",
+        attachments: [],
+        lead: {
+          providerId: "pi",
+          model: "zai/missing",
+          reasoningLevel: "high",
+        },
+      }),
+    ).rejects.toThrow(
+      'lead model "zai/missing" is unavailable for provider "pi" on machine "Work laptop" (host_wt5difpwsy)',
+    );
+
+    expect(db.prepare("SELECT count(*) AS count FROM cards").get()).toEqual({
+      count: 0,
+    });
+    expect(await host.harness.behavior.callRpc("executionDefaults", null)).toEqual(before);
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
   });
 
   it("surfaces a cancelled kickoff and clears that attention when the same pending thread queues again", async () => {

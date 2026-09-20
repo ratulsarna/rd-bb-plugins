@@ -9,7 +9,7 @@ import { COLUMNS, isColumn } from "./columns";
 import { executionSelectionSchema, type ExecutionSelection } from "./execution";
 import type { PipelineService } from "./service";
 import type { PipelineCapacity } from "./capacity";
-import { ownerThread } from "./store";
+import { ownerThread } from "./card";
 import type { Card, CardAttachment, CardStore } from "./store";
 
 const USAGE = `Usage:

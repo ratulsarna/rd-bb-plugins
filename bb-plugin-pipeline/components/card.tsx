@@ -1,7 +1,8 @@
 import { useRef, useState, type DragEventHandler } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
-import { ownerThread, type Card } from "@/lib/store";
+import { ownerThread } from "@/lib/card";
+import type { Card } from "@/lib/store";
 import type { PipelineMachine } from "@/lib/machines";
 import { usePortalScopeProps } from "@/lib/portal-scope";
 import { MachineSelect } from "./machine-select";

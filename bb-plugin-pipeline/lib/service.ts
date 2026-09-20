@@ -9,6 +9,7 @@ import type { JevResult } from "./jev";
 import {
   executionDefaults,
   executionSelectionSchema,
+  validateExecutionSelections,
   type ExecutionDefaults,
   type ExecutionSelection,
   type ExecutionSettings,
@@ -27,7 +28,7 @@ import type {
   CardStore,
   HistoryInput,
 } from "./store";
-import { ownerThread, roleThread } from "./store";
+import { ownerThread, roleThread } from "./card";
 
 export interface PipelineSettings extends ExecutionSettings {
   permissionMode: string;
@@ -686,6 +687,9 @@ export function createPipelineService(
         input.projectId,
         hostReference,
       );
+      if (machine.status === "connected") {
+        await validateExecutionSelections(dependencies.sdk, machine, selected);
+      }
       const card = changed(
         store.create({
           id: (dependencies.id ?? (() => randomUUID().slice(0, 12)))(),
@@ -699,16 +703,15 @@ export function createPipelineService(
           source: input.source,
         }),
       );
-      if (dependencies.rememberExecution !== undefined) {
-        try {
-          await dependencies.rememberExecution(selected);
-        } catch (cause) {
+      const [launched] = await Promise.all([
+        launch(card.id, "intake"),
+        dependencies.rememberExecution?.(selected).catch((cause) => {
           dependencies.log(
             `could not remember execution for card ${card.id}: ${errorMessage(cause)}`,
           );
-        }
-      }
-      return launch(card.id, "intake");
+        }),
+      ]);
+      return launched;
     },
     async setMachine(cardId, hostId) {
       const card = required(cardId);
