@@ -1,13 +1,16 @@
-import { useRef, type DragEventHandler, type MouseEvent } from "react";
+import { useRef, useState, type DragEventHandler } from "react";
+import * as Popover from "@radix-ui/react-popover";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import { ownerThread, type Card } from "@/lib/store";
 import type { PipelineMachine } from "@/lib/machines";
+import { usePortalScopeProps } from "@/lib/portal-scope";
 import { MachineSelect } from "./machine-select";
+import { Icon } from "./icon";
 
 function attention(card: Card): string | null {
-  if (card.needsUser) return card.attentionReason ?? "needs you";
-  if (card.attentionUnknown) return "idle, unchecked";
-  if (card.threadError !== null) return `thread failed: ${card.threadError}`;
+  if (card.needsUser) return card.attentionReason ?? "Needs your input";
+  if (card.threadError !== null) return `Thread failed: ${card.threadError}`;
+  if (card.attentionUnknown) return "Idle · awaiting status";
   return null;
 }
 
@@ -25,120 +28,118 @@ export function PipelineCard(props: {
   onRetry(): void;
   onRemove(): void;
 }) {
-  const owner = ownerThread(props.card);
-  const actionsRef = useRef<HTMLDivElement>(null);
+  const { card } = props;
+  const owner = ownerThread(card);
   const dragAllowed = useRef(true);
-  const stop = (event: MouseEvent) => event.stopPropagation();
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const portalScope = usePortalScopeProps();
+  const reason = attention(card);
+  const machineName = props.machines.find((machine) => machine.id === card.hostId)?.name ?? card.hostId;
+
   return (
     <article
-      aria-label={props.card.title}
+      aria-label={card.title}
       aria-busy={props.pending}
       draggable={!props.pending}
+      data-dragging={props.dragging}
       onPointerDownCapture={(event) => {
-        dragAllowed.current = !actionsRef.current?.contains(event.target as Node);
+        dragAllowed.current = !(event.target as Element).closest("[data-card-control]");
       }}
       onDragStart={(event) => {
         if (!dragAllowed.current) {
           event.preventDefault();
           return;
         }
+        setActionsOpen(false);
         props.onDragStart(event);
       }}
       onDragEnd={props.onDragEnd}
-      className={`rounded-lg border border-border bg-card p-3 shadow-sm ${props.pending ? "cursor-wait" : "cursor-grab active:cursor-grabbing"} ${props.dragging ? "opacity-50" : ""}`}
+      className="pipeline-card"
     >
-      <button
-        type="button"
-        className="block w-full text-left disabled:cursor-default"
-        disabled={owner === null}
-        onClick={() => owner !== null && props.onOpen(owner)}
-      >
-        <span className="flex items-start justify-between gap-2">
-          <span className="font-medium leading-snug">{props.card.title}</span>
-          {props.card.tier === null ? null : (
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              {props.card.tier}
-            </span>
-          )}
-        </span>
-        {attention(props.card) === null ? null : (
-          <span className="mt-2 block text-xs text-amber-700 dark:text-amber-300">
-            {attention(props.card)}
-          </span>
-        )}
-        {props.card.launchError === null ? null : (
-          <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">
-            launch failed: {props.card.launchError}
-          </span>
-        )}
-        {props.questionOpen ? (
-          <span aria-label="Question open" title="Question open" className="mt-1 block text-sm font-semibold">
-            ?
-          </span>
-        ) : null}
-      </button>
-      <div
-        ref={actionsRef}
-        className="mt-2 flex flex-wrap items-center gap-2 text-xs"
-        onClick={stop}
-      >
-        {props.card.hostId === null ? (
-          <MachineSelect
-            machines={props.machines}
-            value=""
-            onChange={props.onSetMachine}
-            disabled={props.pending}
-            label={`Machine for ${props.card.title}`}
-          />
-        ) : (
-          <span className="w-full text-muted-foreground" title={props.card.hostId}>
-            Machine: {props.machines.find((machine) => machine.id === props.card.hostId)?.name ?? props.card.hostId}
-          </span>
-        )}
-        {props.card.issueUrl === null ? null : (
-          <a className="text-primary underline" href={props.card.issueUrl} target="_blank" rel="noreferrer">
-            Issue
-          </a>
-        )}
-        {props.card.prUrl === null ? null : (
-          <a className="text-primary underline" href={props.card.prUrl} target="_blank" rel="noreferrer">
-            PR
-          </a>
-        )}
-        <label className="ml-auto">
-          <span className="sr-only">Move {props.card.title}</span>
-          <select
-            aria-label={`Move ${props.card.title}`}
-            className="rounded border border-input bg-background px-1.5 py-1"
-            value={props.card.column}
-            disabled={props.pending}
-            onChange={(event) => props.onMove(event.target.value as Column)}
-          >
-            {COLUMNS.map((column) => (
-              <option key={column} value={column}>
-                {COLUMN_LABELS[column]}
-              </option>
-            ))}
-          </select>
-        </label>
-        {props.card.launchError === null ? null : (
-          <button
-            type="button"
-            className="inline-flex h-7 items-center justify-center rounded-md border border-input bg-background px-2 text-xs hover:bg-accent hover:text-accent-foreground"
-            disabled={props.pending}
-            onClick={props.onRetry}
-          >
-            Retry
-          </button>
-        )}
-        <button
-          type="button"
-          className="inline-flex h-7 items-center justify-center rounded-md px-2 text-xs hover:bg-accent hover:text-accent-foreground"
-          disabled={props.pending}
-          onClick={props.onRemove}
-        >
-          Remove
+      <div className="pipeline-card-header">
+        <button type="button" className="pipeline-card-title" disabled={owner === null}
+          onClick={() => owner !== null && props.onOpen(owner)}>
+          {card.title}
         </button>
+        <Popover.Root open={actionsOpen} onOpenChange={setActionsOpen}>
+          <Popover.Trigger asChild>
+            <button type="button" data-card-control className="pipeline-icon-button" aria-label={`Actions for ${card.title}`}
+              title="Task actions" disabled={props.pending}>
+              <Icon name="MoreHorizontal" />
+            </button>
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Content {...portalScope} data-card-control className="pipeline-ui pipeline-popover" align="end" sideOffset={6}
+              aria-label={`Actions for ${card.title}`}>
+              <label className="pipeline-field">
+                <span className="pipeline-field-label">Move to</span>
+                <span className="pipeline-select-wrap">
+                  <select aria-label={`Move ${card.title}`} className="pipeline-select" value={card.column} disabled={props.pending}
+                    onChange={(event) => {
+                      props.onMove(event.target.value as Column);
+                      setActionsOpen(false);
+                    }}>
+                    {COLUMNS.map((column) => <option key={column} value={column}>{COLUMN_LABELS[column]}</option>)}
+                  </select>
+                  <Icon name="ChevronDown" />
+                </span>
+              </label>
+              <button type="button" className="pipeline-button pipeline-ghost pipeline-remove" disabled={props.pending}
+                onClick={() => {
+                  setActionsOpen(false);
+                  props.onRemove();
+                }}>
+                <Icon name="Trash2" /> Remove
+              </button>
+            </Popover.Content>
+          </Popover.Portal>
+        </Popover.Root>
+      </div>
+      {card.body.trim() === "" ? null : <p className="pipeline-card-note">{card.body}</p>}
+      {reason === null ? null : (
+        <div className="pipeline-card-status pipeline-attention"><Icon name="AlertCircle" /><span>{reason}</span></div>
+      )}
+      {props.questionOpen ? (
+        <div aria-label="Question open" className="pipeline-card-status pipeline-attention">
+          <Icon name="MessageQuestion" /><span>Question waiting for you</span>
+        </div>
+      ) : null}
+      {card.launchError === null ? null : (
+        <div className="pipeline-card-status pipeline-card-error" data-card-control>
+          <Icon name="AlertCircle" />
+          <div>
+            <p>Launch failed: {card.launchError}</p>
+            <button type="button" className="pipeline-retry" disabled={props.pending} onClick={props.onRetry}>
+              <Icon name="RotateCcw" /> Retry
+            </button>
+          </div>
+        </div>
+      )}
+      {card.issueUrl === null && card.prUrl === null && card.attachments.length === 0 ? null : (
+        <div className="pipeline-card-links" data-card-control>
+          {card.issueUrl === null ? null : (
+            <a href={card.issueUrl} target="_blank" rel="noreferrer"><Icon name="ExternalLink" />Issue</a>
+          )}
+          {card.prUrl === null ? null : (
+            <a href={card.prUrl} target="_blank" rel="noreferrer"><Icon name="GitPullRequest" />PR</a>
+          )}
+          {card.attachments.length === 0 ? null : (
+            <span title={`${card.attachments.length} attachments`}><Icon name="Paperclip" /> {card.attachments.length}</span>
+          )}
+        </div>
+      )}
+      <div className="pipeline-card-footer" data-card-control>
+        {card.hostId === null ? (
+          <MachineSelect machines={props.machines} value="" onChange={props.onSetMachine} disabled={props.pending} label={`Machine for ${card.title}`} />
+        ) : (
+          <span className="pipeline-machine" title={`Machine: ${machineName}`}>
+            <Icon name="Laptop" /><span className="pipeline-machine-name">{machineName}</span>
+          </span>
+        )}
+        {props.pending ? <span className="pipeline-working"><Icon name="Loading" className="pipeline-spin" /> Saving</span>
+          : card.reportSignal === "working" && !card.needsUser && !props.questionOpen && card.threadError === null && card.launchError === null
+            ? <span className="pipeline-working">Working</span> : null}
+        {card.tier === null ? null : <span className="pipeline-tier">{card.tier}</span>}
       </div>
     </article>
   );

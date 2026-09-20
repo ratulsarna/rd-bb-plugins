@@ -192,19 +192,19 @@ describe("pipeline board", () => {
     renderBoard({ addCard });
     await screen.findByText("A pipeline card");
 
-    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
-    fireEvent.change(screen.getByLabelText("Card title"), {
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    fireEvent.change(screen.getByLabelText("Task title"), {
       target: { value: "Broken card" },
     });
     fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), {
       target: { value: "host_mac" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Could not create card",
     );
-    expect((screen.getByLabelText("Card title") as HTMLInputElement).value).toBe(
+    expect((screen.getByLabelText("Task title") as HTMLInputElement).value).toBe(
       "Broken card",
     );
     expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe("host_mac");
@@ -214,8 +214,8 @@ describe("pipeline board", () => {
     const addCard = vi.fn(() => makeCard());
     renderBoard({ addCard });
     await screen.findByText("A pipeline card");
-    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
-    fireEvent.change(screen.getByLabelText("Card title"), { target: { value: "Task" } });
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Task" } });
 
     const machine = screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement;
     expect(machine.value).toBe("");
@@ -223,12 +223,35 @@ describe("pipeline board", () => {
     expect(addCard).not.toHaveBeenCalled();
 
     fireEvent.change(machine, { target: { value: "host_mac" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
     await waitFor(() => expect(addCard).toHaveBeenCalledExactlyOnceWith({
       projectId: "proj_1", hostId: "host_mac", title: "Task", body: "", attachments: [],
     }));
-    fireEvent.click(await screen.findByRole("button", { name: "Add card" }));
+    fireEvent.click(await screen.findByRole("button", { name: "New task" }));
     expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe("");
+  });
+
+  it("keeps a pending task dialog open and prevents a duplicate submission", async () => {
+    let finish!: (card: ReturnType<typeof makeCard>) => void;
+    const addCard = vi.fn(() => new Promise<ReturnType<typeof makeCard>>((resolve) => { finish = resolve; }));
+    renderBoard({ addCard });
+    await screen.findByText("A pipeline card");
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "One task" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "host_mac" } });
+    const form = screen.getByLabelText("Task title").closest("form")!;
+    fireEvent.submit(form);
+    await waitFor(() => expect(addCard).toHaveBeenCalledTimes(1));
+
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.submit(form);
+
+    expect(screen.getByRole("dialog", { name: "New task" })).toBeTruthy();
+    expect((screen.getByLabelText("Task title") as HTMLInputElement).disabled).toBe(true);
+    expect(addCard).toHaveBeenCalledTimes(1);
+    await act(async () => finish(makeCard()));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New task" })).toBeNull());
   });
 
   it("requires a fresh machine choice after switching projects", async () => {
@@ -238,14 +261,15 @@ describe("pipeline board", () => {
       addCard,
     });
     await screen.findByText("A pipeline card");
-    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "host_mac" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Project" }), { target: { value: "proj_2" } });
-    await waitFor(() => expect((screen.getByRole("button", { name: "Add card" }) as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "New task" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
     const machine = screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement;
     expect(machine.value).toBe("");
-    fireEvent.change(screen.getByLabelText("Card title"), { target: { value: "New project task" } });
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "New project task" } });
     fireEvent.submit(machine.closest("form")!);
     expect(addCard).not.toHaveBeenCalled();
   });
@@ -254,8 +278,8 @@ describe("pipeline board", () => {
     const addCard = vi.fn(() => makeCard());
     renderBoard({ addCard, listMachines: vi.fn(() => ({ machines: [] })) });
     await screen.findByText("A pipeline card");
-    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
-    fireEvent.change(screen.getByLabelText("Card title"), { target: { value: "Task" } });
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Task" } });
     expect(screen.getByText("This project has no machine with a checkout.")).toBeTruthy();
     const machine = screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement;
     expect(machine.disabled).toBe(true);
@@ -276,7 +300,7 @@ describe("pipeline board", () => {
 
     fireEvent.change(machine, { target: { value: "host_mac" } });
 
-    await screen.findByText("Machine: MacBook");
+    await screen.findByText("MacBook");
     expect(setMachine).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1", hostId: "host_mac" });
     expect(screen.queryByRole("combobox", { name: "Machine for A pipeline card" })).toBeNull();
   });
@@ -288,6 +312,7 @@ describe("pipeline board", () => {
     renderBoard({ moveCard });
     await screen.findByText("A pipeline card");
 
+    fireEvent.click(screen.getByRole("button", { name: "Actions for A pipeline card" }));
     fireEvent.change(
       screen.getByRole("combobox", { name: "Move A pipeline card" }),
       { target: { value: "planning" } },
@@ -313,14 +338,13 @@ describe("pipeline board", () => {
     const target = screen.getByRole("region", { name: "To do" });
 
     expect(fireEvent.dragOver(target, drag)).toBe(false);
-    expect(target.className).toContain("ring-primary");
+    expect(target.getAttribute("data-drop")).toBe("true");
     fireEvent.drop(target, drag);
     fireEvent.dragEnd(drag.card, drag);
 
     await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: card.id, column: "todo" }));
     expect(drag.card.draggable).toBe(false);
-    expect((within(drag.card).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("combobox", { name: `Move ${card.title}` }) as HTMLSelectElement).disabled).toBe(true);
+    expect((within(drag.card).getByRole("button", { name: `Actions for ${card.title}` }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.drop(target, drag);
     expect(moveCard).toHaveBeenCalledTimes(1);
     expect(slot.inspection.navigateCalls).toEqual([]);
@@ -345,8 +369,9 @@ describe("pipeline board", () => {
     const source = screen.getByRole("region", { name: "Backlog" });
     expect(within(source).getByRole("article").draggable).toBe(true);
     expect(within(target).queryByRole("article")).toBeNull();
-    expect(target.className).not.toContain("ring-primary");
+    expect(target.getAttribute("data-drop")).toBe("false");
 
+    fireEvent.click(screen.getByRole("button", { name: "Actions for A pipeline card" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Move A pipeline card" }), {
       target: { value: "todo" },
     });
@@ -373,7 +398,7 @@ describe("pipeline board", () => {
     expect(moveCard).not.toHaveBeenCalled();
     fireEvent.dragOver(target, drag);
     fireEvent.dragEnd(drag.card, drag);
-    expect(target.className).not.toContain("ring-primary");
+    expect(target.getAttribute("data-drop")).toBe("false");
     expect(fireEvent.dragOver(target, drag)).toBe(true);
     fireEvent.drop(target, drag);
     expect(moveCard).not.toHaveBeenCalled();
@@ -405,7 +430,7 @@ describe("pipeline board", () => {
     const moveCard = vi.fn(() => makeCard({ column: "todo" }));
     renderBoard({ moveCard });
     const title = await screen.findByText("A pipeline card");
-    fireEvent.pointerDown(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Actions for A pipeline card" }));
     const drag = dragCard();
     const target = screen.getByRole("region", { name: "To do" });
     fireEvent.drop(target, drag);
@@ -450,6 +475,7 @@ describe("pipeline board", () => {
     });
     await screen.findByText("Card A");
 
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Card A" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Move Card A" }), {
       target: { value: "todo" },
     });
@@ -499,14 +525,14 @@ describe("pipeline board", () => {
     const addCard = vi.fn(() => makeCard());
     renderBoard({ addCard });
     await screen.findByText("A pipeline card");
-    fireEvent.click(screen.getByRole("button", { name: "Add card" }));
-    fireEvent.change(screen.getByLabelText("Card title"), {
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    fireEvent.change(screen.getByLabelText("Task title"), {
       target: { value: "Too many files" },
     });
     fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), {
       target: { value: "host_mac" },
     });
-    fireEvent.change(screen.getByLabelText("Card attachments"), {
+    fireEvent.change(screen.getByLabelText("Task attachments"), {
       target: {
         files: Array.from(
           { length: 21 },
@@ -518,9 +544,13 @@ describe("pipeline board", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Choose at most 20 attachments.",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
     expect(fetch).not.toHaveBeenCalled();
     expect(addCard).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove file-0.txt" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect((screen.getByRole("button", { name: "Create task" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("shows a launch error alongside another attention reason", async () => {
@@ -535,7 +565,7 @@ describe("pipeline board", () => {
     });
 
     await screen.findByText("thread deleted");
-    expect(screen.getByText("launch failed: lead: host unavailable")).toBeTruthy();
+    expect(screen.getByText("Launch failed: lead: host unavailable")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 });

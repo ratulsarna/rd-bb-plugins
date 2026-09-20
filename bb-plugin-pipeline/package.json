@@ -15,7 +15,7 @@
     "name": "Pipeline",
     "description": "Run intake, planning, implementation, review, QA, and PR work from one project board.",
     "branding": {
-      "icon": "Columns"
+      "icon": "Columns2"
     },
     "server": "./server.ts",
     "app": "./app.tsx"

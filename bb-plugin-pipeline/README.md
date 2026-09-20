@@ -12,6 +12,8 @@ The board tracks:
 
 Cards show why the user is needed, open the owning thread, link the issue and PR, and expose launch retry when the target machine is unavailable. Explicit `bb pipeline report` calls are authoritative; Jev classifies an unsignalled lead idle as needs-you, not waiting, or unchecked.
 
+Use **New task** to add a title, context, attachments, and a machine. Drag cards between stages, or use the card’s actions menu to move or remove it. **Show done** includes completed work.
+
 Retrying after a thread is deleted starts that role over. A retried lead gets a new managed worktree and the full kickoff prompt.
 
 ## Commands
@@ -35,7 +37,7 @@ bb project attachment upload <project-id> --client-file <path>
 
 Pass the returned path to `bb pipeline add --attachment`.
 
-Choose a machine in Add card or pass its ID or unambiguous name with `--machine`. Run `bb machine list` to find IDs and names. The project must have a checkout on the chosen machine. The choice stays with the card for intake, lead work, and retries.
+Choose a machine in New task or pass its ID or unambiguous name with `--machine`. Run `bb machine list` to find IDs and names. The project must have a checkout on the chosen machine. The choice stays with the card for intake, lead work, and retries.
 
 Cards without a machine show a machine picker on the board. Assign one there or with `set-machine` before launching further work. Assignment does not relocate existing threads, and an assigned card's machine cannot be changed.
 
@@ -51,7 +53,7 @@ Launch settings use Claude Code with `claude-fable-5-1`, high reasoning, and ful
 
 The BB server needs `gh` installed and authenticated because Pipeline reads the GitHub issue when it launches a lead thread.
 
-The Jev key is optional. Without it, an unsignalled lead idle is shown as `idle, unchecked` rather than guessed.
+The Jev key is optional. Without it, an unsignalled lead idle is shown as `Idle · awaiting status` rather than guessed.
 
 ## Workflow skills
 

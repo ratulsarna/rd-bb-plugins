@@ -1,4 +1,5 @@
 import type { PipelineMachine } from "@/lib/machines";
+import { Icon } from "./icon";
 
 export function MachineSelect(props: {
   machines: PipelineMachine[];
@@ -8,23 +9,26 @@ export function MachineSelect(props: {
   label?: string;
 }) {
   return (
-    <label className="block w-full text-xs">
-      <span className="mb-1 block text-muted-foreground">Machine</span>
-      <select
-        aria-label={props.label ?? "Machine"}
-        required
-        className="h-9 w-full rounded-md border border-input bg-background px-2 disabled:opacity-50"
-        value={props.value}
-        disabled={props.disabled || props.machines.length === 0}
-        onChange={(event) => props.onChange(event.target.value)}
-      >
-        <option value="" disabled>Choose a machine</option>
-        {props.machines.map((machine) => (
-          <option key={machine.id} value={machine.id}>
-            {machine.name}{machine.status === "connected" ? "" : ` (${machine.status})`}
-          </option>
-        ))}
-      </select>
+    <label className="pipeline-field">
+      <span className="pipeline-field-label">Machine</span>
+      <span className="pipeline-select-wrap">
+        <select
+          aria-label={props.label ?? "Machine"}
+          required
+          className="pipeline-select"
+          value={props.value}
+          disabled={props.disabled || props.machines.length === 0}
+          onChange={(event) => props.onChange(event.target.value)}
+        >
+          <option value="" disabled>Choose a machine</option>
+          {props.machines.map((machine) => (
+            <option key={machine.id} value={machine.id}>
+              {machine.name}{machine.status === "connected" ? "" : ` (${machine.status})`}
+            </option>
+          ))}
+        </select>
+        <Icon name="ChevronDown" />
+      </span>
     </label>
   );
 }

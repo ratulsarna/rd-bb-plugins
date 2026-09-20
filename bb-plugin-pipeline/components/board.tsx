@@ -11,11 +11,24 @@ import type { rpcContract } from "@/lib/contract";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import { ownerThread, type Card, type CardAttachment } from "@/lib/store";
 import { AddCard } from "./add-card";
+import { Icon } from "./icon";
 import { PipelineCard } from "./card";
 import type { PipelineMachine } from "@/lib/machines";
 
 const PROJECT_KEY = "pipeline:selected-project";
 const CARD_DRAG_TYPE = "application/x-bb-pipeline-card";
+const EMPTY_LABELS: Record<Column, string> = {
+  backlog: "New ideas start here",
+  todo: "Ready to plan",
+  planning: "Work through the approach",
+  plan_ready: "Plans awaiting approval",
+  implementing: "Implementation in progress",
+  reviewing: "Ready for code review",
+  qa: "Ready to test",
+  pr: "Prepare the pull request",
+  pr_ready: "Ready to merge",
+  done: "Completed tasks",
+};
 
 interface UploadedAttachment {
   type: "localImage" | "localFile";
@@ -167,25 +180,27 @@ export function PipelineBoard() {
   async function add(title: string, body: string, files: File[], hostId: string) {
     const targetProjectId = projectIdRef.current;
     if (targetProjectId === null) return;
-    try {
-      const attachments = await Promise.all(files.map((file) => upload(targetProjectId, file)));
-      await rpc.call("addCard", { projectId: targetProjectId, hostId, title, body, attachments });
-      await load();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-      throw cause;
-    }
+    const attachments = await Promise.all(files.map((file) => upload(targetProjectId, file)));
+    await rpc.call("addCard", { projectId: targetProjectId, hostId, title, body, attachments });
+    await load();
   }
 
+  const needsAttention = cards.filter((card) => {
+    const owner = ownerThread(card);
+    return card.needsUser || card.launchError !== null || card.threadError !== null || (owner !== null && pendingThreads.has(owner));
+  }).length;
+  const projectName = projects.find((project) => project.id === projectId)?.name ?? "";
+
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden p-4">
-      <div className="mb-4 flex flex-wrap items-start gap-3">
-        <label className="text-sm">
-          <span className="mr-2 text-muted-foreground">Project</span>
+    <div className="pipeline-ui pipeline-board">
+      <header className="pipeline-toolbar">
+        <div className="pipeline-heading"><Icon name="Columns2" /><h1>Pipeline</h1></div>
+        <label className="pipeline-project">
+          <Icon name="Folder" />
           <select
             aria-label="Project"
-            className="rounded-md border border-input bg-background px-2 py-1.5"
             value={projectId ?? ""}
+            disabled={projects.length === 0}
             onChange={(event) => {
               const next = event.target.value;
               requestSequence.current += 1;
@@ -198,39 +213,54 @@ export function PipelineBoard() {
               void load();
             }}
           >
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>{project.name}</option>
-            ))}
+            {projects.length === 0 ? <option value="">{loading ? "Loading projects…" : "No projects"}</option> : null}
+            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
           </select>
+          <Icon name="ChevronDown" />
         </label>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={includeDone}
-            onChange={(event) => {
-              requestSequence.current += 1;
-              includeDoneRef.current = event.target.checked;
-              setIncludeDone(event.target.checked);
-              clearDrag();
-              void load();
-            }}
-          />
-          Show done
-        </label>
-        <div className="ml-auto w-full max-w-md">
-          <AddCard key={projectId} disabled={projectId === null || loading} machines={machines} onAdd={add} />
+        <div className="pipeline-toolbar-actions">
+          <label className="pipeline-toggle">
+            <input type="checkbox" checked={includeDone}
+              onChange={(event) => {
+                requestSequence.current += 1;
+                includeDoneRef.current = event.target.checked;
+                setIncludeDone(event.target.checked);
+                clearDrag();
+                void load();
+              }} />
+            Show done
+          </label>
+          <AddCard key={projectId} projectName={projectName} disabled={projectId === null || loading} machines={machines} onAdd={add} />
         </div>
+      </header>
+      <div className="pipeline-summary">
+        <span className="pipeline-summary-label">Board</span>
+        <span>{cards.length} {cards.length === 1 ? "task" : "tasks"}</span>
+        {needsAttention === 0 ? null : <span className="pipeline-summary-item"><Icon name="MessageQuestion" />{needsAttention} need your attention</span>}
+        {loading ? <span role="status" className="pipeline-summary-item"><Icon name="Loading" className="pipeline-spin" />Updating…</span> : null}
+        {connection === "connected" ? null : <span role="status">Reconnecting…</span>}
+        <span className="pipeline-hint">Drag tasks between stages</span>
       </div>
-      {error === null ? null : <p role="alert" className="mb-3 text-sm text-destructive">{error}</p>}
-      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
-        <div className="flex h-full min-w-max gap-3">
+      {error === null ? null : <p role="alert" className="pipeline-error"><Icon name="AlertCircle" />{error}</p>}
+      {!loading && error === null && cards.length === 0 ? (
+        <div className="pipeline-empty-board">
+          <Icon name="Archive" />
+          <div>
+            <h2>{projectId === null ? "Your pipeline starts with a project" : "Make room for your next idea"}</h2>
+            <p>{projectId === null ? "Add a project in BB to start a task pipeline." : "Create a task, choose its machine, and follow it from first idea to shipped."}</p>
+          </div>
+        </div>
+      ) : null}
+      <div className="pipeline-scroll">
+        <div className="pipeline-columns">
           {visibleColumns.map((column) => {
             const columnCards = cards.filter((card) => card.column === column);
             return (
               <section
                 key={column}
                 aria-label={COLUMN_LABELS[column]}
-                className={`flex w-72 flex-col rounded-lg p-2 ${draggedCard && dropColumn === column ? "bg-primary/10 ring-2 ring-inset ring-primary" : "bg-muted/40"}`}
+                className="pipeline-column"
+                data-drop={Boolean(draggedCard && dropColumn === column)}
                 onDragOver={(event) => {
                   if (!draggedCard || draggedCard.column === column || pendingCards.has(draggedCard.id) || !event.dataTransfer.types.includes(CARD_DRAG_TYPE)) return;
                   event.preventDefault();
@@ -249,10 +279,13 @@ export function PipelineBoard() {
                   clearDrag();
                 }}
               >
-                <h2 className="mb-2 px-1 text-sm font-semibold">
-                  {COLUMN_LABELS[column]} <span className="text-muted-foreground">{columnCards.length}</span>
-                </h2>
-                <div className="min-h-0 space-y-2 overflow-y-auto">
+                <div className="pipeline-column-header">
+                  <span className="pipeline-stage" data-stage={column} aria-hidden="true" />
+                  <h2>{COLUMN_LABELS[column]}</h2>
+                  <span className="pipeline-column-count">{columnCards.length}</span>
+                </div>
+                <div className="pipeline-column-body">
+                  {loading && cards.length === 0 ? <div className="pipeline-skeleton" aria-hidden="true" /> : null}
                   {columnCards.map((card) => {
                     const owner = ownerThread(card);
                     return (
@@ -282,7 +315,10 @@ export function PipelineBoard() {
                     );
                   })}
                   {!loading && columnCards.length === 0 ? (
-                    <p className="px-1 py-3 text-center text-xs text-muted-foreground">Empty</p>
+                    <div className="pipeline-empty">
+                      <strong>{draggedCard && draggedCard.column !== column ? "Drop task here" : EMPTY_LABELS[column]}</strong>
+                      <span>{draggedCard && draggedCard.column !== column ? `Move to ${COLUMN_LABELS[column]}` : "No tasks yet"}</span>
+                    </div>
                   ) : null}
                 </div>
               </section>
