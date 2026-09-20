@@ -4,53 +4,34 @@ import type {
   MessageDispatchHookDecision,
 } from "@get-bb/plugin-sdk";
 import type { CardStore } from "./store";
+import { createTaskThreads } from "./task-threads";
+import { ownerThread } from "./card";
+import { pauseInstruction } from "./control-prompts";
 
 type Thread = MessageDispatchHookContext["thread"];
 
 const TASK_LIMIT = 2;
 
-interface Task {
-  cardId: string;
-  projectId: string;
-}
-
 export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
-  const { sdk, pluginId } = bb;
-
-  function resolver() {
-    const tasks = new Map<string, Promise<Task | null>>();
-
-    async function resolve(thread: Thread, ancestors: Set<string>): Promise<Task | null> {
-      if (ancestors.has(thread.id)) throw new Error("Cyclic Pipeline thread ancestry");
-      const nextAncestors = new Set(ancestors).add(thread.id);
-      const card = store.getByThread(thread.id);
-      if (card !== null) return { cardId: card.id, projectId: card.projectId };
-      if (thread.originPluginId === pluginId) {
-        const metadata = await sdk.threads.getPluginMetadata({ threadId: thread.id, experimental_includeDeleted: true });
-        if (typeof metadata.cardId === "string" && metadata.cardId.trim() !== "") {
-          return { cardId: metadata.cardId, projectId: thread.projectId };
-        }
-      }
-      if (thread.parentThreadId === null) return null;
-      const parent = await sdk.threads.get({ threadId: thread.parentThreadId, experimental_includeDeleted: true });
-      return resolve(parent, nextAncestors);
-    }
-
-    return (thread: Thread): Promise<Task | null> => {
-      let task = tasks.get(thread.id);
-      if (task === undefined) {
-        task = resolve(thread, new Set());
-        tasks.set(thread.id, task);
-      }
-      return task;
-    };
-  }
+  const { sdk } = bb;
+  const { resolver } = createTaskThreads(bb, store);
 
   return {
     async decide(context: MessageDispatchHookContext): Promise<MessageDispatchHookDecision> {
       const taskFor = resolver();
       const task = await taskFor(context.thread);
-      if (task === null || context.attempt === "join-turn") return { action: "proceed" };
+      if (task === null) return { action: "proceed" };
+      const card = store.get(task.cardId);
+      if (card !== null && card.runState !== "running") {
+        const pauseControl = card.runState === "pause_requested" &&
+          context.thread.id === ownerThread(card) &&
+          context.input.text === pauseInstruction(card);
+        const coordinating = card.runState === "pause_requested" &&
+          context.thread.status !== "pending" && context.senderThreadId !== null && context.senderThreadId !== "mixed" &&
+          (await taskFor(await sdk.threads.get({ threadId: context.senderThreadId, experimental_includeDeleted: true })))?.cardId === card.id;
+        if (!pauseControl && !coordinating) return { action: "wait", reason: "Pipeline: task is paused or pausing" };
+      }
+      if (context.attempt === "join-turn") return { action: "proceed" };
       if (context.host === null) return { action: "reject", message: "Pipeline work requires a machine" };
 
       const running = await sdk.threads.listRunning({ experimental_includeDispatchOccupancy: true });

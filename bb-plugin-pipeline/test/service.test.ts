@@ -677,6 +677,70 @@ describe("launch", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
+  it("does not spawn when a card is held during async launch preparation", async () => {
+    let finishPreparation!: (value: PipelineSettings) => void;
+    const preparing = new Promise<PipelineSettings>((resolve) => {
+      finishPreparation = resolve;
+    });
+    const getSettings = vi.fn(async () => preparing);
+    const { store, service, spawn } = setup({ getSettings });
+    seed(store);
+
+    const launching = service.launch("card_1", "intake");
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledOnce());
+    const held = store.update("card_1", { runState: "pause_requested" });
+    finishPreparation(settings);
+
+    await expect(launching).resolves.toEqual(held);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(store.get("card_1")).toEqual(held);
+  });
+
+  it("does not spawn after ownership or thread linkage changes during preparation", async () => {
+    let finishPreparation!: (value: PipelineSettings) => void;
+    const preparing = new Promise<PipelineSettings>((resolve) => {
+      finishPreparation = resolve;
+    });
+    const getSettings = vi.fn(async () => preparing);
+    const { store, service, spawn } = setup({ getSettings });
+    seed(store);
+
+    const launching = service.launch("card_1", "intake");
+    await vi.waitFor(() => expect(getSettings).toHaveBeenCalledOnce());
+    const handedOff = store.update("card_1", {
+      ownerRole: "lead",
+      leadThreadId: "lead",
+    });
+    finishPreparation(settings);
+
+    await expect(launching).resolves.toEqual(handedOff);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("links a spawn already in flight when the card becomes held", async () => {
+    let finishSpawn!: () => void;
+    const spawning = new Promise<void>((resolve) => {
+      finishSpawn = resolve;
+    });
+    const { store, service, spawn } = setup({
+      spawn: async () => {
+        await spawning;
+        return thread("intake");
+      },
+    });
+    seed(store);
+
+    const launching = service.launch("card_1", "intake");
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
+    store.update("card_1", { runState: "pausing" });
+    finishSpawn();
+
+    await expect(launching).resolves.toMatchObject({
+      runState: "pausing",
+      intakeThreadId: "intake",
+    });
+  });
+
   it("records a spawn error and retries exactly once", async () => {
     let fail = true;
     const { store, service, spawn } = setup({
@@ -1015,6 +1079,132 @@ describe("launch", () => {
       ownerRole: "lead",
       needsUser: false,
       launchError: null,
+    });
+  });
+});
+
+describe("held cards", () => {
+  it("rejects launch, retry, move, removal, and owner handoff until resume", async () => {
+    const { store, service, spawn } = setup();
+    seed(store);
+    const held = store.update("card_1", {
+      runState: "paused",
+      launchError: "intake: start cancelled",
+    });
+
+    await expect(service.launch("card_1", "intake")).rejects.toThrow(
+      "resume it before launching it",
+    );
+    await expect(service.retry("card_1")).rejects.toThrow(
+      "resume it before retrying it",
+    );
+    await expect(service.move("card_1", "todo", "ui")).rejects.toThrow(
+      "resume it before moving it",
+    );
+    expect(() => service.remove("card_1")).toThrow(
+      "resume it before removing it",
+    );
+    await expect(
+      service.report({
+        cardId: "card_1",
+        column: "planning",
+        issueUrl: "https://github.com/o/r/issues/1",
+      }),
+    ).rejects.toThrow("resume it before changing its phase or owner");
+
+    expect(store.get("card_1")).toEqual(held);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("accepts metadata and attention reports without moving or launching", async () => {
+    const { store, service, spawn } = setup();
+    seed(store);
+    store.update("card_1", {
+      runState: "pausing",
+      intakeThreadId: "intake",
+    });
+
+    const reported = await service.report({
+      threadId: "intake",
+      issueUrl: "https://github.com/o/r/issues/2",
+      prUrl: "https://github.com/o/r/pull/3",
+      tier: "small",
+      needsYou: "Keep this context for resume",
+    });
+
+    expect(reported).toMatchObject({
+      runState: "pausing",
+      column: "backlog",
+      ownerRole: "intake",
+      intakeThreadId: "intake",
+      issueUrl: "https://github.com/o/r/issues/2",
+      prUrl: "https://github.com/o/r/pull/3",
+      tier: "small",
+      needsUser: true,
+      attentionReason: "Keep this context for resume",
+    });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("ignores held idle and cancelled-queue observations, then reconciles after resume", async () => {
+    const { store, service, classify, onAttention } = setup({
+      getThread: async ({ threadId }) =>
+        thread(threadId, 0, { status: "pending", queuedMessageCount: 0 }),
+    });
+    seed(store);
+    const held = store.update("card_1", {
+      runState: "paused",
+      intakeThreadId: "intake",
+    });
+
+    await service.onThreadIdle(thread("intake"), "Question while paused?");
+    await service.onThreadQueueChanged(
+      thread("intake", 0, { status: "pending", queuedMessageCount: 0 }),
+    );
+    await service.startupPass();
+
+    expect(store.get("card_1")).toEqual(held);
+    expect(classify).not.toHaveBeenCalled();
+    expect(onAttention).not.toHaveBeenCalled();
+
+    store.update("card_1", { runState: "running" });
+    await service.onThreadQueueChanged(
+      thread("intake", 0, { status: "pending", queuedMessageCount: 0 }),
+    );
+    expect(store.get("card_1")).toMatchObject({
+      runState: "running",
+      launchError: "intake: start cancelled",
+      attentionReason: "intake start cancelled",
+    });
+  });
+
+  it("drops a deleted owner link so resume can use the normal launch path", async () => {
+    const { store, service, spawn, onAttention } = setup();
+    seed(store);
+    store.update("card_1", {
+      runState: "paused",
+      intakeThreadId: "deleted-intake",
+    });
+
+    await service.onThreadGone(
+      thread("deleted-intake", 0, { deletedAt: 1 }),
+    );
+
+    expect(store.get("card_1")).toMatchObject({
+      runState: "paused",
+      intakeThreadId: null,
+      launchError: null,
+      needsUser: false,
+    });
+    expect(onAttention).not.toHaveBeenCalled();
+
+    store.update("card_1", { runState: "running" });
+    await service.launch("card_1", "intake");
+
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(store.get("card_1")).toMatchObject({
+      runState: "running",
+      intakeThreadId: "thr_1",
     });
   });
 });
