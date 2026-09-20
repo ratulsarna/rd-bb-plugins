@@ -91,7 +91,10 @@ describe("graceful task controls", () => {
     expect(await decide("worker", "Save a handoff and pause", "lead")).toEqual({ action: "proceed" });
     expect(await decide("new-worker", "New assignment", "lead")).toMatchObject({ action: "wait" });
     expect(await decide("ordinary")).toEqual({ action: "proceed" });
+    const completionNotice = makeMessageDispatchHookContext({ thread: s.threads.get("lead")!, host: { id: "host_a" }, initiator: "system", senderThreadId: null });
+    expect(await s.capacity.decide(completionNotice)).toEqual({ action: "proceed" });
     await s.acknowledge();
+    expect(await s.capacity.decide(completionNotice)).toMatchObject({ action: "wait" });
     expect(await decide("worker", "Late assignment", "lead")).toMatchObject({ action: "wait" });
     expect(await decide("lead", pauseInstruction(s.card()), null, true)).toMatchObject({ action: "wait" });
   });

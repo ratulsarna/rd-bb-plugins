@@ -49,5 +49,3 @@ export function createTaskThreads(bb: BbPluginApi, store: CardStore) {
 
   return { resolver, occupied };
 }
-
-export type TaskThreads = ReturnType<typeof createTaskThreads>;

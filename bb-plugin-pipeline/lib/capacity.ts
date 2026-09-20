@@ -26,9 +26,11 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
         const pauseControl = card.runState === "pause_requested" &&
           context.thread.id === ownerThread(card) &&
           context.input.text === pauseInstruction(card);
+        // Core's worker completion notices have no sender thread.
         const coordinating = card.runState === "pause_requested" &&
-          context.thread.status !== "pending" && context.senderThreadId !== null && context.senderThreadId !== "mixed" &&
-          (await taskFor(await sdk.threads.get({ threadId: context.senderThreadId, experimental_includeDeleted: true })))?.cardId === card.id;
+          context.thread.status !== "pending" && (context.initiator === "system" ||
+            (context.senderThreadId !== null && context.senderThreadId !== "mixed" &&
+              (await taskFor(await sdk.threads.get({ threadId: context.senderThreadId, experimental_includeDeleted: true })))?.cardId === card.id));
         if (!pauseControl && !coordinating) return { action: "wait", reason: "Pipeline: task is paused or pausing" };
       }
       if (context.attempt === "join-turn") return { action: "proceed" };
