@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { COLUMNS, COLUMN_LABELS } from "../lib/columns";
 import { makeCard, makeSidebarThread } from "./sdk-fake";
@@ -69,6 +69,20 @@ function renderBoard(options?: {
   );
   mounted.push(slot);
   return { slot, listProjects, listCards };
+}
+
+function dragCard(title = "A pipeline card") {
+  const data = new Map<string, string>();
+  const dataTransfer = {
+    effectAllowed: "uninitialized",
+    dropEffect: "none",
+    get types() { return [...data.keys()]; },
+    setData: (type: string, value: string) => data.set(type, value),
+    getData: (type: string) => data.get(type) ?? "",
+  };
+  const card = screen.getByRole("article", { name: title });
+  fireEvent.dragStart(card, { dataTransfer });
+  return { card, dataTransfer };
 }
 
 describe("pipeline board", () => {
@@ -203,12 +217,133 @@ describe("pipeline board", () => {
     );
   });
 
-  it("loads the selected project after an earlier mutation finishes", async () => {
+  it("drops into an empty column, blocks another move until saved, and reloads the card", async () => {
+    let card = makeCard();
+    let finishMove!: () => void;
+    const moveCard = vi.fn(() => new Promise<ReturnType<typeof makeCard>>((resolve) => {
+      finishMove = () => {
+        card = { ...card, column: "todo" };
+        resolve(card);
+      };
+    }));
+    const { slot } = renderBoard({ listCards: vi.fn(() => ({ cards: [card] })), moveCard });
+    await screen.findByText(card.title);
+    const drag = dragCard();
+    const target = screen.getByRole("region", { name: "To do" });
+
+    expect(fireEvent.dragOver(target, drag)).toBe(false);
+    expect(target.className).toContain("ring-primary");
+    fireEvent.drop(target, drag);
+    fireEvent.dragEnd(drag.card, drag);
+
+    await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: card.id, column: "todo" }));
+    expect(drag.card.draggable).toBe(false);
+    expect((screen.getByRole("combobox", { name: `Move ${card.title}` }) as HTMLSelectElement).disabled).toBe(true);
+    fireEvent.drop(target, drag);
+    expect(moveCard).toHaveBeenCalledTimes(1);
+    expect(slot.inspection.navigateCalls).toEqual([]);
+
+    finishMove();
+    await waitFor(() => expect(within(target).getByRole("article").draggable).toBe(true));
+    expect(within(screen.getByRole("region", { name: "Backlog" })).queryByRole("article")).toBeNull();
+  });
+
+  it("keeps a rejected drop in its source column and allows retry", async () => {
+    const moveCard = vi.fn(async () => {
+      throw new Error("no issue yet: let intake finish, or pass --issue <url>");
+    });
+    renderBoard({ moveCard });
+    await screen.findByText("A pipeline card");
+    const drag = dragCard();
+    const target = screen.getByRole("region", { name: "Planning" });
+    fireEvent.dragOver(target, drag);
+    fireEvent.drop(target, drag);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("no issue yet");
+    const source = screen.getByRole("region", { name: "Backlog" });
+    expect(within(source).getByRole("article").draggable).toBe(true);
+    expect(within(target).queryByRole("article")).toBeNull();
+    expect(target.className).not.toContain("ring-primary");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Move A pipeline card" }), {
+      target: { value: "todo" },
+    });
+    await waitFor(() => expect(moveCard).toHaveBeenCalledTimes(2));
+    await screen.findByRole("alert");
+  });
+
+  it("ignores same-column, external, and cancelled drops", async () => {
+    const moveCard = vi.fn(() => makeCard());
+    renderBoard({ moveCard, cards: [makeCard({ column: "planning" })] });
+    await screen.findByText("A pipeline card");
+    const drag = dragCard();
+    const source = screen.getByRole("region", { name: "Planning" });
+    const target = screen.getByRole("region", { name: "To do" });
+
+    expect(fireEvent.dragOver(source, drag)).toBe(true);
+    fireEvent.drop(source, drag);
+    expect(moveCard).not.toHaveBeenCalled();
+
+    fireEvent.dragStart(drag.card, drag);
+    const external = { dataTransfer: { types: ["Files"], getData: () => "" } };
+    expect(fireEvent.dragOver(target, external)).toBe(true);
+    fireEvent.drop(target, external);
+    expect(moveCard).not.toHaveBeenCalled();
+    fireEvent.dragOver(target, drag);
+    fireEvent.dragEnd(drag.card, drag);
+    expect(target.className).not.toContain("ring-primary");
+    expect(fireEvent.dragOver(target, drag)).toBe(true);
+    fireEvent.drop(target, drag);
+    expect(moveCard).not.toHaveBeenCalled();
+  });
+
+  it("invalidates a drag when the project changes", async () => {
+    const moveCard = vi.fn(() => makeCard());
+    renderBoard({
+      projects: [{ id: "proj_1", name: "One" }, { id: "proj_2", name: "Two" }],
+      listCards: vi.fn((input: unknown) => {
+        const { projectId } = input as { projectId: string };
+        return { cards: [makeCard({ id: projectId, projectId, title: projectId })] };
+      }),
+      moveCard,
+    });
+    await screen.findByText("proj_1");
+    const drag = dragCard("proj_1");
+    fireEvent.change(screen.getByRole("combobox", { name: "Project" }), {
+      target: { value: "proj_2" },
+    });
+    await screen.findByText("proj_2");
+    const target = screen.getByRole("region", { name: "Planning" });
+    expect(fireEvent.dragOver(target, drag)).toBe(true);
+    fireEvent.drop(target, drag);
+    expect(moveCard).not.toHaveBeenCalled();
+  });
+
+  it("prevents a drag from card actions without blocking the next title drag", async () => {
+    const moveCard = vi.fn(() => makeCard({ column: "todo" }));
+    renderBoard({ moveCard });
+    const title = await screen.findByText("A pipeline card");
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Remove" }));
+    const drag = dragCard();
+    const target = screen.getByRole("region", { name: "To do" });
+    fireEvent.drop(target, drag);
+    expect(moveCard).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(title);
+    fireEvent.dragStart(drag.card, drag);
+    fireEvent.drop(target, drag);
+    await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1", column: "todo" }));
+    await waitFor(() => expect(drag.card.draggable).toBe(true));
+  });
+
+  it.each(["resolve", "reject"] as const)("keeps the selected project after an earlier move %s", async (outcome) => {
     let finishMove!: (value: ReturnType<typeof makeCard>) => void;
+    let rejectMove!: (reason: Error) => void;
     const moveCard = vi.fn(
       () =>
-        new Promise<ReturnType<typeof makeCard>>((resolve) => {
+        new Promise<ReturnType<typeof makeCard>>((resolve, reject) => {
           finishMove = resolve;
+          rejectMove = reject;
         }),
     );
     const listCards = vi.fn((input: unknown) => {
@@ -241,11 +376,18 @@ describe("pipeline board", () => {
     });
     await screen.findByText("Card B");
 
-    finishMove(makeCard({ id: "project-a", projectId: "project-a" }));
-    await waitFor(() => expect(listCards.mock.calls.length).toBeGreaterThan(2));
+    await act(async () => {
+      if (outcome === "resolve") finishMove(makeCard({ id: "project-a", projectId: "project-a" }));
+      else rejectMove(new Error("Project A move failed"));
+    });
+    if (outcome === "resolve") {
+      await waitFor(() => expect(listCards.mock.calls.length).toBeGreaterThan(2));
+    }
     expect(listCards.mock.calls.at(-1)?.[0]).toMatchObject({
       projectId: "project-b",
     });
+    expect(screen.getByText("Card B")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("recovers a failed project load on the next connection", async () => {

@@ -1,4 +1,4 @@
-import type { MouseEvent } from "react";
+import { useRef, type DragEventHandler, type MouseEvent } from "react";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import { ownerThread, type Card } from "@/lib/store";
 
@@ -12,15 +12,37 @@ function attention(card: Card): string | null {
 export function PipelineCard(props: {
   card: Card;
   questionOpen: boolean;
+  dragging: boolean;
+  moving: boolean;
+  onDragStart: DragEventHandler<HTMLElement>;
+  onDragEnd(): void;
   onOpen(threadId: string): void;
   onMove(column: Column): void;
   onRetry(): void;
   onRemove(): void;
 }) {
   const owner = ownerThread(props.card);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const dragAllowed = useRef(true);
   const stop = (event: MouseEvent) => event.stopPropagation();
   return (
-    <article className="rounded-lg border border-border bg-card p-3 shadow-sm">
+    <article
+      aria-label={props.card.title}
+      aria-busy={props.moving}
+      draggable={!props.moving}
+      onPointerDownCapture={(event) => {
+        dragAllowed.current = !actionsRef.current?.contains(event.target as Node);
+      }}
+      onDragStart={(event) => {
+        if (!dragAllowed.current) {
+          event.preventDefault();
+          return;
+        }
+        props.onDragStart(event);
+      }}
+      onDragEnd={props.onDragEnd}
+      className={`rounded-lg border border-border bg-card p-3 shadow-sm ${props.moving ? "cursor-wait" : "cursor-grab active:cursor-grabbing"} ${props.dragging ? "opacity-50" : ""}`}
+    >
       <button
         type="button"
         className="block w-full text-left disabled:cursor-default"
@@ -51,7 +73,11 @@ export function PipelineCard(props: {
           </span>
         ) : null}
       </button>
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" onClick={stop}>
+      <div
+        ref={actionsRef}
+        className="mt-2 flex flex-wrap items-center gap-2 text-xs"
+        onClick={stop}
+      >
         {props.card.issueUrl === null ? null : (
           <a className="text-primary underline" href={props.card.issueUrl} target="_blank" rel="noreferrer">
             Issue
@@ -68,6 +94,7 @@ export function PipelineCard(props: {
             aria-label={`Move ${props.card.title}`}
             className="rounded border border-input bg-background px-1.5 py-1"
             value={props.card.column}
+            disabled={props.moving}
             onChange={(event) => props.onMove(event.target.value as Column)}
           >
             {COLUMNS.map((column) => (

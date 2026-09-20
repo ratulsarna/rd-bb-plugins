@@ -9,11 +9,12 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "@/lib/contract";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
-import { ownerThread, type CardAttachment } from "@/lib/store";
+import { ownerThread, type Card, type CardAttachment } from "@/lib/store";
 import { AddCard } from "./add-card";
 import { PipelineCard } from "./card";
 
 const PROJECT_KEY = "pipeline:selected-project";
+const CARD_DRAG_TYPE = "application/x-bb-pipeline-card";
 
 interface UploadedAttachment {
   type: "localImage" | "localFile";
@@ -53,6 +54,9 @@ export function PipelineBoard() {
   const [cards, setCards] = useState<Awaited<ReturnType<typeof rpc.call<"listCards">>>["cards"]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
+  const [dropColumn, setDropColumn] = useState<Column | null>(null);
+  const [movingCards, setMovingCards] = useState<Set<string>>(new Set());
   const requestSequence = useRef(0);
   const projectIdRef = useRef<string | null>(null);
   const includeDoneRef = useRef(false);
@@ -121,6 +125,32 @@ export function PipelineBoard() {
     [sidebar.threads],
   );
   const visibleColumns = includeDone ? COLUMNS : COLUMNS.filter((column) => column !== "done");
+  const draggedCard = cards.find((card) => card.id === draggedCardId && card.projectId === projectId);
+
+  function clearDrag() {
+    setDraggedCardId(null);
+    setDropColumn(null);
+  }
+
+  async function move(card: Card, column: Column) {
+    if (card.column === column || movingCards.has(card.id) || card.projectId !== projectIdRef.current) return;
+    setMovingCards((current) => new Set(current).add(card.id));
+    setError(null);
+    try {
+      await rpc.call("moveCard", { cardId: card.id, column });
+      await load();
+    } catch (cause) {
+      if (projectIdRef.current === card.projectId) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    } finally {
+      setMovingCards((current) => {
+        const next = new Set(current);
+        next.delete(card.id);
+        return next;
+      });
+    }
+  }
 
   async function add(title: string, body: string, files: File[]) {
     const targetProjectId = projectIdRef.current;
@@ -155,6 +185,7 @@ export function PipelineBoard() {
               localStorage.setItem(PROJECT_KEY, next);
               setProjectId(next);
               setCards([]);
+              clearDrag();
               void load();
             }}
           >
@@ -171,6 +202,7 @@ export function PipelineBoard() {
               requestSequence.current += 1;
               includeDoneRef.current = event.target.checked;
               setIncludeDone(event.target.checked);
+              clearDrag();
               void load();
             }}
           />
@@ -186,7 +218,28 @@ export function PipelineBoard() {
           {visibleColumns.map((column) => {
             const columnCards = cards.filter((card) => card.column === column);
             return (
-              <section key={column} aria-label={COLUMN_LABELS[column]} className="flex w-72 flex-col rounded-lg bg-muted/40 p-2">
+              <section
+                key={column}
+                aria-label={COLUMN_LABELS[column]}
+                className={`flex w-72 flex-col rounded-lg p-2 ${draggedCard && dropColumn === column ? "bg-primary/10 ring-2 ring-inset ring-primary" : "bg-muted/40"}`}
+                onDragOver={(event) => {
+                  if (!draggedCard || draggedCard.column === column || movingCards.has(draggedCard.id) || !event.dataTransfer.types.includes(CARD_DRAG_TYPE)) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDropColumn(column);
+                }}
+                onDragLeave={(event) => {
+                  if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
+                    setDropColumn((current) => current === column ? null : current);
+                  }
+                }}
+                onDrop={(event) => {
+                  if (!draggedCard || event.dataTransfer.getData(CARD_DRAG_TYPE) !== draggedCard.id) return;
+                  event.preventDefault();
+                  void move(draggedCard, column);
+                  clearDrag();
+                }}
+              >
                 <h2 className="mb-2 px-1 text-sm font-semibold">
                   {COLUMN_LABELS[column]} <span className="text-muted-foreground">{columnCards.length}</span>
                 </h2>
@@ -197,9 +250,21 @@ export function PipelineBoard() {
                       <PipelineCard
                         key={card.id}
                         card={card}
+                        dragging={draggedCardId === card.id}
+                        moving={movingCards.has(card.id)}
+                        onDragStart={(event) => {
+                          if (movingCards.has(card.id)) {
+                            event.preventDefault();
+                            return;
+                          }
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData(CARD_DRAG_TYPE, card.id);
+                          setDraggedCardId(card.id);
+                        }}
+                        onDragEnd={clearDrag}
                         questionOpen={owner !== null && pendingThreads.has(owner)}
                         onOpen={(threadId) => navigate.toThread(threadId)}
-                        onMove={(next: Column) => mutate(rpc.call("moveCard", { cardId: card.id, column: next }))}
+                        onMove={(next) => void move(card, next)}
                         onRetry={() => mutate(rpc.call("retryLaunch", { cardId: card.id }))}
                         onRemove={() => mutate(rpc.call("removeCard", { cardId: card.id }))}
                       />
