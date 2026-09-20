@@ -309,7 +309,8 @@ test("an explicit rpc send resolves the project from the thread and still sends 
       },
       threads: {
         get: async ({ threadId }: { threadId: string }) => {
-          if (threadId === "thr_gone") throw new Error("thread not found");
+          if (threadId === "thr_gone") throw Object.assign(new Error("thread not found"), { status: 404 });
+          if (threadId === "thr_unavailable") throw new Error("storage unavailable");
           return makeThreadResponse({ id: threadId, projectId: "proj_fallback" });
         },
         events: { list: async () => [] },
@@ -320,6 +321,11 @@ test("an explicit rpc send resolves the project from the thread and still sends 
   await plugin(host.bb);
 
   const queue = new NotificationQueue(host.bb.storage.kv);
+  await assert.rejects(
+    host.harness.behavior.callRpc("send", { message: "Needs review.", threadId: "thr_unavailable" }),
+    /storage unavailable/,
+  );
+  assert.equal(await queue.count(), 0);
   await host.harness.behavior.callRpc("send", {
     message: "Needs review.",
     threadId: "thr_live",

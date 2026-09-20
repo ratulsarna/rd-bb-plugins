@@ -187,7 +187,10 @@ export default async function plugin(bb: BbPluginApi) {
       if (targetProjectId === null && threadId != null) {
         try {
           targetProjectId = (await bb.sdk.threads.get({ threadId })).projectId;
-        } catch {
+        } catch (error) {
+          if (!isRecord(error) || (error.status !== 404 && error.code !== "thread_not_found")) {
+            throw error;
+          }
           // A deleted thread must not block the notification.
         }
       }
