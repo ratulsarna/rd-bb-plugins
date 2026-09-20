@@ -15,7 +15,8 @@ import type { MachineQueue } from "./contract";
 import type { Card, CardAttachment, CardStore } from "./store";
 
 const USAGE = `Usage:
-  bb pipeline add --title <text> --machine <id-or-name> [--body <text>] [--attachment <uploaded-path>]... [--project <id>] [--json]
+  bb pipeline add --title <text> --machine <id-or-name> [--no-start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>] [--json]
+  bb pipeline start <card-id> [--json]
   bb pipeline list [--project <id>] [--all] [--json]
   bb pipeline show <card-id> [--json]
   bb pipeline queue [--project <id>] [--json]
@@ -57,7 +58,7 @@ const VALUE_OPTIONS = new Set([
   "tier",
   "paused",
 ]);
-const BOOLEAN_OPTIONS = new Set(["json", "all", "working", "clear"]);
+const BOOLEAN_OPTIONS = new Set(["json", "all", "working", "clear", "no-start"]);
 const MACHINE_COMMANDS = new Set(["add", "set-machine"]);
 
 interface ParsedArgs {
@@ -174,6 +175,7 @@ function formatCard(
   queue: CardQueueDetails = { queued: false, waitingReasons: [], runNext: false },
 ): string {
   const flags = [
+    card.startRequested ? null : "not started",
     card.runState === "running" ? null : card.runState.replaceAll("_", " "),
     card.controlError,
     queue.queued
@@ -227,6 +229,7 @@ export function createPipelineCli(input: {
     summary: "Manage pipeline cards and report delivery progress",
     commands: [
       { name: "add", summary: "Add a card", usage: "bb pipeline add --title <text> --machine <id-or-name> [options]" },
+      { name: "start", summary: "Start intake for a saved task", usage: "bb pipeline start <card-id> [--json]" },
       { name: "list", summary: "List cards", usage: "bb pipeline list [--project <id>] [--all] [--json]" },
       { name: "show", summary: "Show a card", usage: "bb pipeline show <card-id> [--json]" },
       { name: "queue", summary: "Show running and waiting work by machine", usage: "bb pipeline queue [--project <id>] [--json]" },
@@ -266,6 +269,7 @@ export function createPipelineCli(input: {
       }
       if (args.options.has("paused") && args.command !== "report") return failure("--paused is only accepted by report", USAGE);
       if (args.options.has("clear") && args.command !== "run-next") return failure("--clear is only accepted by run-next", USAGE);
+      if (args.options.has("no-start") && args.command !== "add") return failure("--no-start is only accepted by add", USAGE);
 
       try {
         switch (args.command) {
@@ -287,8 +291,14 @@ export function createPipelineCli(input: {
               body: option(args, "body") ?? "",
               attachments: (args.options.get("attachment") ?? []).map(attachment),
               source: "cli",
+              start: !args.options.has("no-start"),
             });
             return success(args, card, `Added ${formatCard(card)}`);
+          }
+          case "start": {
+            if (args.positionals.length !== 1) return failure("start requires one card id", USAGE);
+            const card = await input.service.start(args.positionals[0]!, "cli");
+            return success(args, card, formatCard(card));
           }
           case "list": {
             if (args.positionals.length > 0) return failure("list takes no positional arguments", USAGE);

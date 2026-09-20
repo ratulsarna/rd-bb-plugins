@@ -26,6 +26,7 @@ export function PipelineCard(props: {
   onDragStart: DragEventHandler<HTMLElement>;
   onDragEnd(): void;
   onOpen(threadId: string): void;
+  onStart(): void;
   onMove(column: Column): void;
   onPause(): void;
   onResume(): void;
@@ -36,6 +37,7 @@ export function PipelineCard(props: {
 }) {
   const { card } = props;
   const running = card.runState === "running";
+  const started = card.startRequested;
   const owner = ownerThread(card);
   const dragAllowed = useRef(true);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -47,7 +49,7 @@ export function PipelineCard(props: {
     <article
       aria-label={card.title}
       aria-busy={props.pending}
-      draggable={running && !props.pending}
+      draggable={running && started && !props.pending}
       data-dragging={props.dragging}
       onPointerDownCapture={(event) => {
         dragAllowed.current = !(event.target as Element).closest("[data-card-control]");
@@ -78,7 +80,7 @@ export function PipelineCard(props: {
           <Popover.Portal>
             <Popover.Content {...portalScope} data-card-control className="pipeline-ui pipeline-popover" align="end" sideOffset={6}
               aria-label={`Actions for ${card.title}`}>
-              {card.column === "done" ? null : (
+              {!started || card.column === "done" ? null : (
                 <div className="pipeline-card-controls">
                   {card.runState === "running" ? (
                     <button type="button" className="pipeline-button pipeline-ghost" disabled={props.pending}
@@ -138,7 +140,7 @@ export function PipelineCard(props: {
               <label className="pipeline-field">
                 <span className="pipeline-field-label">Move to</span>
                 <span className="pipeline-select-wrap">
-                  <select aria-label={`Move ${card.title}`} className="pipeline-select" value={card.column} disabled={props.pending || !running}
+                  <select aria-label={`Move ${card.title}`} className="pipeline-select" value={card.column} disabled={props.pending || !running || !started}
                     onChange={(event) => {
                       props.onMove(event.target.value as Column);
                       setActionsOpen(false);
@@ -160,20 +162,20 @@ export function PipelineCard(props: {
         </Popover.Root>
       </div>
       {card.body.trim() === "" ? null : <p className="pipeline-card-note">{card.body}</p>}
-      {!running || reason === null ? null : (
+      {!started || !running || reason === null ? null : (
         <div className="pipeline-card-status pipeline-attention"><Icon name="AlertCircle" /><span>{reason}</span></div>
       )}
-      {(running || card.runState === "pause_requested") && props.questionOpen ? (
+      {started && (running || card.runState === "pause_requested") && props.questionOpen ? (
         <div aria-label="Question open" className="pipeline-card-status pipeline-attention">
           <Icon name="MessageQuestion" /><span>Question waiting for you</span>
         </div>
       ) : null}
-      {card.launchError === null ? null : (
+      {!started || card.launchError === null ? null : (
         <div className="pipeline-card-status pipeline-card-error" data-card-control>
           <Icon name="AlertCircle" />
           <div>
             <p>Launch failed: {card.launchError}</p>
-            {running ? (
+            {running && started ? (
               <button type="button" className="pipeline-retry" disabled={props.pending} onClick={props.onRetry}>
                 <Icon name="RotateCcw" /> Retry
               </button>
@@ -181,11 +183,20 @@ export function PipelineCard(props: {
           </div>
         </div>
       )}
-      {card.controlError === null ? null : (
+      {!started || card.controlError === null ? null : (
         <div className="pipeline-card-status pipeline-card-error">
           <Icon name="AlertCircle" /><span>{card.controlError}</span>
         </div>
       )}
+      {!started && running && card.column !== "done" ? (
+        <div className="pipeline-card-status pipeline-not-started" data-card-control>
+          <Icon name="Clock" />
+          <span>Not started</span>
+          <button type="button" className="pipeline-start" disabled={props.pending} onClick={props.onStart}>
+            <Icon name="Play" /> Start
+          </button>
+        </div>
+      ) : null}
       {card.issueUrl === null && card.prUrl === null && card.attachments.length === 0 ? null : (
         <div className="pipeline-card-links" data-card-control>
           {card.issueUrl === null ? null : (
@@ -212,8 +223,8 @@ export function PipelineCard(props: {
           : card.runState === "pausing" ? <span className="pipeline-run-state">Pausing</span>
           : card.runState === "paused" ? <span className="pipeline-run-state">Paused</span>
           : card.runState === "stopping" ? <span className="pipeline-run-state">Stopping</span>
-          : props.queue !== null ? <><span className="pipeline-queued" title={props.queue.reasons.join(" · ")}>Queued</span>{props.queue.next ? <span className="pipeline-next">Next</span> : null}</>
-          : card.reportSignal === "working" && !card.needsUser && !card.attentionUnknown && !props.questionOpen && card.threadError === null && card.launchError === null
+          : started && props.queue !== null ? <><span className="pipeline-queued" title={props.queue.reasons.join(" · ")}>Queued</span>{props.queue.next ? <span className="pipeline-next">Next</span> : null}</>
+          : started && card.reportSignal === "working" && !card.needsUser && !card.attentionUnknown && !props.questionOpen && card.threadError === null && card.launchError === null
             ? <span className="pipeline-working">Working</span> : null}
         {card.tier === null ? null : <span className="pipeline-tier">{card.tier}</span>}
       </div>

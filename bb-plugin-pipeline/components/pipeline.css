@@ -134,7 +134,12 @@
 .pipeline-file-list li { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .pipeline-file-list li > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .pipeline-form .pipeline-error { margin: 0; font-size: 12px; }
-.pipeline-form-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+.pipeline-form-footer { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding-top: 4px; }
+.pipeline-not-started { color: var(--muted-foreground); }
+.pipeline-not-started > span { flex: 1; min-width: 0; }
+.pipeline-start { display: inline-flex; align-items: center; gap: 4px; flex: none; min-height: 22px; padding: 2px 9px; border: 1px solid transparent; border-radius: 6px; background: var(--primary); color: var(--primary-foreground); font-weight: 500; }
+.pipeline-start:hover:not(:disabled) { background: color-mix(in srgb, var(--primary) 88%, var(--background)); }
+.pipeline-start .pipeline-icon { width: 12px; height: 12px; }
 .pipeline-skeleton { flex: none; height: 126px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); padding: 15px; }
 .pipeline-skeleton::before, .pipeline-skeleton::after { content: ""; display: block; height: 9px; background: var(--muted); border-radius: 3px; margin-bottom: 15px; width: 78%; }
 .pipeline-skeleton::after { width: 55%; }

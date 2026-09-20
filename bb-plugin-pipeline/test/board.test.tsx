@@ -75,6 +75,7 @@ function renderBoard(options?: {
   stopCard?: ReturnType<typeof vi.fn>;
   setRunNext?: ReturnType<typeof vi.fn>;
   removeCard?: ReturnType<typeof vi.fn>;
+  startCard?: ReturnType<typeof vi.fn>;
 }) {
   const listProjects =
     options?.listProjects ??
@@ -124,6 +125,7 @@ function renderBoard(options?: {
         stopCard: options?.stopCard ?? (() => makeCard({ runState: "stopping" })),
         setRunNext: options?.setRunNext ?? (() => ({ ok: true as const })),
         removeCard: options?.removeCard ?? (() => ({ removed: true })),
+        startCard: options?.startCard ?? (() => makeCard()),
         showCard: () => ({ card: makeCard(), history: [], queued: false }),
       },
     },
@@ -144,6 +146,13 @@ function dragCard(title = "A pipeline card") {
   const card = screen.getByRole("article", { name: title });
   fireEvent.dragStart(card, { dataTransfer });
   return { card, dataTransfer };
+}
+
+async function fillNewTask(title: string) {
+  fireEvent.click(screen.getByRole("button", { name: "New task" }));
+  fireEvent.change(screen.getByLabelText("Task title"), { target: { value: title } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "host_mac" } });
+  await screen.findAllByTestId("bb-provider-model-picker");
 }
 
 describe("pipeline board", () => {
@@ -393,7 +402,12 @@ describe("pipeline board", () => {
     });
   });
 
-  it("keeps the add form open when creating a card fails", async () => {
+  it("keeps the add form open when a save fails", async () => {
+    const fetch = vi.fn(() => Promise.resolve({
+      ok: true,
+      json: async () => ({ type: "localFile", path: "/attachments/note.txt", name: "note.txt", sizeBytes: 4 }),
+    }));
+    vi.stubGlobal("fetch", fetch);
     const addCard = vi.fn(async () => {
       throw new Error("Could not create card");
     });
@@ -417,13 +431,18 @@ describe("pipeline board", () => {
       target: { value: "max" },
     });
     fireEvent.click(within(intake).getByRole("button", { name: "Apply execution selection" }));
-    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+    fireEvent.change(screen.getByLabelText("Task attachments"), {
+      target: { files: [new File(["note"], "note.txt")] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Could not create card",
     );
     expect(addCard).toHaveBeenCalledWith(expect.objectContaining({
       intake: expect.objectContaining({ model: "claude-opus-4-7", reasoningLevel: "max" }),
+      attachments: [expect.objectContaining({ filename: "note.txt" })],
+      start: false,
     }));
     expect((screen.getByLabelText("Task title") as HTMLInputElement).value).toBe(
       "Broken card",
@@ -431,6 +450,64 @@ describe("pipeline board", () => {
     expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe("host_mac");
     expect((within(intake).getByRole("textbox", { name: "Model" }) as HTMLInputElement).value).toBe("claude-opus-4-7");
     expect((within(intake).getByRole("textbox", { name: "Reasoning level" }) as HTMLInputElement).value).toBe("max");
+    expect(screen.getByText("note.txt")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Save and start" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("uploads attachments and sends start false for Save and true for Save and start", async () => {
+    const fetch = vi.fn(() => Promise.resolve({
+      ok: true,
+      json: async () => ({ type: "localFile", path: "/attachments/spec.md", name: "spec.md", sizeBytes: 12 }),
+    }));
+    vi.stubGlobal("fetch", fetch);
+    const addCard = vi.fn(() => makeCard());
+    renderBoard({ addCard });
+    await screen.findByText("A pipeline card");
+
+    await fillNewTask("Twice");
+    fireEvent.change(screen.getByLabelText("Task attachments"), {
+      target: { files: [new File(["spec"], "spec.md")] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(addCard).toHaveBeenCalledExactlyOnceWith({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      intake: DEFAULT_EXECUTION.intake,
+      lead: DEFAULT_EXECUTION.lead,
+      title: "Twice",
+      body: "",
+      attachments: [{ path: "/attachments/spec.md", filename: "spec.md", sizeBytes: 12, isImage: false }],
+      start: false,
+    }));
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("/attachments"),
+      expect.objectContaining({ method: "POST" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New task" })).toBeNull());
+
+    await fillNewTask("Twice");
+    fireEvent.click(screen.getByRole("button", { name: "Save and start" }));
+    await waitFor(() => expect(addCard).toHaveBeenCalledTimes(2));
+    expect(addCard).toHaveBeenLastCalledWith(expect.objectContaining({
+      title: "Twice",
+      attachments: [],
+      start: true,
+    }));
+  });
+
+  it("treats a form submission without a submitter as Save", async () => {
+    const addCard = vi.fn(() => makeCard());
+    renderBoard({ addCard });
+    await screen.findByText("A pipeline card");
+
+    await fillNewTask("Implicit");
+    fireEvent.submit(screen.getByLabelText("Task title").closest("form")!);
+
+    await waitFor(() => expect(addCard).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ title: "Implicit", start: false }),
+    ));
   });
 
   it("requires an explicit machine for every new card, even with only one available", async () => {
@@ -447,7 +524,7 @@ describe("pipeline board", () => {
 
     fireEvent.change(machine, { target: { value: "host_mac" } });
     await screen.findAllByTestId("bb-provider-model-picker");
-    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save and start" }));
     await waitFor(() => expect(addCard).toHaveBeenCalledExactlyOnceWith({
       projectId: "proj_1",
       hostId: "host_mac",
@@ -456,6 +533,7 @@ describe("pipeline board", () => {
       title: "Task",
       body: "",
       attachments: [],
+      start: true,
     }));
     fireEvent.click(await screen.findByRole("button", { name: "New task" }));
     expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe("");
@@ -512,7 +590,7 @@ describe("pipeline board", () => {
       target: { value: "fast" },
     });
     fireEvent.click(within(lead).getByRole("button", { name: "Apply execution selection" }));
-    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save and start" }));
 
     await waitFor(() => expect(addCard).toHaveBeenCalledExactlyOnceWith({
       projectId: "proj_1",
@@ -532,6 +610,7 @@ describe("pipeline board", () => {
       title: "Delegate roles",
       body: "",
       attachments: [],
+      start: true,
     }));
   });
 
@@ -581,7 +660,8 @@ describe("pipeline board", () => {
     const machine = screen.getByRole("combobox", { name: "Machine" });
     fireEvent.change(machine, { target: { value: "host_mac" } });
     expect(screen.queryAllByTestId("bb-provider-model-picker")).toHaveLength(0);
-    expect((screen.getByRole("button", { name: "Create task" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Save and start" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.submit(machine.closest("form")!);
     expect(addCard).not.toHaveBeenCalled();
   });
@@ -605,6 +685,8 @@ describe("pipeline board", () => {
 
     expect(screen.getByRole("dialog", { name: "New task" })).toBeTruthy();
     expect((screen.getByLabelText("Task title") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Save and start" }) as HTMLButtonElement).disabled).toBe(true);
     expect(addCard).toHaveBeenCalledTimes(1);
     await act(async () => finish(makeCard()));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New task" })).toBeNull());
@@ -905,13 +987,13 @@ describe("pipeline board", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Choose at most 20 attachments.",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save and start" }));
     expect(fetch).not.toHaveBeenCalled();
     expect(addCard).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Remove file-0.txt" }));
     expect(screen.queryByRole("alert")).toBeNull();
-    expect((screen.getByRole("button", { name: "Create task" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Save and start" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("shows a launch error alongside another attention reason", async () => {
@@ -928,6 +1010,114 @@ describe("pipeline board", () => {
     await screen.findByText("thread deleted");
     expect(screen.getByText("Launch failed: lead: host unavailable")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+
+  it("keeps a saved task immobile without lifecycle controls until Start, then starts it", async () => {
+    let card = makeCard({ startRequested: false, intakeThreadId: null });
+    const moveCard = vi.fn(() => makeCard());
+    const startCard = vi.fn(() => {
+      card = makeCard({ startRequested: true });
+      return card;
+    });
+    const listCards = vi.fn(() => ({
+      cards: [card, makeCard({ id: "started-peer", title: "Started peer", column: "todo" })],
+      queue: card.startRequested ? waitingQueue(["card_1"]) : [makeMachineQueue()],
+    }));
+    renderBoard({ listCards, startCard, moveCard });
+    const title = await screen.findByText("A pipeline card");
+    const saved = screen.getByRole("article", { name: "A pipeline card" });
+    const peer = screen.getByRole("article", { name: "Started peer" });
+
+    expect(within(saved).getByText("Not started")).toBeTruthy();
+    expect(within(saved).getByRole("button", { name: "Start" })).toBeTruthy();
+    expect(within(peer).queryByText("Not started")).toBeNull();
+    expect(within(peer).queryByRole("button", { name: "Start" })).toBeNull();
+    expect(saved.draggable).toBe(false);
+    expect((title.closest("button") as HTMLButtonElement).disabled).toBe(true);
+
+    const drag = dragCard();
+    const target = screen.getByRole("region", { name: "To do" });
+    fireEvent.dragOver(target, drag);
+    fireEvent.drop(target, drag);
+    fireEvent.dragEnd(drag.card, drag);
+    expect(moveCard).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Actions for A pipeline card" }));
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop now" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Run next" })).toBeNull();
+    expect((screen.getByRole("combobox", { name: "Move A pipeline card" }) as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.change(screen.getByRole("combobox", { name: "Move A pipeline card" }), { target: { value: "todo" } });
+    expect(moveCard).not.toHaveBeenCalled();
+
+    const start = within(saved).getByRole("button", { name: "Start" }) as HTMLButtonElement;
+    fireEvent.click(start);
+    expect(start.disabled).toBe(true);
+    expect(startCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
+
+    await screen.findByText("Queued");
+    expect(screen.queryByText("Not started")).toBeNull();
+    expect(screen.getByRole("article", { name: "A pipeline card" }).draggable).toBe(true);
+  });
+
+  it("reports a failed start and keeps the task saved", async () => {
+    const startCard = vi.fn(async () => {
+      throw new Error("host unreachable");
+    });
+    renderBoard({
+      cards: [makeCard({ startRequested: false, intakeThreadId: null })],
+      startCard,
+    });
+    await screen.findByText("Not started");
+
+    fireEvent.click(within(screen.getByRole("article", { name: "A pipeline card" })).getByRole("button", { name: "Start" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("host unreachable");
+    const saved = screen.getByRole("article", { name: "A pipeline card" });
+    expect(within(saved).getByText("Not started")).toBeTruthy();
+    expect(within(saved).getByRole("button", { name: "Start" })).toBeTruthy();
+    expect(saved.draggable).toBe(false);
+    expect(startCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
+  });
+
+  it("suppresses stale attention, question, working, and queue signals on a saved task", async () => {
+    renderBoard({
+      pending: true,
+      cards: [makeCard({
+        startRequested: false,
+        intakeThreadId: "intake",
+        needsUser: true,
+        attentionReason: "stale choice",
+        reportSignal: "working",
+        launchError: "stale launch failure",
+      })],
+      queue: waitingQueue(["card_1"]),
+    });
+    const saved = await screen.findByRole("article", { name: "A pipeline card" });
+
+    expect(within(saved).getByText("Not started")).toBeTruthy();
+    expect(screen.queryByText("stale choice")).toBeNull();
+    expect(screen.queryByText("Working")).toBeNull();
+    expect(screen.queryByText("Queued")).toBeNull();
+    expect(within(saved).queryByLabelText("Question open")).toBeNull();
+    expect(screen.queryByText(/Launch failed/)).toBeNull();
+    expect(screen.queryByText(/need your attention/)).toBeNull();
+  });
+
+  it("hides Start for a saved task in a done or held state", async () => {
+    renderBoard({
+      cards: [
+        makeCard({ id: "done-saved", title: "Saved done", column: "done", startRequested: false }),
+        makeCard({ id: "held-saved", title: "Saved paused", runState: "paused", startRequested: false }),
+      ],
+    });
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Show done" }));
+    await screen.findByText("Saved done");
+
+    expect(screen.queryByText("Not started")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    expect(within(screen.getByRole("article", { name: "Saved paused" })).queryByRole("button", { name: "Start" })).toBeNull();
   });
 
   it("does not show a stale working signal when an idle thread needs classification", async () => {

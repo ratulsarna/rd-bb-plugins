@@ -107,6 +107,7 @@ export function makeCard(overrides: Partial<Card> = {}): Card {
     hostId: "host_mac",
     intake: null,
     lead: null,
+    startRequested: true,
     title: "A pipeline card",
     body: "",
     attachments: [],

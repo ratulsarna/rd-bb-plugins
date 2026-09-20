@@ -40,6 +40,7 @@ export const cardSchema = z
     leadThreadId: z.string().nullable(),
     ownerRole: z.enum(["intake", "lead"]),
     runState: z.enum(RUN_STATES),
+    startRequested: z.boolean(),
     pauseRequestId: z.string().nullable(),
     controlError: z.string().nullable(),
     threadError: z.string().nullable(),
@@ -124,8 +125,13 @@ export const rpcContract = defineRpcContract({
         title: z.string().trim().min(1).max(500),
         body: z.string().max(20_000),
         attachments: z.array(attachmentSchema).max(20),
+        start: z.boolean().optional(),
       })
       .strict(),
+    output: cardSchema,
+  },
+  startCard: {
+    input: z.object({ cardId: z.string() }).strict(),
     output: cardSchema,
   },
   moveCard: {

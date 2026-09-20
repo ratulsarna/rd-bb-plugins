@@ -2028,6 +2028,207 @@ describe("execution selection", () => {
   });
 });
 
+describe("saved cards", () => {
+  const attachments: CardAttachment[] = [
+    {
+      path: "attachments/spec.md",
+      filename: "spec.md",
+      mimeType: "text/markdown",
+      sizeBytes: 42,
+      isImage: false,
+    },
+  ];
+
+  it("persists through a reopened store and startup without spawning", async () => {
+    const { db, service, store, spawn, rememberExecution } = setup();
+
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship later",
+      start: false,
+      source: "ui",
+    });
+
+    expect(saved).toMatchObject({
+      startRequested: false,
+      intakeThreadId: null,
+      launchError: null,
+    });
+    expect(createCardStore(db).get(saved.id)).toMatchObject({
+      startRequested: false,
+      intakeThreadId: null,
+    });
+    await service.startupPass();
+    expect(store.get(saved.id)?.startRequested).toBe(false);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(rememberExecution).toHaveBeenCalledOnce();
+  });
+
+  it("starts once with its captured machine, execution, and attachments", async () => {
+    const mutableSettings: PipelineSettings = {
+      ...settings,
+      providerId: "codex",
+      model: "gpt-6-astra",
+      reasoningLevel: "ultra",
+      serviceTier: "fast",
+    };
+    const { service, spawn, store } = setup({ settings: mutableSettings });
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      intake: { serviceTier: "default" },
+      lead: {
+        providerId: "pi",
+        model: "zai/glm-5.3-flash",
+        reasoningLevel: "high",
+      },
+      title: "Ship later",
+      body: "Use the saved inputs",
+      attachments,
+      start: false,
+      source: "cli",
+    });
+    Object.assign(mutableSettings, {
+      providerId: "pi",
+      model: "changed",
+      reasoningLevel: "none",
+      serviceTier: undefined,
+    });
+
+    const [first, second] = await Promise.all([
+      service.start(saved.id, "ui"),
+      service.start(saved.id, "cli"),
+    ]);
+
+    expect(first.intakeThreadId).toBe("thr_1");
+    expect(second.intakeThreadId).toBe("thr_1");
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(spawn.mock.calls[0]![0]).toMatchObject({
+      environment: { type: "host", hostId: "host_mac" },
+      providerId: "codex",
+      model: "gpt-6-astra",
+      reasoningLevel: "ultra",
+      serviceTier: "default",
+      input: expect.arrayContaining([
+        expect.objectContaining({
+          type: "localFile",
+          path: "attachments/spec.md",
+          name: "spec.md",
+          mimeType: "text/markdown",
+          sizeBytes: 42,
+        }),
+      ]),
+    });
+    expect(store.history(saved.id).filter((entry) => entry.kind === "start_requested")).toEqual([
+      expect.objectContaining({ source: "ui" }),
+    ]);
+    await expect(service.start(saved.id, "cli")).resolves.toEqual(store.get(saved.id));
+    expect(spawn).toHaveBeenCalledOnce();
+  });
+
+  it("keeps failed start intent durable and recovers through Retry", async () => {
+    let offline = true;
+    const { service, spawn, store } = setup({
+      spawn: async () => {
+        if (offline) throw new Error("machine offline");
+        return thread("intake-retry");
+      },
+    });
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship later",
+      start: false,
+      source: "ui",
+    });
+
+    await service.start(saved.id, "ui");
+    expect(store.get(saved.id)).toMatchObject({
+      startRequested: true,
+      intakeThreadId: null,
+      launchError: "intake: machine offline",
+    });
+    await service.start(saved.id, "cli");
+    expect(spawn).toHaveBeenCalledOnce();
+
+    offline = false;
+    await service.retry(saved.id);
+    expect(store.get(saved.id)).toMatchObject({
+      startRequested: true,
+      intakeThreadId: "intake-retry",
+      launchError: null,
+    });
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not accept the first start request for completed or held cards", async () => {
+    const completed = setup();
+    const completedCard = await completed.service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Already done",
+      start: false,
+      source: "ui",
+    });
+    completed.store.update(completedCard.id, { column: "done" });
+    await expect(completed.service.start(completedCard.id, "ui")).rejects.toThrow(
+      "Completed tasks cannot be started",
+    );
+    expect(completed.store.get(completedCard.id)?.startRequested).toBe(false);
+    expect(completed.spawn).not.toHaveBeenCalled();
+
+    const held = setup();
+    const heldCard = await held.service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Held before start",
+      start: false,
+      source: "cli",
+    });
+    held.store.update(heldCard.id, { runState: "paused" });
+    await expect(held.service.start(heldCard.id, "cli")).rejects.toThrow(
+      "resume it before starting it",
+    );
+    expect(held.store.get(heldCard.id)?.startRequested).toBe(false);
+    expect(held.spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects indirect starts but allows quiet metadata reports and removal", async () => {
+    const { service, spawn, store, onAttention } = setup();
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship later",
+      start: false,
+      source: "ui",
+    });
+
+    await expect(service.launch(saved.id, "intake")).rejects.toThrow("start it before launching it");
+    await expect(service.retry(saved.id)).rejects.toThrow("start it before retrying it");
+    await expect(service.move(saved.id, "todo", "ui")).rejects.toThrow("start it before moving it");
+    await expect(service.report({ cardId: saved.id, column: "todo" })).rejects.toThrow(
+      "start it before changing its phase or owner",
+    );
+
+    await service.report({
+      cardId: saved.id,
+      tier: "small",
+      needsYou: "Keep this note",
+    });
+    expect(store.get(saved.id)).toMatchObject({
+      startRequested: false,
+      tier: "small",
+      needsUser: true,
+      attentionReason: "Keep this note",
+      intakeThreadId: null,
+    });
+    expect(onAttention).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(service.remove(saved.id)).toBe(true);
+  });
+});
+
 describe("machine selection", () => {
   it.each(["", "   "])(
     "rejects a %j machine before creating a card or thread",

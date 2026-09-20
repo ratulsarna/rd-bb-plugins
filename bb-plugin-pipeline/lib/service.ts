@@ -28,7 +28,7 @@ import type {
   CardStore,
   HistoryInput,
 } from "./store";
-import { ownerThread, roleThread } from "./card";
+import { ownerThread, requireStarted, roleThread } from "./card";
 import { userAttentionReason } from "./notifications";
 import { isThreadNotFound } from "./task-threads";
 
@@ -61,10 +61,12 @@ export interface PipelineService {
     title: string;
     body?: string;
     attachments?: CardAttachment[];
+    start?: boolean;
     source: "ui" | "cli";
   }): Promise<Card>;
   getExecutionDefaults(): Promise<ExecutionDefaults>;
   setMachine(cardId: string, hostId: string): Promise<Card>;
+  start(cardId: string, source: "ui" | "cli"): Promise<Card>;
   launch(cardId: string, role: PipelineRole): Promise<Card>;
   retry(cardId: string): Promise<Card>;
   report(input: ReportInput): Promise<Card>;
@@ -180,6 +182,7 @@ function requireRunning(card: Card, action: string): void {
 function sameLaunchContext(current: Card, snapshot: Card): boolean {
   return (
     current.ownerRole === snapshot.ownerRole &&
+    current.startRequested === snapshot.startRequested &&
     current.intakeThreadId === snapshot.intakeThreadId &&
     current.leadThreadId === snapshot.leadThreadId
   );
@@ -278,7 +281,7 @@ export function createPipelineService(
   const doLaunch = async (cardId: string, role: PipelineRole): Promise<Card> => {
     let card = required(cardId);
     const field = role === "intake" ? "intakeThreadId" : "leadThreadId";
-    if (card.runState !== "running") return card;
+    if (!card.startRequested || card.runState !== "running") return card;
     if (card[field] !== null) return card;
 
     let request;
@@ -286,13 +289,13 @@ export function createPipelineService(
       request = await buildLaunchRequest(card, role);
     } catch (cause) {
       const current = required(cardId);
-      return current.runState === "running" && sameLaunchContext(current, card)
+      return current.startRequested && current.runState === "running" && sameLaunchContext(current, card)
         ? recordLaunchFailure(current, role, cause)
         : current;
     }
 
     const current = required(cardId);
-    if (current.runState !== "running" || !sameLaunchContext(current, card)) {
+    if (!current.startRequested || current.runState !== "running" || !sameLaunchContext(current, card)) {
       return current;
     }
 
@@ -340,9 +343,26 @@ export function createPipelineService(
   };
 
   const launch = async (cardId: string, role: PipelineRole): Promise<Card> => {
-    requireRunning(required(cardId), "launching it");
+    const card = required(cardId);
+    requireStarted(card, "launching it");
+    requireRunning(card, "launching it");
     return serializeLaunch(cardId, () => doLaunch(cardId, role));
   };
+
+  const start = async (
+    cardId: string,
+    source: "ui" | "cli",
+  ): Promise<Card> => serializeLaunch(cardId, async () => {
+    let card = required(cardId);
+    if (card.startRequested) return card;
+    if (card.column === "done") throw new Error("Completed tasks cannot be started");
+    requireRunning(card, "starting it");
+    card = update(card.id, { startRequested: true }, {
+      kind: "start_requested",
+      source,
+    });
+    return doLaunch(card.id, "intake");
+  });
 
   const move = async (
     cardId: string,
@@ -350,6 +370,7 @@ export function createPipelineService(
     source: "ui" | "cli",
   ): Promise<Card> => {
     const before = required(cardId);
+    requireStarted(before, "moving it");
     requireRunning(before, "moving it");
     if (column === "planning" && normalizeIssueUrl(before.issueUrl) === null) {
       throw new Error(MISSING_ISSUE_ERROR);
@@ -754,20 +775,23 @@ export function createPipelineService(
           hostId: machine.id,
           intake: selected.intake,
           lead: selected.lead,
+          startRequested: input.start !== false,
           title,
           body: input.body ?? "",
           attachments: input.attachments ?? [],
           source: input.source,
         }),
       );
-      const [launched] = await Promise.all([
-        launch(card.id, "intake"),
-        dependencies.rememberExecution?.(selected).catch((cause) => {
-          dependencies.log(
-            `could not remember execution for card ${card.id}: ${errorMessage(cause)}`,
-          );
-        }),
-      ]);
+      const remember = dependencies.rememberExecution?.(selected).catch((cause) => {
+        dependencies.log(
+          `could not remember execution for card ${card.id}: ${errorMessage(cause)}`,
+        );
+      });
+      if (!card.startRequested) {
+        await remember;
+        return card;
+      }
+      const [launched] = await Promise.all([launch(card.id, "intake"), remember]);
       return launched;
     },
     async setMachine(cardId, hostId) {
@@ -784,16 +808,18 @@ export function createPipelineService(
       if (card.hostId === machine.id) return card;
       return changed(store.setHost(card.id, machine.id));
     },
+    start,
     launch,
     async retry(cardId) {
       const requested = required(cardId);
+      requireStarted(requested, "retrying it");
       requireRunning(requested, "retrying it");
       if (requested.launchError === null) {
         throw new Error("nothing to retry");
       }
       return serializeLaunch(cardId, async () => {
         let card = required(cardId);
-        if (card.runState !== "running") return card;
+        if (!card.startRequested || card.runState !== "running") return card;
         if (card.launchError === null) return card;
         const role = card.ownerRole;
         const threadId = roleThread(card, role);
@@ -801,6 +827,7 @@ export function createPipelineService(
         const recordRetryFailure = (cause: unknown): Card => {
           const current = required(cardId);
           return current.runState === "running" &&
+            current.startRequested &&
             current.ownerRole === role &&
             roleThread(current, role) === threadId &&
             current.launchError !== null
@@ -819,6 +846,7 @@ export function createPipelineService(
         card = required(cardId);
         if (
           card.revision !== launchRevision ||
+          !card.startRequested ||
           card.runState !== "running" ||
           card.ownerRole !== role ||
           roleThread(card, role) !== threadId ||
@@ -851,6 +879,7 @@ export function createPipelineService(
         const beforeSend = required(cardId);
         if (
           beforeSend.revision !== card.revision ||
+          !beforeSend.startRequested ||
           beforeSend.runState !== "running" ||
           beforeSend.ownerRole !== role ||
           roleThread(beforeSend, role) !== threadId ||
@@ -878,6 +907,7 @@ export function createPipelineService(
         const current = required(cardId);
         if (
           current.revision !== card.revision ||
+          !current.startRequested ||
           current.runState !== "running" ||
           current.ownerRole !== role ||
           roleThread(current, role) !== threadId
@@ -921,11 +951,12 @@ export function createPipelineService(
         );
       }
       if (
-        card.runState !== "running" &&
+        (!card.startRequested || card.runState !== "running") &&
         input.column !== undefined &&
         (input.column !== card.column ||
           (input.column === "planning" && card.ownerRole !== "lead"))
       ) {
+        requireStarted(card, "changing its phase or owner");
         requireRunning(card, "changing its phase or owner");
       }
       const issueUrl =
@@ -989,6 +1020,7 @@ export function createPipelineService(
         store.recordHistory(card.id, attentionHistory);
       }
       if (
+        next.startRequested &&
         next.runState === "running" &&
         input.column === "planning" &&
         next.leadThreadId === null

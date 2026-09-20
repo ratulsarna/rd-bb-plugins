@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginThreadEventPayloads } from "@get-bb/plugin-sdk";
-import { ownerThread } from "./card";
+import { ownerThread, requireStarted } from "./card";
 import { pauseInstruction, resumeInstruction } from "./control-prompts";
 import type { Card, CardPatch, CardStore } from "./store";
 import type { PipelineService } from "./service";
@@ -93,6 +93,7 @@ export function createPipelineControls(
   async function pause(id: string): Promise<Card> {
     return serialize(id, async () => {
       let card = required(id);
+      requireStarted(card, "pausing it");
       if (card.column === "done") throw new Error("Completed tasks cannot be paused");
       if (card.runState !== "running" && !(card.runState === "pause_requested" && card.controlError !== null)) return card;
       card = update(id, {
@@ -120,6 +121,7 @@ export function createPipelineControls(
       ? input.threadId === undefined ? null : store.getByThread(input.threadId)
       : store.get(input.cardId);
     if (found === null) throw new Error("unknown Pipeline task");
+    requireStarted(found, "acknowledging a pause");
     if (input.threadId === undefined || input.threadId !== ownerThread(found)) {
       throw new Error("Only the current intake or lead can acknowledge a pause");
     }
@@ -135,6 +137,7 @@ export function createPipelineControls(
   async function stop(id: string): Promise<Card> {
     return serialize(id, async () => {
       const card = required(id);
+      requireStarted(card, "stopping it");
       if (card.column === "done") throw new Error("Completed tasks cannot be stopped from Pipeline");
       update(id, { runState: "stopping", controlError: null }, "stop_requested");
       try {
@@ -163,6 +166,7 @@ export function createPipelineControls(
   async function resume(id: string): Promise<Card> {
     return serialize(id, async () => {
       const card = required(id);
+      requireStarted(card, "resuming it");
       if (card.runState === "running") return card;
       if (card.runState !== "paused") throw new Error("Wait for the task to finish pausing before resuming");
       try {
@@ -196,6 +200,7 @@ export function createPipelineControls(
   async function onActivity(thread: TaskThread, started = false): Promise<void> {
     const task = await tasks.resolver()(thread);
     if (task === null || store.get(task.cardId) === null) return;
+    if (!required(task.cardId).startRequested) return;
     if (started && ["stopping", "paused"].includes(required(task.cardId).runState)) {
       await stop(task.cardId);
       return;

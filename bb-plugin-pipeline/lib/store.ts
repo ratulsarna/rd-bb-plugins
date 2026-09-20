@@ -24,6 +24,7 @@ export interface Card {
   hostId: string | null;
   intake: ExecutionSelection | null;
   lead: ExecutionSelection | null;
+  startRequested: boolean;
   title: string;
   body: string;
   attachments: CardAttachment[];
@@ -85,6 +86,7 @@ export type CardPatch = Partial<
     | "intakeThreadId"
     | "leadThreadId"
     | "ownerRole"
+    | "startRequested"
     | "runState"
     | "pauseRequestId"
     | "controlError"
@@ -99,6 +101,7 @@ interface CardRow {
   host_id: string | null;
   intake_execution: string | null;
   lead_execution: string | null;
+  start_requested: number;
   title: string;
   body: string;
   attachments: string;
@@ -175,6 +178,7 @@ export const MIGRATIONS = [
     card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
     PRIMARY KEY (project_id, host_id)
   );`,
+  `ALTER TABLE cards ADD COLUMN start_requested INTEGER NOT NULL DEFAULT 1 CHECK (start_requested IN (0, 1));`,
 ] as const;
 
 function parseAttachments(value: string): CardAttachment[] {
@@ -203,6 +207,7 @@ function cardFromRow(row: CardRow): Card {
     hostId: row.host_id,
     intake: parseExecution(row.intake_execution),
     lead: parseExecution(row.lead_execution),
+    startRequested: row.start_requested === 1,
     title: row.title,
     body: row.body,
     attachments: parseAttachments(row.attachments),
@@ -250,6 +255,7 @@ export interface CardStore {
     hostId: string;
     intake?: ExecutionSelection;
     lead?: ExecutionSelection;
+    startRequested?: boolean;
     title: string;
     body: string;
     attachments: CardAttachment[];
@@ -307,7 +313,7 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         `UPDATE cards SET
           "column" = ?, needs_user = ?, attention_reason = ?, attention_source = ?, attention_unknown = ?,
           report_signal = ?, tier = ?, issue_url = ?, pr_url = ?, intake_thread_id = ?, lead_thread_id = ?,
-          owner_role = ?, run_state = ?, pause_request_id = ?, control_error = ?, thread_error = ?, launch_error = ?, revision = revision + 1, updated_at = ?
+          owner_role = ?, start_requested = ?, run_state = ?, pause_request_id = ?, control_error = ?, thread_error = ?, launch_error = ?, revision = revision + 1, updated_at = ?
          WHERE id = ?`,
       ).run(
         next.column,
@@ -322,6 +328,7 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         next.intakeThreadId,
         next.leadThreadId,
         next.ownerRole,
+        next.startRequested ? 1 : 0,
         next.runState,
         next.pauseRequestId,
         next.controlError,
@@ -346,14 +353,15 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       const at = now();
       db.prepare(
         `INSERT INTO cards
-          (id, project_id, host_id, intake_execution, lead_execution, title, body, attachments, "column", created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'backlog', ?, ?)`,
+          (id, project_id, host_id, intake_execution, lead_execution, start_requested, title, body, attachments, "column", created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'backlog', ?, ?)`,
       ).run(
         input.id,
         input.projectId,
         input.hostId,
         input.intake === undefined ? null : JSON.stringify(input.intake),
         input.lead === undefined ? null : JSON.stringify(input.lead),
+        input.startRequested === false ? 0 : 1,
         input.title,
         input.body,
         JSON.stringify(input.attachments),

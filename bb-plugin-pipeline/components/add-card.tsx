@@ -19,6 +19,7 @@ export function AddCard(props: {
     hostId: string,
     intake: ExecutionSelection,
     lead: ExecutionSelection,
+    start: boolean,
   ): Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
@@ -29,12 +30,14 @@ export function AddCard(props: {
   const [intake, setIntake] = useState<ExecutionSelection | null>(null);
   const [lead, setLead] = useState<ExecutionSelection | null>(null);
   const [pending, setPending] = useState(false);
+  const [pendingIntent, setPendingIntent] = useState<"save" | "start">("save");
   const [error, setError] = useState<string | null>(null);
   const defaultsRequest = useRef(0);
   const portalScope = usePortalScopeProps();
   const formError = files.length > 20 ? "Choose at most 20 attachments." : error;
   const selectedHostId = props.machines.some((machine) => machine.id === hostId) ? hostId : "";
   const executionReady = intake !== null && lead !== null;
+  const submitBlocked = props.disabled || pending || title.trim() === "" || selectedHostId === "" || !executionReady || files.length > 20;
 
   useEffect(() => () => {
     defaultsRequest.current += 1;
@@ -61,10 +64,13 @@ export function AddCard(props: {
     event.preventDefault();
     if (title.trim() === "" || selectedHostId === "" || !executionReady || props.disabled || pending) return;
     if (files.length > 20) return;
+    const submitter = event.nativeEvent instanceof SubmitEvent ? event.nativeEvent.submitter : null;
+    const intent = submitter instanceof HTMLButtonElement && submitter.dataset.intent === "start" ? "start" : "save";
     setPending(true);
+    setPendingIntent(intent);
     setError(null);
     try {
-      await props.onAdd(title.trim(), body, files, selectedHostId, intake, lead);
+      await props.onAdd(title.trim(), body, files, selectedHostId, intake, lead, intent === "start");
       setTitle("");
       setBody("");
       setFiles([]);
@@ -204,10 +210,13 @@ export function AddCard(props: {
                 <Dialog.Close asChild>
                   <button type="button" className="pipeline-button pipeline-ghost" disabled={pending}>Cancel</button>
                 </Dialog.Close>
-                <button type="submit" className="pipeline-button pipeline-primary"
-                  disabled={props.disabled || pending || title.trim() === "" || selectedHostId === "" || !executionReady || files.length > 20}>
-                  <Icon name={pending ? "Loading" : "Plus"} className={pending ? "pipeline-spin" : ""} />
-                  {pending ? "Creating…" : "Create task"}
+                <button type="submit" data-intent="save" className="pipeline-button" disabled={submitBlocked}>
+                  <Icon name={pendingIntent === "save" && pending ? "Loading" : "Plus"} className={pendingIntent === "save" && pending ? "pipeline-spin" : ""} />
+                  Save
+                </button>
+                <button type="submit" data-intent="start" className="pipeline-button pipeline-primary" disabled={submitBlocked}>
+                  <Icon name={pendingIntent === "start" && pending ? "Loading" : "Play"} className={pendingIntent === "start" && pending ? "pipeline-spin" : ""} />
+                  Save and start
                 </button>
               </div>
             </form>

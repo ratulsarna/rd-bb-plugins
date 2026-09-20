@@ -1,6 +1,6 @@
 # bb-plugin-pipeline
 
-Pipeline gives each project a ten-column delivery board backed by BB threads. Each card requires an explicit machine choice. A new card starts an intake thread in the project's existing checkout on that machine. Moving the card to planning starts a lead in its own managed worktree on the same machine, carrying the filed issue and the card's attachments into the work.
+Pipeline gives each project a ten-column delivery board backed by BB threads. Each card requires an explicit machine choice. Starting a card launches an intake thread in the project's existing checkout on that machine. Moving the card to planning starts a lead in its own managed worktree on the same machine, carrying the filed issue and the card's attachments into the work.
 
 Feature priorities are tracked in [WISHLIST.md](./WISHLIST.md).
 
@@ -14,7 +14,9 @@ The board tracks:
 
 Cards show why the user is needed, open the owning thread, link the issue and PR, and expose launch retry when the target machine is unavailable. Explicit `bb pipeline report` calls are authoritative; Jev classifies an unsignalled lead idle as needs-you, not waiting, or unchecked.
 
-Use **New task** to add a title, context, attachments, and a machine. **Intake** and **Lead** each have a provider, model, and reasoning picker. They start from Pipeline settings and remember the last task's choices across the UI and CLI. Each card saves both selections for its launches and retries. Drag cards between stages, or use the card’s actions menu to move or remove it. **Show done** includes completed work.
+Use **New task** to add a title, context, attachments, and a machine. **Intake** and **Lead** each have a provider, model, and reasoning picker. They start from Pipeline settings and remember the last task's choices across the UI and CLI. Each card saves both selections for its launches and retries.
+
+Choose **Save** to keep a task in Backlog without starting work, or **Save and start** to launch intake. Saved tasks show **Not started** and a **Start** action; they create no thread or queued message until started. Start uses the saved choices and waits for capacity when necessary. Start a task before moving it between stages or using execution controls. Drag started cards between stages, or use the card’s actions menu to move or remove it. **Show done** includes completed work.
 
 At most two Pipeline tasks run per project and machine. Intake, lead, and child threads share the card's slot. A task keeps its slot while it is starting, running, stopping, has tracked background work, or is continuing an active autonomous goal. Once that work stops, queued tasks can run. Replies, retries, and a move to planning wait for capacity when the task no longer holds a slot. Ordinary BB threads do not consume Pipeline slots.
 
@@ -34,20 +36,21 @@ Choose **Pause** from a task's actions menu, or run `bb pipeline pause <card-id>
 
 The card shows **Pause requested** until the owner acknowledges, then **Pausing** until its threads, tracked background work, and active goals have stopped. Only then does it show **Paused**. A task whose kickoff has not started can pause immediately. An offline machine or a pending question can delay delivery; **Retry pause** retries a failed or cancelled instruction.
 
-**Resume** continues the owning thread from its handoff and releases preserved queued messages, subject to the two-task limit. An unstarted task resumes its kickoff; a deleted owner is relaunched. Archived owners must be restored in BB first. Moving, removing, or retrying a held card requires resuming it.
+**Resume** continues the owning thread from its handoff and releases preserved queued messages, subject to the two-task limit. A task paused before its queued kickoff runs resumes that kickoff; a deleted owner is relaunched. Archived owners must be restored in BB first. Moving, removing, or retrying a held card requires resuming it.
 
 **Stop now** (`bb pipeline stop <card-id>`) is the immediate fallback. It requests a stop for the task's intake, lead, and occupied descendants, and waits for confirmed shutdown before showing Paused. It preserves queued messages and files. An unavailable machine can leave the card **Stopping**; retry Stop now when it reconnects. BB can stop provider sessions and their tracked work, but cannot guarantee shutdown of arbitrary detached processes.
 
 ## Notifications
 
-With Notify installed and enabled, Pipeline sends an alert when a task starts needing your attention: an explicit `--needs-you` report, intake waiting for you, confirmed lead attention, or a launch/thread failure. Repeated updates and reloads do not repeat an existing attention alert. Clearing attention and needing you again sends another alert. Pending questions and approvals on the owning thread also notify. Pipeline alerts are suppressed from the moment you request a pause or stop, and for Done tasks.
+With Notify installed and enabled, Pipeline sends an alert when a task starts needing your attention: an explicit `--needs-you` report, intake waiting for you, confirmed lead attention, or a launch/thread failure. Repeated updates and reloads do not repeat an existing attention alert. Clearing attention and needing you again sends another alert. Pending questions and approvals on the owning thread also notify. Pipeline alerts are suppressed from the moment you request a pause or stop, and for saved or Done tasks.
 
 Alerts include the task title and reason and open its owning thread when one exists. They use Notify's desktop and phone delivery, sound preference, and foreground suppression. They do not require enabling each thread's bell. Unknown idle status and capacity waits stay quiet. A missing or failing Notify plugin is logged without blocking task work; failed requests are not replayed.
 
 ## Commands
 
 ```text
-bb pipeline add --title <text> --machine <id-or-name> [--body <text>] [--attachment <uploaded-path>]... [--project <id>]
+bb pipeline add --title <text> --machine <id-or-name> [--no-start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]
+bb pipeline start <card-id>
 bb pipeline set-machine <card-id> --machine <id-or-name>
 bb pipeline list [--project <id>] [--all]
 bb pipeline show <card-id>
@@ -62,6 +65,8 @@ bb pipeline stop <card-id>
 bb pipeline report --paused <request-id>
 bb pipeline remove <card-id>
 ```
+
+`add` starts intake unless you pass `--no-start`. Start a saved task with `bb pipeline start <card-id>`; repeated Start requests do not create another thread. A failed start uses the existing Retry action. Saved tasks retain their machine, execution choices, notes, and attachments across reloads.
 
 Every command accepts `--json`. A CLI attachment must already be in BB's project attachment store:
 

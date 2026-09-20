@@ -131,6 +131,9 @@ export default async function plugin(bb: BbPluginApi) {
     addCard(input) {
       return service.createCard({ ...input, source: "ui" });
     },
+    startCard({ cardId }) {
+      return service.start(cardId, "ui");
+    },
     moveCard({ cardId, column }) {
       return service.move(cardId, column, "ui");
     },
