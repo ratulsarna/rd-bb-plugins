@@ -17,7 +17,7 @@ afterEach(async () => {
 
 function setup() {
   const threads = new Map<string, ReturnType<typeof makeThreadResponse>>();
-  const metadata = new Map<string, { cardId: string }>();
+  const metadata = new Map<string, { cardId: string; hostId: string }>();
   const running: Array<{ id: string; hostId: string }> = [];
   const queue: Array<ReturnType<typeof makeQueueEntry>> = [];
   const machines = [makeHostResponse({ id: "machine_a", name: "Machine A", status: "connected" }), makeHostResponse({ id: "machine_b", name: "Machine B", status: "connected" })];
@@ -67,7 +67,7 @@ function setup() {
       environmentId: `env_${options.machine ?? "machine_a"}`,
     });
     threads.set(id, value);
-    if (options.cardId) metadata.set(id, { cardId: options.cardId });
+    if (options.cardId) metadata.set(id, { cardId: options.cardId, hostId: options.machine ?? "machine_a" });
     if (options.running) running.push({ id, hostId: options.machine ?? "machine_a" });
     return value;
   }
@@ -242,6 +242,66 @@ describe("Pipeline task capacity", () => {
     await createPipelineCapacity(s.bb, s.store).startup();
     expect(s.store.getRunNext("project_a", "machine_a")).toBeNull();
     await expect(s.capacity.setRunNext("urgent", true)).rejects.toThrow("requires a queued task");
+  });
+
+  it("does not save a stale nomination when its queued start is cancelled during validation", async () => {
+    const s = setup();
+    const { thread, entry } = queuedTask(s, "urgent");
+    let release!: () => void;
+    const reading = new Promise<void>((started) => {
+      s.harness.inspection.sdk.stub("threads.interactions.list", async () => {
+        started();
+        await new Promise<void>((resolve) => { release = resolve; });
+        return [];
+      });
+    });
+    const selecting = expect(s.capacity.setRunNext("urgent", true)).rejects.toThrow("queue changed");
+    await reading;
+    s.queue.splice(0);
+    await s.capacity.onQueueChanged(thread);
+    release();
+    await selecting;
+    expect(s.store.getRunNext("project_a", "machine_a")).toBeNull();
+    s.queue.push(entry);
+    s.harness.inspection.sdk.stub("threads.interactions.list", async () => []);
+    expect((await s.capacity.snapshot("project_a"))[0]?.nextCardId).toBeNull();
+  });
+
+  it("preserves a newer choice when an earlier selection finishes validation late", async () => {
+    const s = setup();
+    queuedTask(s, "first");
+    queuedTask(s, "second");
+    let release!: () => void;
+    let reads = 0;
+    const reading = new Promise<void>((started) => {
+      s.harness.inspection.sdk.stub("hosts.list", async () => {
+        if (reads++ === 0) {
+          started();
+          await new Promise<void>((resolve) => { release = resolve; });
+        }
+        return s.machines;
+      });
+    });
+    const first = expect(s.capacity.setRunNext("first", true)).rejects.toThrow("queue changed");
+    await reading;
+    await s.capacity.setRunNext("second", true);
+    release();
+    await first;
+    expect(s.store.getRunNext("project_a", "machine_a")).toBe("second");
+  });
+
+  it("retains machine attribution for removed queued starts without an environment", async () => {
+    const s = setup();
+    const { thread } = queuedTask(s, "removed", "machine_b");
+    s.threads.set(thread.id, { ...thread, status: "pending", environmentId: null });
+    s.store.remove("removed");
+
+    const recovered = createPipelineCapacity(s.bb, s.store);
+    expect(await recovered.snapshot("project_a")).toEqual([expect.objectContaining({
+      hostId: "machine_b", occupied: [], nextCardId: null,
+      waiting: [{ cardId: "removed", threadId: "removed", title: "Removed task",
+        reasons: ["Waiting for capacity"], canRunNext: false }],
+    })]);
   });
 
   it("holds a third task, but does not gate ordinary threads or other project/machine pairs", async () => {

@@ -2,7 +2,7 @@ import type { BbPluginApi, MessageDispatchHookContext } from "@get-bb/plugin-sdk
 import type { CardStore } from "./store";
 
 export type TaskThread = MessageDispatchHookContext["thread"];
-export interface PipelineTask { cardId: string; projectId: string }
+export interface PipelineTask { cardId: string; projectId: string; hostId: string | null }
 
 export function isThreadNotFound(cause: unknown): boolean {
   if (cause === null || typeof cause !== "object") return false;
@@ -17,11 +17,13 @@ export function createTaskThreads(bb: BbPluginApi, store: CardStore) {
       if (ancestors.has(thread.id)) throw new Error("Cyclic Pipeline thread ancestry");
       const next = new Set(ancestors).add(thread.id);
       const card = store.getByThread(thread.id);
-      if (card !== null) return { cardId: card.id, projectId: card.projectId };
+      if (card !== null) return { cardId: card.id, projectId: card.projectId, hostId: card.hostId };
       if (thread.originPluginId === bb.pluginId) {
         const metadata = await bb.sdk.threads.getPluginMetadata({ threadId: thread.id, experimental_includeDeleted: true });
         if (typeof metadata.cardId === "string" && metadata.cardId.trim() !== "") {
-          return { cardId: metadata.cardId, projectId: thread.projectId };
+          return { cardId: metadata.cardId, projectId: thread.projectId,
+            hostId: store.get(metadata.cardId)?.hostId ?? (typeof metadata.hostId === "string" ? metadata.hostId : null),
+          };
         }
       }
       if (thread.parentThreadId === null) return null;

@@ -2116,8 +2116,10 @@ describe("machine selection", () => {
     expect(spawn).toHaveBeenCalledOnce();
     const request = spawn.mock.calls[0]![0] as {
       environment: { hostId: string; workspace: { type: string; path: string } };
+      pluginMetadata: { cardId: string; hostId: string };
     };
     expect(request.environment.hostId).toBe("host_linux");
+    expect(request.pluginMetadata).toMatchObject({ cardId: card.id, hostId: "host_linux" });
     expect(request.environment.workspace).toEqual({
       type: "unmanaged",
       path: "/repo-linux",

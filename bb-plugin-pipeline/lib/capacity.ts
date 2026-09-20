@@ -33,6 +33,11 @@ function hostBlocker(host: Host | undefined): string | null {
 export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
   const { sdk } = bb;
   const { resolver, occupancy } = createTaskThreads(bb, store);
+  const selecting = new Set<{ card: Card; changed: boolean }>();
+
+  function invalidateSelection(cardId: string) {
+    for (const selection of selecting) if (selection.card.id === cardId) selection.changed = true;
+  }
 
   function ownsCapacityWait(entry: QueueEntry): boolean {
     return entry.waitingOn?.kind === "plugin" && entry.waitingOn.pluginId === bb.pluginId &&
@@ -53,7 +58,7 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
       // The global list is creation-ordered; grouping follows the reorderable per-thread queue.
       const entries = await sdk.threads.queuedMessages.list({ threadId });
       if (entries.length === 0) continue;
-      let hostId = store.get(task.cardId)?.hostId ?? null;
+      let hostId = task.hostId;
       if (thread.environmentId !== null) {
         let host = environments.get(thread.environmentId);
         if (host === undefined) {
@@ -140,14 +145,24 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
   async function setRunNext(cardId: string, enabled: boolean): Promise<void> {
     const card = store.get(cardId);
     if (card === null) throw new Error(`unknown card ${cardId}`);
+    for (const selection of selecting) {
+      if (selection.card.projectId === card.projectId && selection.card.hostId === card.hostId) selection.changed = true;
+    }
     if (enabled) {
-      const queue = await snapshot(card.projectId);
-      const current = store.get(cardId);
-      if (current === null || current.runState !== "running" || current.column === "done" ||
-        !queue.some((machine) => machine.waiting.some((item) => item.cardId === cardId && item.canRunNext))) {
-        throw new Error("Run next requires a queued task that is not running or paused");
+      const selection = { card, changed: false };
+      selecting.add(selection);
+      try {
+        const queue = await snapshot(card.projectId);
+        if (selection.changed) throw new Error("The queue changed; choose Run next again");
+        const current = store.get(cardId);
+        if (current === null || current.runState !== "running" || current.column === "done" ||
+          !queue.some((machine) => machine.waiting.some((item) => item.cardId === cardId && item.canRunNext))) {
+          throw new Error("Run next requires a queued task that is not running or paused");
+        }
+        store.setRunNext(cardId);
+      } finally {
+        selecting.delete(selection);
       }
-      store.setRunNext(cardId);
     } else store.clearRunNext(cardId);
     bb.realtime.publish("cards:changed", { projectId: card.projectId });
     await bb.experimental_hooks.recheck("message.dispatch");
@@ -180,6 +195,7 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
 
   async function onStarted(thread: Thread): Promise<void> {
     const task = await resolver()(thread);
+    if (task !== null) invalidateSelection(task.cardId);
     if (task !== null && store.clearRunNext(task.cardId)) {
       bb.realtime.publish("cards:changed", { projectId: task.projectId });
       await bb.experimental_hooks.recheck("message.dispatch");
@@ -188,6 +204,7 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
 
   async function onQueueChanged(thread: Thread, entry?: QueueEntry): Promise<void> {
     const task = await resolver()(thread);
+    if (task !== null && (entry === undefined || !ownsCapacityWait(entry))) invalidateSelection(task.cardId);
     const card = task === null ? null : store.get(task.cardId);
     if (card?.hostId == null || store.getRunNext(card.projectId, card.hostId) !== card.id) return;
     if (entry !== undefined && ownsCapacityWait(entry)) return;
