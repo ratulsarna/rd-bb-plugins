@@ -7,6 +7,9 @@ import type { PipelineService } from "./service";
 import { createTaskThreads, isThreadNotFound, type TaskThread } from "./task-threads";
 
 const errorMessage = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
+type QueueEntry = PluginThreadEventPayloads["message.cancelled"]["entry"];
+const containsInstruction = (entry: QueueEntry, text: string) =>
+  entry.content.length === 1 && entry.content[0]?.type === "text" && entry.content[0].text === text;
 
 export function createPipelineControls(
   bb: BbPluginApi,
@@ -33,8 +36,7 @@ export function createPipelineControls(
     finally { if (operations.get(id) === next) operations.delete(id); }
   }
   const controlRows = async (card: Card) => (await bb.sdk.threads.queue.list())
-    .filter((entry) => entry.threadId === ownerThread(card) && entry.content.length === 1 &&
-      entry.content[0]?.type === "text" && entry.content[0].text === pauseInstruction(card));
+    .filter((entry) => entry.threadId === ownerThread(card) && containsInstruction(entry, pauseInstruction(card)));
 
   async function currentOwner(card: Card): Promise<TaskThread | null> {
     const threadId = ownerThread(card);
@@ -53,12 +55,23 @@ export function createPipelineControls(
 
   async function settle(id: string): Promise<Card> {
     const before = required(id);
-    if (!["pausing", "stopping", "paused"].includes(before.runState)) return before;
+    if (before.runState === "running") return before;
+    if (before.runState === "pause_requested") {
+      const owner = await currentOwner(before);
+      if (owner !== null) {
+        const current = required(id);
+        if (current.runState !== before.runState || current.pauseRequestId !== before.pauseRequestId) return current;
+        const failure = owner.archivedAt !== null ? "Restore the owning thread to finish pausing, or stop now."
+          : owner.status === "error" ? "Owner thread failed before acknowledging pause. Retry pause or stop now." : null;
+        return failure !== null && current.controlError !== failure ? update(id, { controlError: failure }) : current;
+      }
+    }
     const occupied = await tasks.occupied(id);
     const current = required(id);
-    if (current.revision !== before.revision) return current;
-    if (occupied.length === 0 && current.runState !== "paused" && (current.runState === "pausing" || current.controlError === null)) {
-      return update(id, { runState: "paused" }, "paused");
+    if (current.runState !== before.runState || current.pauseRequestId !== before.pauseRequestId) return current;
+    if (occupied.length === 0 && current.runState !== "paused" &&
+      (current.runState !== "stopping" || current.controlError === null)) {
+      return update(id, { runState: "paused", ...(current.runState === "pause_requested" ? { controlError: null } : {}) }, "paused");
     }
     if (occupied.length > 0 && current.runState === "paused") {
       return update(id, { runState: "pausing" });
@@ -83,9 +96,9 @@ export function createPipelineControls(
       if (card.column === "done") throw new Error("Completed tasks cannot be paused");
       if (card.runState !== "running" && !(card.runState === "pause_requested" && card.controlError !== null)) return card;
       card = update(id, {
-        runState: "pause_requested", pauseRequestId: card.pauseRequestId ?? randomUUID(),
+        runState: "pause_requested", pauseRequestId: card.runState === "running" ? randomUUID() : card.pauseRequestId ?? randomUUID(),
         controlError: "Pause instruction pending delivery",
-      }, "pause_requested");
+      }, card.runState === "running" ? "pause_requested" : "pause_retried");
       try {
         const occupied = await tasks.occupied(id);
         const thread = await currentOwner(required(id));
@@ -159,7 +172,8 @@ export function createPipelineControls(
         }
         const thread = await currentOwner(required(id));
         if (thread?.archivedAt != null) throw new Error("Restore the owning thread before resuming");
-        const running = update(id, { runState: "running", pauseRequestId: null, controlError: null }, "resumed");
+        // Keep the token until dispatch is durable so startup can recover an interrupted resume.
+        const running = update(id, { runState: "running", pauseRequestId: card.pauseRequestId ?? randomUUID(), controlError: null }, "resumed");
         if (thread === null) {
           await service.launch(running.id, running.ownerRole);
         } else if (thread.status === "pending") {
@@ -168,6 +182,7 @@ export function createPipelineControls(
         } else {
           await bb.sdk.threads.send({ threadId: thread.id, mode: "auto", input: [{ type: "text", text: resumeInstruction(card), mentions: [] }] });
         }
+        update(id, { pauseRequestId: null });
         await bb.experimental_hooks.recheck("message.dispatch");
         return required(id);
       } catch (cause) {
@@ -181,25 +196,35 @@ export function createPipelineControls(
   async function onActivity(thread: TaskThread, started = false): Promise<void> {
     const task = await tasks.resolver()(thread);
     if (task === null || store.get(task.cardId) === null) return;
-    if (started && required(task.cardId).runState === "stopping") {
+    if (started && ["stopping", "paused"].includes(required(task.cardId).runState)) {
       await stop(task.cardId);
       return;
     }
     await settle(task.cardId);
   }
 
-  function onMessageCancelled(entry: PluginThreadEventPayloads["message.cancelled"]["entry"]): void {
+  function onMessageCancelled(entry: QueueEntry): void {
     const card = store.getByThread(entry.threadId);
     if (card?.runState === "pause_requested" && ownerThread(card) === entry.threadId &&
-      entry.content.length === 1 && entry.content[0]?.type === "text" && entry.content[0].text === pauseInstruction(card)) {
+      containsInstruction(entry, pauseInstruction(card))) {
       update(card.id, { controlError: "Pause instruction cancelled. Retry pause or stop now." });
     }
   }
 
   async function startup(): Promise<void> {
-    for (const card of store.listHeld()) {
+    for (const card of store.listControlled()) {
       try {
-        if (card.runState === "stopping") await stop(card.id);
+        if (card.runState === "running") {
+          const thread = await currentOwner(card);
+          const queue = await bb.sdk.threads.queue.list();
+          const delivered = (await tasks.occupied(card.id)).length > 0 || queue.some((entry) =>
+            entry.threadId === thread?.id && (thread.status === "pending" || containsInstruction(entry, resumeInstruction(card))));
+          const current = required(card.id);
+          if (current.runState !== "running" || current.pauseRequestId !== card.pauseRequestId) continue;
+          update(card.id, delivered || current.column === "done"
+            ? { pauseRequestId: null, controlError: null }
+            : { runState: "paused", controlError: "Resume was interrupted. Resume again to continue." });
+        } else if (card.runState === "stopping") await stop(card.id);
         else if (card.runState === "pause_requested" && card.controlError !== null) await pause(card.id);
         else await settle(card.id);
       } catch (cause) {

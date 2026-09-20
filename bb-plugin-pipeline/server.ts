@@ -175,6 +175,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (event === "message.cancelled") controls.onMessageCancelled(entry);
       const thread = await bb.sdk.threads.get({ threadId: entry.threadId, experimental_includeDeleted: true });
       if (event !== "message.dispatched") await service.onThreadQueueChanged(thread);
+      if (event === "message.cancelled") await controls.onActivity(thread);
       await capacity.publish(thread);
     });
   }
@@ -224,9 +225,9 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.background.service("startup-pass", {
     async start(signal) {
-      await bb.experimental_hooks.recheck("message.dispatch");
-      await service.startupPass();
       await controls.startup();
+      await service.startupPass();
+      await bb.experimental_hooks.recheck("message.dispatch");
       await new Promise<void>((resolve) => {
         if (signal.aborted) return resolve();
         signal.addEventListener("abort", () => resolve(), { once: true });

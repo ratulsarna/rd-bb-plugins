@@ -211,7 +211,7 @@ describe("pipeline board", () => {
     await waitFor(() => expect(stopCard).toHaveBeenCalledExactlyOnceWith({ cardId: "stopping" }));
   });
 
-  it("shows run-state status ahead of queued or working and suppresses stale attention", async () => {
+  it("shows run-state status and retains a live question that blocks pause delivery", async () => {
     renderBoard({
       pending: true,
       queuedCardIds: ["requested", "pausing", "paused", "stopping"],
@@ -230,8 +230,9 @@ describe("pipeline board", () => {
     expect(screen.queryByText("Queued")).toBeNull();
     expect(screen.queryByText("Working")).toBeNull();
     expect(screen.queryByText("stale question")).toBeNull();
-    expect(screen.queryByLabelText("Question open")).toBeNull();
-    expect(screen.queryByText("1 need your attention")).toBeNull();
+    expect(within(screen.getByRole("article", { name: "Requested" })).getByLabelText("Question open")).toBeTruthy();
+    expect(within(screen.getByRole("article", { name: "Paused card" })).queryByLabelText("Question open")).toBeNull();
+    expect(screen.getByText("1 need your attention")).toBeTruthy();
   });
 
   it("shows saving ahead of run state while a control action is pending", async () => {

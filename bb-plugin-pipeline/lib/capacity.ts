@@ -4,13 +4,17 @@ import type {
   MessageDispatchHookDecision,
 } from "@get-bb/plugin-sdk";
 import type { CardStore } from "./store";
-import { createTaskThreads } from "./task-threads";
+import { createTaskThreads, isThreadNotFound } from "./task-threads";
 import { ownerThread } from "./card";
 import { pauseInstruction } from "./control-prompts";
 
 type Thread = MessageDispatchHookContext["thread"];
 
 const TASK_LIMIT = 2;
+const PAUSE_WAIT: MessageDispatchHookDecision = {
+  action: "wait",
+  reason: "Pipeline: task is paused or pausing",
+};
 
 export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
   const { sdk } = bb;
@@ -21,18 +25,53 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
       const taskFor = resolver();
       const task = await taskFor(context.thread);
       if (task === null) return { action: "proceed" };
-      const card = store.get(task.cardId);
-      if (card !== null && card.runState !== "running") {
-        const pauseControl = card.runState === "pause_requested" &&
-          context.thread.id === ownerThread(card) &&
-          context.input.text === pauseInstruction(card);
-        // Core's worker completion notices have no sender thread.
-        const coordinating = card.runState === "pause_requested" &&
-          context.thread.status !== "pending" && (context.initiator === "system" ||
-            (context.senderThreadId !== null && context.senderThreadId !== "mixed" &&
-              (await taskFor(await sdk.threads.get({ threadId: context.senderThreadId, experimental_includeDeleted: true })))?.cardId === card.id));
-        if (!pauseControl && !coordinating) return { action: "wait", reason: "Pipeline: task is paused or pausing" };
-      }
+
+      const pauseGate = async (): Promise<MessageDispatchHookDecision | null> => {
+        while (true) {
+          const card = store.get(task.cardId);
+          if (card === null || card.runState === "running") return null;
+          if (card.runState !== "pause_requested") return PAUSE_WAIT;
+          if (context.thread.id === ownerThread(card) && context.input.text === pauseInstruction(card)) {
+            return null;
+          }
+          if (context.thread.status === "pending") return PAUSE_WAIT;
+          // Core's worker completion notices have no sender thread.
+          if (context.initiator === "system") return null;
+          if (context.senderThreadId === null || context.senderThreadId === "mixed") return PAUSE_WAIT;
+
+          const revision = card.revision;
+          let senderTask: Awaited<ReturnType<typeof taskFor>>;
+          try {
+            const sender = await sdk.threads.get({
+              threadId: context.senderThreadId,
+              experimental_includeDeleted: true,
+            });
+            senderTask = await taskFor(sender);
+          } catch (cause) {
+            if (!isThreadNotFound(cause)) throw cause;
+            if (store.get(task.cardId)?.revision !== revision) continue;
+            return PAUSE_WAIT;
+          }
+          if (store.get(task.cardId)?.revision !== revision) continue;
+          if (senderTask?.cardId !== card.id) return PAUSE_WAIT;
+
+          let pauseRequestedAt: number | undefined;
+          const history = store.history(card.id);
+          for (let index = history.length - 1; index >= 0; index -= 1) {
+            if (history[index]?.kind === "pause_requested") {
+              pauseRequestedAt = history[index]!.at;
+              break;
+            }
+          }
+          if (context.queuedMessages.some((entry) =>
+            pauseRequestedAt === undefined || entry.createdAt < pauseRequestedAt
+          )) return PAUSE_WAIT;
+          return null;
+        }
+      };
+
+      const initialPause = await pauseGate();
+      if (initialPause !== null) return initialPause;
       if (context.attempt === "join-turn") return { action: "proceed" };
       if (context.host === null) return { action: "reject", message: "Pipeline work requires a machine" };
 
@@ -43,12 +82,15 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
         const thread = await sdk.threads.get({ threadId: entry.id, experimental_includeDeleted: true });
         const other = await taskFor(thread);
         if (other?.projectId !== task.projectId) continue;
-        if (other.cardId === task.cardId) return { action: "proceed" };
+        if (other.cardId === task.cardId) {
+          return (await pauseGate()) ?? { action: "proceed" };
+        }
         occupied.add(other.cardId);
       }
-      return occupied.size < TASK_LIMIT
-        ? { action: "proceed" }
-        : { action: "wait", reason: `Pipeline: ${TASK_LIMIT} tasks running on ${context.host.name}` };
+      if (occupied.size >= TASK_LIMIT) {
+        return { action: "wait", reason: `Pipeline: ${TASK_LIMIT} tasks running on ${context.host.name}` };
+      }
+      return (await pauseGate()) ?? { action: "proceed" };
     },
 
     async queuedCardIds(projectId: string): Promise<string[]> {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeMessageDispatchHookContext, makeQueueEntry, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createPipelineCapacity } from "../lib/capacity";
 import { createPipelineControls } from "../lib/controls";
-import { pauseInstruction } from "../lib/control-prompts";
+import { pauseInstruction, resumeInstruction } from "../lib/control-prompts";
 import { createCardStore, MIGRATIONS } from "../lib/store";
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
@@ -179,6 +179,75 @@ describe("graceful task controls", () => {
     await s.controls.onActivity(s.thread("late-worker", "lead", "active"), true);
     expect(s.card().runState).toBe("paused");
     expect(s.harness.inspection.sdk.callsTo("threads.stop").map((call) => call[0])).toContainEqual({ threadId: "late-worker" });
+  });
+
+  it("surfaces owner failure during graceful pause and allows the instruction to be retried", async () => {
+    const s = setup();
+    await s.controls.pause("card");
+    s.busy.clear();
+    const failed = { ...s.threads.get("lead")!, status: "error" as const };
+    s.threads.set("lead", failed);
+    await s.controls.onActivity(failed);
+    expect(s.card()).toMatchObject({ runState: "pause_requested", controlError: expect.stringContaining("failed before acknowledging") });
+    await s.controls.pause("card");
+    expect(s.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(2);
+    expect(s.card()).toMatchObject({ runState: "pause_requested", controlError: null });
+  });
+
+  it("settles a deleted owner and keeps metadata updates from losing the final idle observation", async () => {
+    const s = setup();
+    await s.controls.pause("card");
+    s.busy.clear();
+    const deleted = { ...s.threads.get("lead")!, status: "idle" as const, deletedAt: 1 };
+    s.threads.set("lead", deleted);
+    await s.controls.onActivity(deleted);
+    expect(s.card()).toMatchObject({ runState: "paused", leadThreadId: null, controlError: null });
+
+    s.store.update("card", { runState: "pausing", leadThreadId: "lead" });
+    const idle = s.thread("lead", null, "idle");
+    s.harness.inspection.sdk.stub("threads.listRunning", async () => {
+      s.store.update("card", { issueUrl: "https://github.com/example/repo/issues/1" });
+      return [];
+    });
+    await s.controls.onActivity(idle);
+    expect(s.card()).toMatchObject({ runState: "paused", issueUrl: "https://github.com/example/repo/issues/1" });
+  });
+
+  it("stops late admitted activity after the task was already declared paused", async () => {
+    const s = setup();
+    s.busy.clear();
+    s.store.update("card", { runState: "paused" });
+    await s.controls.onActivity(s.thread("late-worker", "lead"), true);
+    expect(s.card().runState).toBe("paused");
+    expect(s.harness.inspection.sdk.callsTo("threads.stop").map((call) => call[0])).toContainEqual({ threadId: "late-worker" });
+    expect(s.busy.size).toBe(0);
+  });
+
+  it("recovers a resume interrupted before dispatch without duplicating durable resumes", async () => {
+    const s = setup();
+    s.thread("lead", null, "idle");
+    s.busy.clear();
+    s.store.update("card", { runState: "running", pauseRequestId: "resume-in-progress" });
+    const recovered = createPipelineControls(s.bb, s.store, s.service);
+    await recovered.startup();
+    expect(s.card()).toMatchObject({ runState: "paused", controlError: expect.stringContaining("interrupted") });
+    expect(s.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    await recovered.resume("card");
+    expect(s.card()).toMatchObject({ runState: "running", pauseRequestId: null, controlError: null });
+    expect(s.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+
+    s.store.update("card", { runState: "running", pauseRequestId: "reply-lost" });
+    s.queue.push(makeQueueEntry({ threadId: "lead", content: [{ type: "text", text: resumeInstruction(s.card()), mentions: [] }] }));
+    await recovered.startup();
+    expect(s.card()).toMatchObject({ runState: "running", pauseRequestId: null, controlError: null });
+    expect(s.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+
+    s.queue.splice(0);
+    s.busy.add("lead");
+    s.store.update("card", { pauseRequestId: "already-started" });
+    await recovered.startup();
+    expect(s.card()).toMatchObject({ runState: "running", pauseRequestId: null });
+    expect(s.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
   });
 
   it("recovers acknowledged pauses after reload and does not call an admitted failed resume paused", async () => {

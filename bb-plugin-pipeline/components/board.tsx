@@ -191,8 +191,9 @@ export function PipelineBoard() {
   }
 
   const needsAttention = cards.filter((card) => {
-    if (card.runState !== "running") return false;
     const owner = ownerThread(card);
+    if (card.runState === "pause_requested") return owner !== null && pendingThreads.has(owner);
+    if (card.runState !== "running") return false;
     return card.needsUser || card.launchError !== null || card.threadError !== null || (owner !== null && pendingThreads.has(owner));
   }).length;
   const projectName = projects.find((project) => project.id === projectId)?.name ?? "";

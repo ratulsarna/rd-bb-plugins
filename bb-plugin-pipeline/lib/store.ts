@@ -255,7 +255,7 @@ export interface CardStore {
   getByThread(threadId: string): Card | null;
   list(projectId: string, includeDone?: boolean): Card[];
   listActiveWithOwner(): Card[];
-  listHeld(): Card[];
+  listControlled(): Card[];
   update(id: string, patch: CardPatch, history?: HistoryInput): Card;
   recordHistory(id: string, history: HistoryInput): void;
   history(id: string): CardHistory[];
@@ -393,8 +393,8 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
           .all() as CardRow[]
       ).map(cardFromRow);
     },
-    listHeld() {
-      return (db.prepare("SELECT * FROM cards WHERE run_state <> 'running'").all() as CardRow[]).map(cardFromRow);
+    listControlled() {
+      return (db.prepare("SELECT * FROM cards WHERE run_state <> 'running' OR pause_request_id IS NOT NULL").all() as CardRow[]).map(cardFromRow);
     },
     update(id, patch, history) {
       return write(id, patch, history);

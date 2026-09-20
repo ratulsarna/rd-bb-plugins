@@ -145,7 +145,7 @@ export function PipelineCard(props: {
       {!running || reason === null ? null : (
         <div className="pipeline-card-status pipeline-attention"><Icon name="AlertCircle" /><span>{reason}</span></div>
       )}
-      {running && props.questionOpen ? (
+      {(running || card.runState === "pause_requested") && props.questionOpen ? (
         <div aria-label="Question open" className="pipeline-card-status pipeline-attention">
           <Icon name="MessageQuestion" /><span>Question waiting for you</span>
         </div>

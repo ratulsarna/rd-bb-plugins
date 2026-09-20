@@ -28,12 +28,12 @@ describe("card migrations", () => {
       expect(store.get("card_1")).toEqual({ ...before, runState: "running", pauseRequestId: null, controlError: null });
       store.update("card_1", { runState: "pausing", pauseRequestId: "request", controlError: "machine offline" });
       const reloaded = createCardStore(db);
-      expect(reloaded.listHeld()).toEqual([expect.objectContaining({
+      expect(reloaded.listControlled()).toEqual([expect.objectContaining({
         id: "card_1", column: "implementing", leadThreadId: "lead", runState: "pausing",
         pauseRequestId: "request", controlError: "machine offline",
       })]);
       reloaded.update("card_1", { runState: "running", pauseRequestId: null, controlError: null });
-      expect(reloaded.listHeld()).toEqual([]);
+      expect(reloaded.listControlled()).toEqual([]);
     } finally {
       db.close();
     }
