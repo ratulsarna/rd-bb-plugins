@@ -139,6 +139,7 @@ describe("graceful task controls", () => {
 
   it("does not pretend an offline or partly stopped task has paused and retries without touching unrelated work", async () => {
     const s = setup();
+    s.store.update("card", { intakeThreadId: "deleted-intake" });
     s.thread("worker", "lead");
     s.thread("unrelated");
     s.harness.inspection.sdk.stub("threads.stop", async ({ threadId }) => {

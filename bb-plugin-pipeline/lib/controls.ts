@@ -135,6 +135,7 @@ export function createPipelineControls(
             if (thread.status === "pending" || (thread.deletedAt !== null && !occupied.some((entry) => entry.id === threadId))) continue;
             await bb.sdk.threads.stop({ threadId });
           } catch (cause) {
+            if (isThreadNotFound(cause) && !occupied.some((entry) => entry.id === threadId)) continue;
             failures.push(`${threadId}: ${errorMessage(cause)}`);
           }
         }
