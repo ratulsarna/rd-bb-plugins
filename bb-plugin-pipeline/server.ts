@@ -1,11 +1,13 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createPipelineCli } from "./lib/cli";
 import { createPipelineCapacity } from "./lib/capacity";
+import { ownerThread } from "./lib/card";
 import { rpcContract } from "./lib/contract";
 import { REASONING_LEVELS } from "./lib/execution";
 import { readIssue } from "./lib/issue";
 import { askJev } from "./lib/jev";
 import { listProjectMachines } from "./lib/machines";
+import { createAttentionNotifier, userAttentionReason } from "./lib/notifications";
 import { createPipelineService } from "./lib/service";
 import { createCardStore, MIGRATIONS } from "./lib/store";
 
@@ -70,6 +72,7 @@ export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, [...MIGRATIONS]);
   const store = createCardStore(db);
+  const notifyAttention = createAttentionNotifier(bb);
   const capacity = createPipelineCapacity(bb, store);
   bb.experimental_hooks.on("message.dispatch", capacity.decide, { experimental_enforcement: "strict" });
   const service = createPipelineService({
@@ -96,6 +99,7 @@ export default async function plugin(bb: BbPluginApi) {
       }),
     log: (message) => bb.log.warn(message),
     publish: (projectId) => bb.realtime.publish(CARDS_CHANGED, { projectId }),
+    onAttention: notifyAttention,
   });
 
   bb.rpc.register(rpcContract, {
@@ -139,6 +143,14 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk, capacity }));
+
+  bb.events.on("interaction.pending", ({ thread, interaction }) => {
+    const card = store.getByThread(thread.id);
+    if (card === null || ownerThread(card) !== thread.id || userAttentionReason(card) !== null) return;
+    notifyAttention(card, interaction.payload.kind === "approval"
+      ? "Approval waiting for you"
+      : "Question waiting for you");
+  });
 
   for (const event of ["thread.idle", "thread.failed", "thread.archived", "thread.deleted"] as const) {
     bb.events.on(event, async ({ thread }) => {

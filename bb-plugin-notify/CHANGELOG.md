@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a `send` plugin rpc so other plugins can post an explicit notification through the same delivery path as the CLI and agent tool. Explicit sends ignore the per-thread bell and lifecycle filters; foreground suppression, the durable desktop queue, and phone push still apply.
 - Make thread notifications opt-in. Existing and new threads stay quiet until their bell is enabled.
 - Wait for a parent thread's background agents to finish before sending its completion notification.
 - Skip desktop and phone alerts while either the BB desktop app or iPhone Home Screen app is in the foreground.

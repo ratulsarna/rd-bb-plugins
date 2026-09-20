@@ -2,6 +2,8 @@
 
 Pipeline gives each project a ten-column delivery board backed by BB threads. Each card requires an explicit machine choice. A new card starts an intake thread in the project's existing checkout on that machine. Moving the card to planning starts a lead in its own managed worktree on the same machine, carrying the filed issue and the card's attachments into the work.
 
+Feature priorities are tracked in [WISHLIST.md](./WISHLIST.md).
+
 The board tracks:
 
 - `backlog` → `todo` → `planning` → `plan_ready`
@@ -21,6 +23,12 @@ The board and `bb pipeline list` show `Queued` when a task has messages waiting 
 Cancelling a queued kickoff leaves the task waiting for you. **Retry** sends its kickoff again to the same thread and waits for capacity if needed.
 
 Retrying after a thread is deleted starts that role over. A retried lead gets a new managed worktree and the full kickoff prompt.
+
+## Notifications
+
+With Notify installed and enabled, Pipeline sends an alert when a task starts needing your attention: an explicit `--needs-you` report, intake waiting for you, confirmed lead attention, or a launch/thread failure. Repeated updates and reloads do not repeat an existing attention alert. Clearing attention and needing you again sends another alert. Pending questions and approvals on the owning thread also notify.
+
+Alerts include the task title and reason and open its owning thread when one exists. They use Notify's desktop and phone delivery, sound preference, and foreground suppression. They do not require enabling each thread's bell. Unknown idle status and capacity waits stay quiet. A missing or failing Notify plugin is logged without blocking task work; failed requests are not replayed.
 
 ## Commands
 

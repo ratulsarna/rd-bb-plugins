@@ -29,6 +29,7 @@ import type {
   HistoryInput,
 } from "./store";
 import { ownerThread, roleThread } from "./card";
+import { userAttentionReason } from "./notifications";
 
 export interface PipelineSettings extends ExecutionSettings {
   permissionMode: string;
@@ -90,6 +91,7 @@ export interface PipelineServiceDependencies {
   }): Promise<JevResult>;
   log(message: string): void;
   publish(projectId: string): void;
+  onAttention(card: Card, reason: string): void;
   id?: () => string;
 }
 
@@ -196,7 +198,15 @@ export function createPipelineService(
     cardId: string,
     patch: Parameters<CardStore["update"]>[1],
     history?: HistoryInput,
-  ): Card => changed(store.update(cardId, patch, history));
+  ): Card => {
+    const previous = required(cardId);
+    const card = changed(store.update(cardId, patch, history));
+    const reason = userAttentionReason(card);
+    if (reason !== null && userAttentionReason(previous) === null) {
+      dependencies.onAttention(card, reason);
+    }
+    return card;
+  };
 
   const nonOwnerHistory = (
     card: Card,

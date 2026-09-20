@@ -56,6 +56,7 @@ permission is only requested after you tap **Enable** in the plugin settings.
 | `thread.failed`    | A thread errored                      | That thread                                               |
 | `notify_user` tool | An agent decides you need to know now | The agent's thread                                        |
 | `bb notify send`   | You or a script                       | The thread the command ran in — `--thread <id>` overrides |
+| `send` rpc         | Another plugin needs your attention   | The thread it names, tagged with `projectId`              |
 
 A successful turn does not spend a line saying "finished". Only a failure earns
 words, as `Failed — <error>`.
@@ -102,6 +103,37 @@ with:
 bb plugin config notify set agentTool true
 ```
 
+## Plugin RPC
+
+Other plugins use `bb.sdk.plugins.callRpc` with `pluginId: "notify"`,
+`method: "send"`, and this input:
+
+```json
+{
+  "title": "Pipeline",
+  "message": "Card needs review.",
+  "projectId": "proj_abc123",
+  "threadId": "thr_abc123"
+}
+```
+
+Only `message` is required. `title` defaults to `bb`; strings are trimmed and
+whitespace-only values are refused (`title` up to 256 characters, `message` up
+to 4000, ids are opaque slugs). The response is `{ "delivery": … }`:
+
+- `queued` — the desktop copy is queued for a listening BB window.
+- `held` — no window is open; the durable queue shows it when one opens, for
+  up to 10 minutes.
+- `skipped` — a BB app is in the foreground.
+
+This is an explicit send, the rpc twin of `bb notify send`: the caller has
+already decided the user must know now, so the per-thread bell and the
+lifecycle filters (child, hidden, minimum run) do not apply. Foreground
+suppression still does. With `threadId` but no `projectId`, Notify reads the
+thread's project and falls back to no project when the thread is gone — a
+deleted thread never blocks delivery. If Notify is not installed or is
+disabled, the request fails. Handle delivery errors without blocking task work.
+
 ## Settings
 
 `bb plugin config notify set <key> <value>` — changes apply live, no reload.
@@ -125,8 +157,8 @@ turn the tool on.
 Every thread starts with a crossed-out bell and sends no notifications. Use the
 bell in a thread header to enable its finish and failure alerts, plus
 notifications sent by its `notify_user` tool. The choice applies to every bb
-window and subscribed device. Explicit `bb notify send` commands and
-notification tests still send.
+window and subscribed device. Explicit sends — `bb notify send` commands,
+notification tests, and the `send` rpc — still send.
 
 ### iPhone Home Screen
 
