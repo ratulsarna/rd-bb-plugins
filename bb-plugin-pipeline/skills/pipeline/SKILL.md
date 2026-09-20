@@ -17,7 +17,9 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 
 The machine must be explicitly specified for every new card; never infer it from the current thread or choose the first available machine. Use `bb machine list` to find machine IDs and names, and ask the user when their target is unknown. The project must have a checkout on that machine. Intake, lead work, and retries use the card's stored machine.
 
-When spawning workers for a card, use its existing environment or explicitly select its stored machine for a new environment.
+When spawning workers for a card, use `--parent-self` so they belong to the task, and use its existing environment or explicitly select its stored machine for a new environment.
+
+Two Pipeline tasks can run at once per project and machine. A card's intake, lead, and children share one slot until their running work, tracked background work, and active autonomous goals stop. Further starts, replies, and retries queue automatically when both slots are occupied. `bb pipeline list` and `show` expose whether work is queued. Send now cannot bypass this limit. Ordinary BB threads are outside it.
 
 ## Attachments
 

@@ -21,6 +21,7 @@ export function PipelineCard(props: {
   questionOpen: boolean;
   dragging: boolean;
   pending: boolean;
+  queued: boolean;
   onDragStart: DragEventHandler<HTMLElement>;
   onDragEnd(): void;
   onOpen(threadId: string): void;
@@ -137,6 +138,7 @@ export function PipelineCard(props: {
           </span>
         )}
         {props.pending ? <span className="pipeline-working"><Icon name="Loading" className="pipeline-spin" /> Saving</span>
+          : props.queued ? <span className="pipeline-queued">Queued</span>
           : card.reportSignal === "working" && !card.needsUser && !card.attentionUnknown && !props.questionOpen && card.threadError === null && card.launchError === null
             ? <span className="pipeline-working">Working</span> : null}
         {card.tier === null ? null : <span className="pipeline-tier">{card.tier}</span>}

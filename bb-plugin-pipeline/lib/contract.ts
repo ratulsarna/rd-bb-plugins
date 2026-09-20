@@ -66,7 +66,7 @@ export const rpcContract = defineRpcContract({
   },
   listCards: {
     input: z.object({ projectId: z.string(), includeDone: z.boolean() }).strict(),
-    output: z.object({ cards: z.array(cardSchema) }).strict(),
+    output: z.object({ cards: z.array(cardSchema), queuedCardIds: z.array(z.string()) }).strict(),
   },
   listMachines: {
     input: z.object({ projectId: z.string().min(1) }).strict(),
@@ -108,6 +108,6 @@ export const rpcContract = defineRpcContract({
   },
   showCard: {
     input: z.object({ cardId: z.string() }).strict(),
-    output: z.object({ card: cardSchema, history: z.array(historySchema) }).strict(),
+    output: z.object({ card: cardSchema, history: z.array(historySchema), queued: z.boolean() }).strict(),
   },
 });

@@ -14,6 +14,10 @@ Cards show why the user is needed, open the owning thread, link the issue and PR
 
 Use **New task** to add a title, context, attachments, and a machine. Drag cards between stages, or use the card’s actions menu to move or remove it. **Show done** includes completed work.
 
+At most two Pipeline tasks run per project and machine. Intake, lead, and child threads share the card's slot. A task keeps its slot while it is starting, running, stopping, has tracked background work, or is continuing an active autonomous goal. Once that work stops, queued tasks can run. Replies, retries, and a move to planning wait for capacity when the task no longer holds a slot. Ordinary BB threads do not consume Pipeline slots.
+
+The board and `bb pipeline list` show `Queued` when a task is waiting for capacity; `list` and `show` JSON output include `queued`. BB owns the durable message queue and resumes waiting messages as capacity frees. Send now respects the Pipeline limit. An edit-and-resend or manual compaction at capacity is refused before changing the conversation; retry it when capacity is available.
+
 Retrying after a thread is deleted starts that role over. A retried lead gets a new managed worktree and the full kickoff prompt.
 
 ## Commands
@@ -42,6 +46,7 @@ Choose a machine in New task or pass its ID or unambiguous name with `--machine`
 Cards without a machine show a machine picker on the board. Assign one there or with `set-machine` before launching further work. Assignment does not relocate existing threads, and an assigned card's machine cannot be changed.
 
 Removing a card removes only its board data. It does not stop the intake or lead threads; archive those threads in BB if needed.
+Their running work continues to count toward the limit after the card is removed.
 
 ## Configuration
 
@@ -61,8 +66,18 @@ All threads receive `pipeline`, which documents board operations. Intake threads
 
 ## Development
 
+This plugin requires BB plugin SDK 0.4.107 or newer. Install published dependencies with `npm install`. When developing against an unpublished SDK, install its local package instead:
+
 ```sh
-npm install
+cd /path/to/bb
+pnpm exec turbo run build build:types --filter=@get-bb/plugin-sdk
+cd packages/plugin-sdk
+npm pack --ignore-scripts --pack-destination /tmp
+cd /path/to/bb-plugin-pipeline
+npm install --no-save --package-lock=false /tmp/get-bb-plugin-sdk-0.4.107.tgz
+```
+
+```sh
 npm run typecheck
 npm test
 npm run build

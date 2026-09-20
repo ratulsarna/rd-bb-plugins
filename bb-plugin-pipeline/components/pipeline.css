@@ -79,8 +79,9 @@
 .pipeline-machine-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pipeline-machine .pipeline-icon { width: 13px; height: 13px; }
 .pipeline-tier { font-size: 10px; border-radius: 4px; padding: 1px 5px; background: var(--muted); text-transform: capitalize; }
-.pipeline-working { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted-foreground); }
+.pipeline-working, .pipeline-queued { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted-foreground); }
 .pipeline-working::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #6f9f85; }
+.pipeline-queued::before { content: ""; box-sizing: border-box; width: 5px; height: 5px; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--muted-foreground) 65%, transparent); }
 .pipeline-popover { z-index: 60; width: 224px; border: 1px solid var(--border); border-radius: 9px; background: var(--popover, var(--card)); color: var(--foreground); box-shadow: 0 8px 24px rgb(0 0 0 / .18); padding: 12px; }
 .pipeline-popover .pipeline-field { margin-bottom: 10px; }
 .pipeline-remove { color: var(--destructive); justify-content: flex-start; width: 100%; }

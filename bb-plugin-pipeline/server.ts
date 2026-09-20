@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createPipelineCli } from "./lib/cli";
+import { createPipelineCapacity } from "./lib/capacity";
 import { rpcContract } from "./lib/contract";
 import { readIssue } from "./lib/issue";
 import { askJev } from "./lib/jev";
@@ -51,6 +52,8 @@ export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, [...MIGRATIONS]);
   const store = createCardStore(db);
+  const capacity = createPipelineCapacity(bb, store);
+  bb.experimental_hooks.on("message.dispatch", capacity.decide, { experimental_enforcement: "strict" });
   const service = createPipelineService({
     store,
     sdk: bb.sdk,
@@ -70,8 +73,11 @@ export default async function plugin(bb: BbPluginApi) {
       const projects = await bb.sdk.projects.list();
       return { projects: projects.map(({ id, name }) => ({ id, name })) };
     },
-    listCards({ projectId, includeDone }) {
-      return { cards: store.list(projectId, includeDone) };
+    async listCards({ projectId, includeDone }) {
+      return {
+        cards: store.list(projectId, includeDone),
+        queuedCardIds: await capacity.queuedCardIds(projectId),
+      };
     },
     async listMachines({ projectId }) {
       return { machines: await listProjectMachines(bb.sdk, projectId) };
@@ -91,14 +97,33 @@ export default async function plugin(bb: BbPluginApi) {
     removeCard({ cardId }) {
       return { removed: service.remove(cardId) };
     },
-    showCard({ cardId }) {
+    async showCard({ cardId }) {
       const card = store.get(cardId);
       if (card === null) throw new Error(`unknown card ${cardId}`);
-      return { card, history: store.history(cardId) };
+      const queued = (await capacity.queuedCardIds(card.projectId)).includes(cardId);
+      return { card, history: store.history(cardId), queued };
     },
   });
 
-  bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk }));
+  bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk, capacity }));
+
+  for (const event of ["thread.idle", "thread.failed", "thread.archived", "thread.deleted"] as const) {
+    bb.events.on(event, async ({ thread }) => {
+      await bb.experimental_hooks.recheck("message.dispatch");
+      await capacity.publish(thread);
+    });
+  }
+  bb.events.on("experimental_thread.events", async ({ thread }) => {
+    if (thread.status === "active" || thread.status === "starting") return;
+    await bb.experimental_hooks.recheck("message.dispatch");
+    await capacity.publish(thread);
+  });
+  for (const event of ["message.queued", "message.dispatched", "message.cancelled"] as const) {
+    bb.events.on(event, async ({ entry }) => {
+      const thread = await bb.sdk.threads.get({ threadId: entry.threadId, experimental_includeDeleted: true });
+      await capacity.publish(thread);
+    });
+  }
 
   bb.events.on("thread.active", ({ thread }) => service.onThreadActive(thread));
   bb.events.on("thread.idle", ({ thread, lastAssistantText }) =>
@@ -142,6 +167,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.background.service("startup-pass", {
     async start(signal) {
+      await bb.experimental_hooks.recheck("message.dispatch");
       await service.startupPass();
       await new Promise<void>((resolve) => {
         if (signal.aborted) return resolve();

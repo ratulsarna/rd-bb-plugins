@@ -55,6 +55,7 @@ export function PipelineBoard() {
   const [machines, setMachines] = useState<PipelineMachine[]>([]);
   const [includeDone, setIncludeDone] = useState(false);
   const [cards, setCards] = useState<Awaited<ReturnType<typeof rpc.call<"listCards">>>["cards"]>([]);
+  const [queuedCardIds, setQueuedCardIds] = useState<ReadonlySet<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
@@ -86,6 +87,7 @@ export function PipelineBoard() {
       if (selected === null) {
         setCards([]);
         setMachines([]);
+        setQueuedCardIds(new Set());
       } else {
         const [result, machineResult] = await Promise.all([
           rpc.call("listCards", {
@@ -96,6 +98,7 @@ export function PipelineBoard() {
         ]);
         if (request !== requestSequence.current) return;
         setCards(result.cards);
+        setQueuedCardIds(new Set(result.queuedCardIds));
         setMachines(machineResult.machines);
       }
       setError(null);
@@ -197,6 +200,7 @@ export function PipelineBoard() {
               setProjectId(next);
               setCards([]);
               setMachines([]);
+              setQueuedCardIds(new Set());
               clearDrag();
               void load();
             }}
@@ -274,6 +278,7 @@ export function PipelineBoard() {
                         onSetMachine={(hostId) => void updateCard(card, () => rpc.call("setMachine", { cardId: card.id, hostId }))}
                         dragging={draggedCardId === card.id}
                         pending={pendingCards.has(card.id)}
+                        queued={queuedCardIds.has(card.id)}
                         onDragStart={(event) => {
                           if (pendingCards.has(card.id)) {
                             event.preventDefault();

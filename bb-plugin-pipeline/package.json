@@ -9,7 +9,7 @@
   },
   "engines": {
     "bb": ">=0.43",
-    "bbPluginSdk": ">=0.4.106"
+    "bbPluginSdk": ">=0.4.107"
   },
   "bb": {
     "name": "Pipeline",
@@ -24,7 +24,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.4.106",
+    "@get-bb/plugin-sdk": "0.4.107",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",

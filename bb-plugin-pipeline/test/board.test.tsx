@@ -18,6 +18,7 @@ afterEach(() => {
 
 function renderBoard(options?: {
   cards?: ReturnType<typeof makeCard>[];
+  queuedCardIds?: string[];
   projects?: Array<{ id: string; name: string }>;
   pending?: boolean;
   ownerThreadId?: string;
@@ -36,7 +37,10 @@ function renderBoard(options?: {
     }));
   const listCards =
     options?.listCards ??
-    vi.fn(() => ({ cards: options?.cards ?? [makeCard()] }));
+    vi.fn(() => ({
+      cards: options?.cards ?? [makeCard()],
+      queuedCardIds: options?.queuedCardIds ?? [],
+    }));
   const slot = renderSlot(
     panel,
     { subPath: "" },
@@ -127,7 +131,7 @@ describe("pipeline board", () => {
   });
 
   it("refetches when realtime reconnects", async () => {
-    const listCards = vi.fn(() => ({ cards: [makeCard()] }));
+    const listCards = vi.fn(() => ({ cards: [makeCard()], queuedCardIds: [] }));
     const { slot } = renderBoard({ connection: "reconnecting", listCards });
     await screen.findByText("A pipeline card");
     const before = listCards.mock.calls.length;
@@ -138,19 +142,19 @@ describe("pipeline board", () => {
   });
 
   it("clears cards on a project switch and ignores an older response", async () => {
-    let resolveOld!: (value: { cards: ReturnType<typeof makeCard>[] }) => void;
-    let resolveCurrent!: (value: { cards: ReturnType<typeof makeCard>[] }) => void;
-    const old = new Promise<{ cards: ReturnType<typeof makeCard>[] }>((resolve) => {
+    let resolveOld!: (value: { cards: ReturnType<typeof makeCard>[]; queuedCardIds: string[] }) => void;
+    let resolveCurrent!: (value: { cards: ReturnType<typeof makeCard>[]; queuedCardIds: string[] }) => void;
+    const old = new Promise<{ cards: ReturnType<typeof makeCard>[]; queuedCardIds: string[] }>((resolve) => {
       resolveOld = resolve;
     });
-    const current = new Promise<{ cards: ReturnType<typeof makeCard>[] }>((resolve) => {
+    const current = new Promise<{ cards: ReturnType<typeof makeCard>[]; queuedCardIds: string[] }>((resolve) => {
       resolveCurrent = resolve;
     });
     let projectACalls = 0;
     const listCards = vi.fn((input: unknown) => {
       const { projectId } = input as { projectId: string };
       if (projectId === "project-a" && projectACalls++ === 0) {
-        return { cards: [makeCard({ id: "a", projectId, title: "Project A" })] };
+        return { cards: [makeCard({ id: "a", projectId, title: "Project A" })], queuedCardIds: [] };
       }
       return projectId === "project-a" ? old : current;
     });
@@ -173,10 +177,12 @@ describe("pipeline board", () => {
     await waitFor(() => expect(listCards).toHaveBeenCalledTimes(3));
     resolveCurrent({
       cards: [makeCard({ id: "b", projectId: "project-b", title: "Project B" })],
+      queuedCardIds: [],
     });
     await screen.findByText("Project B");
     resolveOld({
       cards: [makeCard({ id: "stale", projectId: "project-a", title: "Stale A" })],
+      queuedCardIds: [],
     });
 
     await waitFor(() => {
@@ -293,7 +299,7 @@ describe("pipeline board", () => {
       card = { ...card, hostId: (input as { hostId: string }).hostId };
       return card;
     });
-    renderBoard({ listCards: vi.fn(() => ({ cards: [card] })), setMachine });
+    renderBoard({ listCards: vi.fn(() => ({ cards: [card], queuedCardIds: [] })), setMachine });
     const machine = await screen.findByRole("combobox", { name: "Machine for A pipeline card" });
     expect((machine as HTMLSelectElement).value).toBe("");
     expect(setMachine).not.toHaveBeenCalled();
@@ -332,7 +338,7 @@ describe("pipeline board", () => {
         resolve(card);
       };
     }));
-    const { slot } = renderBoard({ listCards: vi.fn(() => ({ cards: [card] })), moveCard });
+    const { slot } = renderBoard({ listCards: vi.fn(() => ({ cards: [card], queuedCardIds: [] })), moveCard });
     await screen.findByText(card.title);
     const drag = dragCard();
     const target = screen.getByRole("region", { name: "To do" });
@@ -410,7 +416,10 @@ describe("pipeline board", () => {
       projects: [{ id: "proj_1", name: "One" }, { id: "proj_2", name: "Two" }],
       listCards: vi.fn((input: unknown) => {
         const { projectId } = input as { projectId: string };
-        return { cards: [makeCard({ id: projectId, projectId, title: projectId })] };
+        return {
+          cards: [makeCard({ id: projectId, projectId, title: projectId })],
+          queuedCardIds: [],
+        };
       }),
       moveCard,
     });
@@ -463,6 +472,7 @@ describe("pipeline board", () => {
             title: projectId === "project-a" ? "Card A" : "Card B",
           }),
         ],
+        queuedCardIds: [],
       };
     });
     renderBoard({
@@ -574,5 +584,88 @@ describe("pipeline board", () => {
 
     await screen.findByText("Idle · awaiting status");
     expect(screen.queryByText("Working")).toBeNull();
+  });
+
+  it("hides a stale working signal on a queued card without touching other cards", async () => {
+    renderBoard({
+      cards: [
+        makeCard({ id: "card_1", reportSignal: "working" }),
+        makeCard({ id: "card_2", title: "Running task", reportSignal: "working" }),
+      ],
+      queuedCardIds: ["card_1"],
+    });
+
+    const queued = await screen.findByRole("article", { name: "A pipeline card" });
+    expect(within(queued).getByText("Queued")).toBeTruthy();
+    expect(within(queued).queryByText("Working")).toBeNull();
+    expect(screen.getByRole("article", { name: "Running task" }).textContent).toContain("Working");
+  });
+
+  it("clears the queued status on the next fresh load", async () => {
+    const listCards = vi.fn(() => ({ cards: [makeCard()], queuedCardIds: [] as string[] }))
+      .mockReturnValueOnce({ cards: [makeCard()], queuedCardIds: ["card_1"] });
+    const { slot } = renderBoard({ listCards });
+    await screen.findByText("Queued");
+
+    await slot.behavior.emitRealtime("cards:changed", { projectId: "proj_1" });
+
+    await waitFor(() => expect(screen.queryByText("Queued")).toBeNull());
+  });
+
+  it("cannot leak a queued status from a late stale project response", async () => {
+    let resolveOld!: (value: { cards: ReturnType<typeof makeCard>[]; queuedCardIds: string[] }) => void;
+    const old = new Promise<{ cards: ReturnType<typeof makeCard>[]; queuedCardIds: string[] }>((resolve) => {
+      resolveOld = resolve;
+    });
+    let projectACalls = 0;
+    const listCards = vi.fn((input: unknown) => {
+      const { projectId } = input as { projectId: string };
+      if (projectId === "project-a" && projectACalls++ === 0) {
+        return { cards: [makeCard({ id: "a", projectId, title: "Project A" })], queuedCardIds: [] };
+      }
+      return projectId === "project-a"
+        ? old
+        : { cards: [makeCard({ id: "b", projectId, title: "Project B" })], queuedCardIds: [] };
+    });
+    renderBoard({
+      projects: [
+        { id: "project-a", name: "A" },
+        { id: "project-b", name: "B" },
+      ],
+      listCards,
+    });
+    await screen.findByText("Project A");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show done" }));
+    await waitFor(() => expect(listCards).toHaveBeenCalledTimes(2));
+    fireEvent.change(screen.getByRole("combobox", { name: "Project" }), {
+      target: { value: "project-b" },
+    });
+    await screen.findByText("Project B");
+
+    resolveOld({
+      cards: [makeCard({ id: "stale", projectId: "project-a", title: "Stale A" })],
+      queuedCardIds: ["b"],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Project B")).toBeTruthy();
+      expect(screen.queryByText("Queued")).toBeNull();
+      expect(screen.queryByText("Stale A")).toBeNull();
+    });
+  });
+
+  it("keeps a queued card draggable and lets saving take precedence", async () => {
+    const moveCard = vi.fn(() => makeCard({ column: "todo" }));
+    renderBoard({ queuedCardIds: ["card_1"], moveCard });
+    await screen.findByText("Queued");
+    const drag = dragCard();
+    const target = screen.getByRole("region", { name: "To do" });
+    fireEvent.dragOver(target, drag);
+    fireEvent.drop(target, drag);
+
+    expect(within(drag.card).getByText("Saving")).toBeTruthy();
+    expect(within(drag.card).queryByText("Queued")).toBeNull();
+    await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1", column: "todo" }));
   });
 });

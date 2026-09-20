@@ -3,6 +3,7 @@ import {
   createFakePluginHost,
   makeHostResponse,
   makePluginAgentConfigurationContext,
+  makeQueueEntry,
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
 import type { Database } from "better-sqlite3";
@@ -86,6 +87,7 @@ async function setup(options?: {
       },
       threads: {
         spawn: async () => makeThreadResponse({ id: "intake" }),
+        queue: { list: async () => [] },
         interactions: {
           list: options?.listInteractions ?? (async () => []),
         },
@@ -105,6 +107,50 @@ function seedLegacyCard(db: Database, id = "card_legacy"): void {
 }
 
 describe("plugin wiring", () => {
+  it("reports queued child work through RPC and CLI and clears it when the message is cancelled", async () => {
+    const { host } = await setup();
+    const added = await host.harness.behavior.runCli(
+      ["add", "--title", "Queued task", "--machine", "Work laptop", "--json"],
+      { projectId: "proj_1" },
+    );
+    const card = JSON.parse(added.stdout) as { id: string };
+    const worker = makeThreadResponse({ id: "worker", projectId: "proj_1", parentThreadId: "intake" });
+    const entry = makeQueueEntry({ threadId: "worker" });
+    let queued = true;
+    host.harness.inspection.sdk.stub("threads.queue.list", async () => queued ? [entry] : []);
+    host.harness.inspection.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) =>
+      threadId === "worker" ? worker : makeThreadResponse({ id: "intake", projectId: "proj_1" }),
+    );
+
+    expect(await host.harness.behavior.callRpc("listCards", { projectId: "proj_1", includeDone: false }))
+      .toMatchObject({ queuedCardIds: [card.id] });
+    expect(await host.harness.behavior.callRpc("showCard", { cardId: card.id }))
+      .toMatchObject({ queued: true });
+    const listed = await host.harness.behavior.runCli(["list", "--json"], { projectId: "proj_1" });
+    expect(JSON.parse(listed.stdout)).toMatchObject([{ id: card.id, queued: true }]);
+    const shown = await host.harness.behavior.runCli(["show", card.id, "--json"], { projectId: "proj_1" });
+    expect(JSON.parse(shown.stdout)).toMatchObject({ queued: true });
+
+    queued = false;
+    await host.harness.behavior.emitThreadEvent("message.cancelled", { entry });
+    expect(host.harness.inspection.realtimeSignals.at(-1)).toMatchObject({ payload: { projectId: "proj_1" } });
+    expect(await host.harness.behavior.callRpc("listCards", { projectId: "proj_1", includeDone: false }))
+      .toMatchObject({ queuedCardIds: [] });
+  });
+
+  it("wakes the queue when work ends, without scheduling another drain every time a message requeues", async () => {
+    const { host } = await setup();
+    const thread = makeThreadResponse({ id: "ordinary", projectId: "proj_1", status: "idle" });
+    host.harness.inspection.sdk.stub("threads.get", async () => thread);
+    const before = host.harness.inspection.recheckCount;
+    await host.harness.behavior.emitThreadEvent("message.queued", { entry: makeQueueEntry({ threadId: thread.id }) });
+    expect(host.harness.inspection.recheckCount).toBe(before);
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread, lastAssistantText: null });
+    expect(host.harness.inspection.recheckCount).toBe(before + 1);
+    await host.harness.behavior.emitThreadEvent("experimental_thread.events", { thread, sequence: 2 });
+    expect(host.harness.inspection.recheckCount).toBe(before + 2);
+  });
+
   it("creates a card through the CLI and exposes it through RPC", async () => {
     const { host } = await setup();
 

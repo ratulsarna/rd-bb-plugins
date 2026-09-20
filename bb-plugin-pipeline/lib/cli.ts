@@ -7,6 +7,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { COLUMNS, isColumn } from "./columns";
 import type { PipelineService } from "./service";
+import type { PipelineCapacity } from "./capacity";
 import { ownerThread } from "./store";
 import type { Card, CardAttachment, CardStore } from "./store";
 
@@ -113,8 +114,9 @@ function attachment(path: string): CardAttachment {
   };
 }
 
-function formatCard(card: Card): string {
+function formatCard(card: Card, queued = false): string {
   const flags = [
+    queued ? "queued" : null,
     card.tier,
     card.hostId === null ? "machine: unassigned" : `machine: ${card.hostId}`,
     card.needsUser ? `needs you: ${card.attentionReason ?? "unknown"}` : null,
@@ -128,6 +130,7 @@ export function createPipelineCli(input: {
   service: PipelineService;
   store: CardStore;
   sdk: PluginBbSdk;
+  capacity: PipelineCapacity;
 }): PluginCliRegistration {
   return {
     name: "pipeline",
@@ -191,10 +194,11 @@ export function createPipelineCli(input: {
               projectId(args, context),
               args.options.has("all"),
             );
+            const queued = new Set(await input.capacity.queuedCardIds(projectId(args, context)));
             return success(
               args,
-              cards,
-              cards.length === 0 ? "No pipeline cards." : cards.map(formatCard).join("\n"),
+              cards.map((card) => ({ ...card, queued: queued.has(card.id) })),
+              cards.length === 0 ? "No pipeline cards." : cards.map((card) => formatCard(card, queued.has(card.id))).join("\n"),
             );
           }
           case "show": {
@@ -216,6 +220,7 @@ export function createPipelineCli(input: {
             }
             const value = {
               card,
+              queued: (await input.capacity.queuedCardIds(card.projectId)).includes(card.id),
               history: input.store.history(card.id),
               ownerThreadId: threadId,
               interactions,
