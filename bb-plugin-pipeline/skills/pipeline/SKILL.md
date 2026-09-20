@@ -25,6 +25,8 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 
 Use `add --no-start` when the user wants to capture a task for later. Start it before moving stages, pausing, stopping, or resuming; saved tasks can be removed without starting. The UI offers the same choice as **Save** and **Save and start**.
 
+An interrupted Start recovers an existing intake thread when found, or exposes Retry. Use `retry` on that card instead of adding another task.
+
 The machine must be explicitly specified for every new card; never infer it from the current thread or choose the first available machine. Use `bb machine list` to find machine IDs and names, and ask the user when their target is unknown. The project must have a checkout on that machine. Intake, lead work, and retries use the card's stored machine.
 
 ### Intake and lead choices

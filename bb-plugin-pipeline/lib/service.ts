@@ -30,7 +30,10 @@ import type {
 } from "./store";
 import { ownerThread, requireStarted, roleThread } from "./card";
 import { userAttentionReason } from "./notifications";
-import { isThreadNotFound } from "./task-threads";
+import {
+  findPipelineThreadByMetadata,
+  isThreadNotFound,
+} from "./task-threads";
 
 export interface PipelineSettings extends ExecutionSettings {
   permissionMode: string;
@@ -104,6 +107,10 @@ function errorMessage(cause: unknown): string {
 
 const MISSING_ISSUE_ERROR =
   "no issue yet: let intake finish, or pass --issue <url>";
+const INTERRUPTED_START_ERROR =
+  "intake: start interrupted before its thread was linked";
+const START_RECOVERY_ERROR_PREFIX =
+  "intake: could not check for an existing intake thread: ";
 
 function normalizeIssueUrl(value: string | null): string | null {
   const trimmed = value?.trim() ?? "";
@@ -278,6 +285,33 @@ export function createPipelineService(
       },
     );
 
+  const linkLaunchThread = (
+    cardId: string,
+    role: PipelineRole,
+    threadId: string,
+  ): Card => {
+    const field = role === "intake" ? "intakeThreadId" : "leadThreadId";
+    return update(
+      cardId,
+      {
+        [field]: threadId,
+        needsUser: false,
+        attentionReason: null,
+        attentionSource: null,
+        attentionUnknown: false,
+        threadError: null,
+        launchError: null,
+        reportSignal: null,
+      },
+      {
+        kind: "launched",
+        source: "system",
+        threadId,
+        note: role,
+      },
+    );
+  };
+
   const doLaunch = async (cardId: string, role: PipelineRole): Promise<Card> => {
     let card = required(cardId);
     const field = role === "intake" ? "intakeThreadId" : "leadThreadId";
@@ -301,26 +335,7 @@ export function createPipelineService(
 
     try {
       const thread = await sdk.threads.spawn(request);
-      card = update(
-        card.id,
-        {
-          [field]: thread.id,
-          needsUser: false,
-          attentionReason: null,
-          attentionSource: null,
-          attentionUnknown: false,
-          threadError: null,
-          launchError: null,
-          reportSignal: null,
-        },
-        {
-          kind: "launched",
-          source: "system",
-          threadId: thread.id,
-          note: role,
-        },
-      );
-      return card;
+      return linkLaunchThread(card.id, role, thread.id);
     } catch (cause) {
       return recordLaunchFailure(card, role, cause);
     }
@@ -348,21 +363,6 @@ export function createPipelineService(
     requireRunning(card, "launching it");
     return serializeLaunch(cardId, () => doLaunch(cardId, role));
   };
-
-  const start = async (
-    cardId: string,
-    source: "ui" | "cli",
-  ): Promise<Card> => serializeLaunch(cardId, async () => {
-    let card = required(cardId);
-    if (card.startRequested) return card;
-    if (card.column === "done") throw new Error("Completed tasks cannot be started");
-    requireRunning(card, "starting it");
-    card = update(card.id, { startRequested: true }, {
-      kind: "start_requested",
-      source,
-    });
-    return doLaunch(card.id, "intake");
-  });
 
   const move = async (
     cardId: string,
@@ -744,6 +744,106 @@ export function createPipelineService(
     await reconcile(card, role, { kind: "thread", thread, ...details });
   };
 
+  const isStartRecoveryError = (error: string | null): boolean =>
+    error === INTERRUPTED_START_ERROR ||
+    error?.startsWith(START_RECOVERY_ERROR_PREFIX) === true;
+
+  const canRecoverStart = (current: Card, snapshot: Card): boolean =>
+    current.startRequested &&
+    current.runState === "running" &&
+    current.column !== "done" &&
+    current.intakeThreadId === null &&
+    current.leadThreadId === null &&
+    current.launchError === snapshot.launchError;
+
+  const recoverInterruptedStart = async (
+    snapshot: Card,
+    markMissing: boolean,
+  ): Promise<{ card: Card; missing: boolean }> => {
+    let thread: PipelineThread | null;
+    try {
+      thread = await findPipelineThreadByMetadata(sdk, {
+        projectId: snapshot.projectId,
+        cardId: snapshot.id,
+        role: "intake",
+      });
+    } catch (cause) {
+      const current = required(snapshot.id);
+      if (!canRecoverStart(current, snapshot)) {
+        return { card: current, missing: false };
+      }
+      return {
+        card: recordLaunchFailure(
+          current,
+          "intake",
+          new Error(
+            `could not check for an existing intake thread: ${errorMessage(cause)}`,
+          ),
+        ),
+        missing: false,
+      };
+    }
+
+    let current = required(snapshot.id);
+    if (!canRecoverStart(current, snapshot)) {
+      return { card: current, missing: false };
+    }
+    if (thread === null) {
+      return {
+        card: markMissing
+          ? recordLaunchFailure(
+              current,
+              "intake",
+              new Error("start interrupted before its thread was linked"),
+            )
+          : current,
+        missing: true,
+      };
+    }
+    const linked = linkLaunchThread(current.id, "intake", thread.id);
+    if (linked.intakeThreadId === thread.id) {
+      await reconcile(linked, "intake", {
+        kind: "thread",
+        thread,
+        startup: true,
+      });
+    }
+    return { card: required(snapshot.id), missing: false };
+  };
+
+  const start = async (
+    cardId: string,
+    source: "ui" | "cli",
+  ): Promise<Card> => serializeLaunch(cardId, async () => {
+    let card = required(cardId);
+    if (card.startRequested) {
+      const incomplete = store.getIncompleteStart(card.id);
+      return incomplete === null
+        ? card
+        : (await recoverInterruptedStart(incomplete, true)).card;
+    }
+    if (card.column === "done") throw new Error("Completed tasks cannot be started");
+    requireRunning(card, "starting it");
+    card = update(
+      card.id,
+      {
+        startRequested: true,
+        needsUser: false,
+        attentionReason: null,
+        attentionSource: null,
+        attentionUnknown: false,
+        reportSignal: null,
+        threadError: null,
+        launchError: null,
+      },
+      {
+        kind: "start_requested",
+        source,
+      },
+    );
+    return doLaunch(card.id, "intake");
+  });
+
   const service: PipelineService = {
     async getExecutionDefaults() {
       return executionDefaults(await dependencies.getSettings());
@@ -823,7 +923,17 @@ export function createPipelineService(
         if (card.launchError === null) return card;
         const role = card.ownerRole;
         const threadId = roleThread(card, role);
-        if (threadId === null) return doLaunch(cardId, role);
+        if (threadId === null) {
+          if (
+            role === "intake" &&
+            card.leadThreadId === null &&
+            isStartRecoveryError(card.launchError)
+          ) {
+            const recovered = await recoverInterruptedStart(card, false);
+            if (!recovered.missing) return recovered.card;
+          }
+          return doLaunch(cardId, role);
+        }
         const recordRetryFailure = (cause: unknown): Card => {
           const current = required(cardId);
           return current.runState === "running" &&
@@ -1058,6 +1168,20 @@ export function createPipelineService(
         : Promise.resolve();
     },
     async startupPass() {
+      for (const snapshot of store.listIncompleteStarts()) {
+        try {
+          await serializeLaunch(snapshot.id, async () => {
+            const current = store.getIncompleteStart(snapshot.id);
+            return current === null
+              ? required(snapshot.id)
+              : (await recoverInterruptedStart(current, true)).card;
+          });
+        } catch (cause) {
+          dependencies.log(
+            `startup pass failed to recover card ${snapshot.id}: ${errorMessage(cause)}`,
+          );
+        }
+      }
       for (const card of store.listActiveWithOwner()) {
         const threadId = ownerThread(card)!;
         let thread;

@@ -265,6 +265,8 @@ export interface CardStore {
   setHost(id: string, hostId: string): Card;
   get(id: string): Card | null;
   getByThread(threadId: string): Card | null;
+  getIncompleteStart(id: string): Card | null;
+  listIncompleteStarts(): Card[];
   list(projectId: string, includeDone?: boolean): Card[];
   listActiveWithOwner(): Card[];
   listControlled(): Card[];
@@ -280,6 +282,17 @@ export interface CardStore {
 
 export function createCardStore(db: Database, now = Date.now): CardStore {
   const getRow = db.prepare("SELECT * FROM cards WHERE id = ?");
+  const incompleteStartWhere = `start_requested = 1
+    AND run_state = 'running'
+    AND "column" <> 'done'
+    AND intake_thread_id IS NULL
+    AND lead_thread_id IS NULL
+    AND launch_error IS NULL
+    AND EXISTS (
+      SELECT 1 FROM card_history
+      WHERE card_history.card_id = cards.id
+        AND card_history.kind = 'start_requested'
+    )`;
   const insertHistory = db.prepare(
     `INSERT INTO card_history
       (card_id, at, kind, from_column, to_column, source, thread_id, note)
@@ -394,6 +407,19 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         )
         .get(threadId, threadId) as CardRow | undefined;
       return row === undefined ? null : cardFromRow(row);
+    },
+    getIncompleteStart(id) {
+      const row = db
+        .prepare(`SELECT * FROM cards WHERE id = ? AND ${incompleteStartWhere}`)
+        .get(id) as CardRow | undefined;
+      return row === undefined ? null : cardFromRow(row);
+    },
+    listIncompleteStarts() {
+      return (
+        db
+          .prepare(`SELECT * FROM cards WHERE ${incompleteStartWhere} ORDER BY updated_at, created_at`)
+          .all() as CardRow[]
+      ).map(cardFromRow);
     },
     list(projectId, includeDone = false) {
       const rows = db

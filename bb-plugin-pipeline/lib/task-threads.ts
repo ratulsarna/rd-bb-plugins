@@ -1,5 +1,10 @@
-import type { BbPluginApi, MessageDispatchHookContext } from "@get-bb/plugin-sdk";
+import type {
+  BbPluginApi,
+  MessageDispatchHookContext,
+  PluginBbSdk,
+} from "@get-bb/plugin-sdk";
 import type { CardStore } from "./store";
+import type { PipelineRole } from "./spawn";
 
 export type TaskThread = MessageDispatchHookContext["thread"];
 export interface PipelineTask { cardId: string; projectId: string; hostId: string | null }
@@ -8,6 +13,36 @@ export function isThreadNotFound(cause: unknown): boolean {
   if (cause === null || typeof cause !== "object") return false;
   const error = cause as { code?: unknown; status?: unknown };
   return error.status === 404 || error.code === "thread_not_found";
+}
+
+const THREAD_PAGE_SIZE = 100;
+
+export async function findPipelineThreadByMetadata(
+  sdk: PluginBbSdk,
+  input: { projectId: string; cardId: string; role: PipelineRole },
+): Promise<Awaited<ReturnType<PluginBbSdk["threads"]["get"]>> | null> {
+  for (const archived of [false, true]) {
+    for (let offset = 0; ; offset += THREAD_PAGE_SIZE) {
+      const threads = await sdk.threads.list({
+        projectId: input.projectId,
+        originPluginId: "pipeline",
+        includeHidden: true,
+        archived,
+        limit: THREAD_PAGE_SIZE,
+        offset,
+      });
+      for (const thread of threads) {
+        const metadata = await sdk.threads.getPluginMetadata({
+          threadId: thread.id,
+        });
+        if (metadata.cardId === input.cardId && metadata.role === input.role) {
+          return sdk.threads.get({ threadId: thread.id });
+        }
+      }
+      if (threads.length < THREAD_PAGE_SIZE) break;
+    }
+  }
+  return null;
 }
 
 export function createTaskThreads(bb: BbPluginApi, store: CardStore) {

@@ -202,6 +202,59 @@ describe("card execution", () => {
       db.close();
     }
   });
+
+  it("finds only running unlinked starts with durable explicit intent", () => {
+    const db = new Database(":memory:");
+    for (const migration of MIGRATIONS) db.exec(migration);
+    try {
+      const store = createCardStore(db);
+      const add = (id: string, startRequested = true) =>
+        store.create({
+          id,
+          projectId: "proj_1",
+          hostId: "host_mac",
+          startRequested,
+          title: id,
+          body: "",
+          attachments: [],
+          source: "ui",
+        });
+      add("explicit", false);
+      store.update(
+        "explicit",
+        { startRequested: true },
+        { kind: "start_requested", source: "ui" },
+      );
+      add("implicit");
+      add("saved", false);
+      add("failed", false);
+      store.update(
+        "failed",
+        { startRequested: true, launchError: "intake: offline" },
+        { kind: "start_requested", source: "ui" },
+      );
+      add("linked", false);
+      store.update(
+        "linked",
+        { startRequested: true, intakeThreadId: "intake" },
+        { kind: "start_requested", source: "ui" },
+      );
+      add("held", false);
+      store.update(
+        "held",
+        { startRequested: true, runState: "paused" },
+        { kind: "start_requested", source: "ui" },
+      );
+
+      expect(store.listIncompleteStarts().map((card) => card.id)).toEqual([
+        "explicit",
+      ]);
+      expect(store.getIncompleteStart("explicit")?.id).toBe("explicit");
+      expect(store.getIncompleteStart("implicit")).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("card machines", () => {

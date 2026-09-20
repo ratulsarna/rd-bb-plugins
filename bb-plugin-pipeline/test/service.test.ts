@@ -84,6 +84,13 @@ const hostList = [
 ];
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
+type ThreadListInput = NonNullable<
+  Parameters<PluginBbSdk["threads"]["list"]>[0]
+>;
+type ThreadListResult = Awaited<ReturnType<PluginBbSdk["threads"]["list"]>>;
+type ThreadMetadataResult = Awaited<
+  ReturnType<PluginBbSdk["threads"]["getPluginMetadata"]>
+>;
 
 afterEach(async () => {
   while (hosts.length > 0) await hosts.pop()!.harness.lifecycle.dispose();
@@ -94,6 +101,8 @@ function setup(options?: {
   send?: (request: unknown) => Promise<{ ok: true; delivery: "sent" }>;
   getThread?: (input: { threadId: string }) => Promise<ReturnType<typeof makeThreadResponse>>;
   getThreadOutput?: (input: { threadId: string }) => Promise<{ output: string }>;
+  listThreads?: (input: ThreadListInput) => Promise<ThreadListResult>;
+  getThreadMetadata?: (input: { threadId: string }) => Promise<ThreadMetadataResult>;
   project?: typeof project;
   hosts?: typeof hostList;
   readIssue?: (url: string) => Promise<{ title: string; body: string; labels: string[] }>;
@@ -142,6 +151,12 @@ function setup(options?: {
         ...(options?.getThreadOutput === undefined
           ? {}
           : { output: options.getThreadOutput as never }),
+        ...(options?.listThreads === undefined
+          ? {}
+          : { list: options.listThreads as never }),
+        ...(options?.getThreadMetadata === undefined
+          ? {}
+          : { getPluginMetadata: options.getThreadMetadata as never }),
       },
     },
   });
@@ -216,6 +231,10 @@ function thread(
   overrides: Partial<ReturnType<typeof makeThreadResponse>> = {},
 ) {
   return makeThreadResponse({ id, activeBackgroundAgentCount, ...overrides });
+}
+
+function listedThread(id: string): ThreadListResult[number] {
+  return makeThreadResponse({ id }) as unknown as ThreadListResult[number];
 }
 
 describe("idle policy", () => {
@@ -2063,6 +2082,299 @@ describe("saved cards", () => {
     expect(store.get(saved.id)?.startRequested).toBe(false);
     expect(spawn).not.toHaveBeenCalled();
     expect(rememberExecution).toHaveBeenCalledOnce();
+  });
+
+  it("turns an interrupted start with no remote thread into a retryable launch", async () => {
+    const listThreads = vi.fn(async () => [] as ThreadListResult);
+    const { service, store, spawn } = setup({ listThreads });
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship later",
+      start: false,
+      source: "ui",
+    });
+    store.update(
+      saved.id,
+      { startRequested: true },
+      { kind: "start_requested", source: "ui" },
+    );
+
+    await service.startupPass();
+
+    expect(store.get(saved.id)?.launchError).toBe(
+      "intake: start interrupted before its thread was linked",
+    );
+    expect(spawn).not.toHaveBeenCalled();
+
+    await service.retry(saved.id);
+
+    expect(store.get(saved.id)).toMatchObject({
+      intakeThreadId: "thr_1",
+      launchError: null,
+    });
+    expect(spawn).toHaveBeenCalledOnce();
+  });
+
+  it("adopts a delayed original intake before Retry can spawn a duplicate", async () => {
+    let remoteExists = false;
+    const listThreads = vi.fn(async (input: ThreadListInput) =>
+      remoteExists && !input.archived
+        ? [listedThread("delayed-intake")]
+        : [],
+    );
+    const { service, store, spawn, send } = setup({
+      listThreads,
+      getThreadMetadata: async () => ({ cardId: "card_new", role: "intake" }),
+      getThread: async ({ threadId }) =>
+        thread(threadId, 0, { status: "pending", queuedMessageCount: 1 }),
+    });
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship later",
+      start: false,
+      source: "ui",
+    });
+    store.update(
+      saved.id,
+      { startRequested: true },
+      { kind: "start_requested", source: "ui" },
+    );
+    await service.startupPass();
+    remoteExists = true;
+
+    const recovered = await service.retry(saved.id);
+
+    expect(recovered).toMatchObject({
+      intakeThreadId: "delayed-intake",
+      launchError: null,
+    });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("pages Pipeline threads and adopts a matching intake during startup", async () => {
+    const orphanId = "orphan-intake";
+    const firstPage = Array.from({ length: 100 }, (_, index) =>
+      listedThread(`other-${index}`),
+    );
+    const listThreads = vi.fn(async (input: ThreadListInput) => {
+      if (input.archived) return [];
+      return input.offset === 0 ? firstPage : [listedThread(orphanId)];
+    });
+    const { service, store, spawn, send } = setup({
+      listThreads,
+      getThreadMetadata: async ({ threadId }) =>
+        threadId === orphanId
+          ? { cardId: "card_new", role: "intake" }
+          : { cardId: "other", role: "intake" },
+      getThread: async ({ threadId }) =>
+        thread(threadId, 0, { status: "pending", queuedMessageCount: 1 }),
+    });
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship later",
+      start: false,
+      source: "ui",
+    });
+    store.update(
+      saved.id,
+      { startRequested: true },
+      { kind: "start_requested", source: "ui" },
+    );
+
+    await service.startupPass();
+
+    expect(store.get(saved.id)).toMatchObject({
+      intakeThreadId: orphanId,
+      launchError: null,
+    });
+    expect(listThreads.mock.calls.map(([input]) => input.offset)).toEqual([
+      0,
+      100,
+    ]);
+    expect(listThreads.mock.calls[0]![0]).toMatchObject({
+      projectId: "proj_1",
+      originPluginId: "pipeline",
+      includeHidden: true,
+      archived: false,
+    });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("adopts an archived orphan on repeated Start before startup runs", async () => {
+    const listThreads = vi.fn(async (input: ThreadListInput) =>
+      input.archived ? [listedThread("archived-intake")] : [],
+    );
+    const { service, store, spawn, send } = setup({
+      listThreads,
+      getThreadMetadata: async () => ({ cardId: "card_new", role: "intake" }),
+      getThread: async ({ threadId }) =>
+        thread(threadId, 0, { archivedAt: 1 }),
+    });
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship later",
+      start: false,
+      source: "ui",
+    });
+    store.update(
+      saved.id,
+      { startRequested: true },
+      { kind: "start_requested", source: "ui" },
+    );
+
+    const recovered = await service.start(saved.id, "cli");
+
+    expect(recovered).toMatchObject({
+      intakeThreadId: "archived-intake",
+      attentionReason: "thread archived",
+    });
+    expect(listThreads.mock.calls.map(([input]) => input.archived)).toEqual([
+      false,
+      true,
+    ]);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("waits for a current-process start before startup recovery", async () => {
+    let resolveSpawn!: (value: ReturnType<typeof makeThreadResponse>) => void;
+    const pendingSpawn = new Promise<ReturnType<typeof makeThreadResponse>>(
+      (resolve) => {
+        resolveSpawn = resolve;
+      },
+    );
+    const listThreads = vi.fn(async () => {
+      throw new Error("recovery should not scan");
+    });
+    const { service, store, spawn } = setup({
+      spawn: async () => pendingSpawn,
+      listThreads,
+      getThread: async ({ threadId }) =>
+        thread(threadId, 0, { status: "pending", queuedMessageCount: 1 }),
+    });
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship later",
+      start: false,
+      source: "ui",
+    });
+
+    const starting = service.start(saved.id, "ui");
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
+    const startup = service.startupPass();
+    resolveSpawn(thread("intake-current"));
+    await Promise.all([starting, startup]);
+
+    expect(store.get(saved.id)).toMatchObject({
+      intakeThreadId: "intake-current",
+      launchError: null,
+    });
+    expect(listThreads).not.toHaveBeenCalled();
+  });
+
+  it("does not spawn when interrupted-start discovery is unavailable", async () => {
+    const listThreads = vi.fn(async () => {
+      throw new Error("metadata service unavailable");
+    });
+    const { service, store, spawn } = setup({ listThreads });
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship later",
+      start: false,
+      source: "ui",
+    });
+    store.update(
+      saved.id,
+      { startRequested: true },
+      { kind: "start_requested", source: "ui" },
+    );
+
+    await service.startupPass();
+    await service.retry(saved.id);
+
+    expect(store.get(saved.id)?.launchError).toContain(
+      "could not check for an existing intake thread: metadata service unavailable",
+    );
+    expect(listThreads).toHaveBeenCalledTimes(2);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("clears saved attention when accepting the first Start", async () => {
+    const { service, store, onAttention } = setup();
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship later",
+      start: false,
+      source: "ui",
+    });
+    store.update(saved.id, {
+      needsUser: true,
+      attentionReason: "Old question",
+      attentionSource: "report",
+      attentionUnknown: true,
+      reportSignal: "needs_you",
+      threadError: "old thread failure",
+      launchError: "old launch failure",
+    });
+
+    const started = await service.start(saved.id, "ui");
+
+    expect(started).toMatchObject({
+      needsUser: false,
+      attentionReason: null,
+      attentionSource: null,
+      attentionUnknown: false,
+      reportSignal: null,
+      threadError: null,
+      launchError: null,
+    });
+    expect(onAttention).not.toHaveBeenCalled();
+  });
+
+  it("reports the fresh launch failure after clearing saved attention", async () => {
+    const { service, store, onAttention } = setup({
+      spawn: async () => {
+        throw new Error("machine offline");
+      },
+    });
+    const saved = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship later",
+      start: false,
+      source: "ui",
+    });
+    store.update(saved.id, {
+      needsUser: true,
+      attentionReason: "Old question",
+      attentionSource: "report",
+      reportSignal: "needs_you",
+      threadError: "old thread failure",
+      launchError: "old launch failure",
+    });
+
+    const started = await service.start(saved.id, "ui");
+
+    expect(started).toMatchObject({
+      needsUser: false,
+      attentionReason: null,
+      reportSignal: null,
+      threadError: null,
+      launchError: "intake: machine offline",
+    });
+    expect(onAttention).toHaveBeenCalledOnce();
+    expect(onAttention.mock.calls[0]![1]).toBe(
+      "Launch failed: intake: machine offline",
+    );
   });
 
   it("starts once with its captured machine, execution, and attachments", async () => {

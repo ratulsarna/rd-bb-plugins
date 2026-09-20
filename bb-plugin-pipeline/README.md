@@ -18,6 +18,8 @@ Use **New task** to add a title, context, attachments, and a machine. **Intake**
 
 Choose **Save** to keep a task in Backlog without starting work, or **Save and start** to launch intake. Saved tasks show **Not started** and a **Start** action; they create no thread or queued message until started. Start uses the saved choices and waits for capacity when necessary. Start a task before moving it between stages or using execution controls. Drag started cards between stages, or use the card’s actions menu to move or remove it. **Show done** includes completed work.
 
+If a reload interrupts Start, Pipeline looks for the intake already created for that task and reconnects it. If it cannot find or check that thread, the card offers **Retry**; Retry checks again before launching intake.
+
 At most two Pipeline tasks run per project and machine. Intake, lead, and child threads share the card's slot. A task keeps its slot while it is starting, running, stopping, has tracked background work, or is continuing an active autonomous goal. Once that work stops, queued tasks can run. Replies, retries, and a move to planning wait for capacity when the task no longer holds a slot. Ordinary BB threads do not consume Pipeline slots.
 
 The board and `bb pipeline queue` show which tasks occupy those slots and why other work is waiting. `list` and `show` JSON output include `queued`, `waitingReasons`, and `runNext`; `queue --json` returns the per-machine occupants, waiting tasks, and selected card. BB owns the durable message queue and resumes waiting messages when their conditions clear. Send now respects the Pipeline limit. An edit-and-resend or manual compaction at capacity is refused before changing the conversation; retry it when capacity is available.
