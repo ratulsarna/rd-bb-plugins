@@ -102,6 +102,9 @@
 .pipeline-select { appearance: none; padding-right: 30px; }
 .pipeline-select-wrap > .pipeline-icon { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--muted-foreground); width: 14px; height: 14px; }
 .pipeline-field-hint { margin: -10px 0 0; font-size: 11px; color: var(--muted-foreground); }
+.pipeline-execution { display: flex; flex-direction: column; gap: 8px; }
+.pipeline-execution-row { display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: center; gap: 10px; min-width: 0; }
+.pipeline-execution-picker { min-width: 0; width: 100%; }
 .pipeline-attach { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; border: 1px dashed var(--input); border-radius: 7px; color: var(--muted-foreground); cursor: pointer; font-size: 12px; }
 .pipeline-attach:hover { background: var(--accent); color: var(--foreground); }
 .pipeline-attach:focus-within { outline: 2px solid var(--ring); outline-offset: 2px; }

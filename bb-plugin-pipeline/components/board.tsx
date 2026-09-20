@@ -9,7 +9,9 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "@/lib/contract";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
-import { ownerThread, type Card, type CardAttachment } from "@/lib/store";
+import type { ExecutionSelection } from "@/lib/execution";
+import { ownerThread } from "@/lib/card";
+import type { Card, CardAttachment } from "@/lib/store";
 import { AddCard } from "./add-card";
 import { Icon } from "./icon";
 import { PipelineCard } from "./card";
@@ -168,11 +170,18 @@ export function PipelineBoard() {
     void updateCard(card, () => rpc.call("moveCard", { cardId: card.id, column }));
   }
 
-  async function add(title: string, body: string, files: File[], hostId: string) {
+  async function add(
+    title: string,
+    body: string,
+    files: File[],
+    hostId: string,
+    intake: ExecutionSelection,
+    lead: ExecutionSelection,
+  ) {
     const targetProjectId = projectIdRef.current;
     if (targetProjectId === null) return;
     const attachments = await Promise.all(files.map((file) => upload(targetProjectId, file)));
-    await rpc.call("addCard", { projectId: targetProjectId, hostId, title, body, attachments });
+    await rpc.call("addCard", { projectId: targetProjectId, hostId, intake, lead, title, body, attachments });
     await load();
   }
 
@@ -222,7 +231,14 @@ export function PipelineBoard() {
               }} />
             Show done
           </label>
-          <AddCard key={projectId} projectName={projectName} disabled={projectId === null || loading} machines={machines} onAdd={add} />
+          <AddCard
+            key={projectId}
+            projectName={projectName}
+            disabled={projectId === null || loading}
+            machines={machines}
+            loadExecutionDefaults={() => rpc.call("executionDefaults", null)}
+            onAdd={add}
+          />
         </div>
       </header>
       <div className="pipeline-summary">

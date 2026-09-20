@@ -12,7 +12,7 @@ The board tracks:
 
 Cards show why the user is needed, open the owning thread, link the issue and PR, and expose launch retry when the target machine is unavailable. Explicit `bb pipeline report` calls are authoritative; Jev classifies an unsignalled lead idle as needs-you, not waiting, or unchecked.
 
-Use **New task** to add a title, context, attachments, and a machine. Drag cards between stages, or use the card’s actions menu to move or remove it. **Show done** includes completed work.
+Use **New task** to add a title, context, attachments, and a machine. **Intake** and **Lead** each have a provider, model, and reasoning picker. They start from Pipeline settings and remember the last task's choices across the UI and CLI. Each card saves both selections for its launches and retries. Drag cards between stages, or use the card’s actions menu to move or remove it. **Show done** includes completed work.
 
 At most two Pipeline tasks run per project and machine. Intake, lead, and child threads share the card's slot. A task keeps its slot while it is starting, running, stopping, has tracked background work, or is continuing an active autonomous goal. Once that work stops, queued tasks can run. Replies, retries, and a move to planning wait for capacity when the task no longer holds a slot. Ordinary BB threads do not consume Pipeline slots.
 
@@ -43,6 +43,16 @@ bb project attachment upload <project-id> --client-file <path>
 
 Pass the returned path to `bb pipeline add --attachment`.
 
+Override either role when adding a card:
+
+```sh
+bb pipeline add --title "Improve startup" --machine <id-or-name> \
+  --intake-provider pi --intake-model zai/glm-5.3-flash --intake-reasoning high \
+  --lead-provider codex --lead-model gpt-5.6-sol --lead-reasoning high
+```
+
+All role options are optional. Omitted fields use the remembered Pipeline settings; explicit choices become the settings for subsequent tasks. Specify the matching model when switching providers. Providers that support service tiers also accept `--intake-service-tier <default|fast>` and `--lead-service-tier <default|fast>`. Use `bb provider list --machine <id-or-name>` and `bb provider models <provider-id> --machine <id-or-name>` to discover providers, model IDs, and supported reasoning. `bb pipeline show` includes the card's saved selections.
+
 Choose a machine in New task or pass its ID or unambiguous name with `--machine`. Run `bb machine list` to find IDs and names. The project must have a checkout on the chosen machine. The choice stays with the card for intake, lead work, and retries.
 
 Cards without a machine show a machine picker on the board. Assign one there or with `set-machine` before launching further work. Assignment does not relocate existing threads, and an assigned card's machine cannot be changed.
@@ -52,11 +62,14 @@ Their running work continues to count toward the limit after the card is removed
 
 ## Configuration
 
-Launch settings use Claude Code with `claude-fable-5-1`, high reasoning, and full permission. Change them in the plugin settings or with `bb plugin config pipeline set`:
+Initial settings use Claude Code with `claude-fable-5-1`, high reasoning, and full permission for both roles. Change them in the plugin settings or with `bb plugin config pipeline set`:
 
-- `providerId`, `model`
-- `reasoningLevel`, `permissionMode`
+- Intake: `providerId`, `model`, `reasoningLevel`, optional `serviceTier`
+- Lead: `leadProviderId`, `leadModel`, `leadReasoningLevel`, optional `leadServiceTier`
+- `permissionMode` for both roles
 - `jevApiKey` (secret), `jevThreshold`
+
+Lead settings initially inherit the intake settings. Creating a task saves the resolved choices for both roles. Settings changes affect future cards; existing cards retain their saved selections. Cards created before per-role selections use the current settings when launching a role.
 
 The BB server needs `gh` installed and authenticated because Pipeline reads the GitHub issue when it launches a lead thread.
 

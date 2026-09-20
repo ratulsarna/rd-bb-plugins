@@ -1,6 +1,6 @@
 ---
 name: pipeline
-description: "Work the pipeline board from any thread: add, list, show, and move cards. Specify a machine when adding a card and upload attachments first."
+description: "Work the pipeline board: add, list, show, and move cards. Specify a machine; optionally choose separate intake and lead models and reasoning. Upload attachments first."
 ---
 
 # Pipeline: Board
@@ -17,6 +17,22 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 - `bb pipeline move <card-id> <column>` — move a card by hand. Moving to planning starts its lead thread if needed and waits for capacity; other moves update the board.
 
 The machine must be explicitly specified for every new card; never infer it from the current thread or choose the first available machine. Use `bb machine list` to find machine IDs and names, and ask the user when their target is unknown. The project must have a checkout on that machine. Intake, lead work, and retries use the card's stored machine.
+
+### Intake and lead choices
+
+`add` accepts optional `--intake-provider <id>`, `--intake-model <id>`, `--intake-reasoning <level>`, `--lead-provider <id>`, `--lead-model <id>`, and `--lead-reasoning <level>`.
+
+For providers that support service tiers, use `--intake-service-tier <default|fast>` or `--lead-service-tier <default|fast>`.
+
+Omit these unless the user requests a change. Omitted fields use Pipeline's remembered settings, shared with the New task UI. An accepted task remembers the resolved choices for the next task. Each card saves its own choices for intake, lead, and retries; changing defaults does not change existing cards. `show` includes both saved selections.
+
+Discover providers and their models on the chosen machine with `bb provider list --machine <id-or-name>` and `bb provider models <provider-id> --machine <id-or-name>` before choosing new IDs or reasoning levels. Specify the matching model when switching providers.
+
+```sh
+bb pipeline add --title "Improve startup" --machine <id-or-name> \
+  --intake-provider pi --intake-model zai/glm-5.3-flash --intake-reasoning high \
+  --lead-provider codex --lead-model gpt-5.6-sol --lead-reasoning high
+```
 
 When spawning workers for a card, use `--parent-self` so they belong to the task, and use its existing environment or explicitly select its stored machine for a new environment.
 

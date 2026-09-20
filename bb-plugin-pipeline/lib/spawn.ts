@@ -1,12 +1,10 @@
 import type { PluginBbSdk } from "@get-bb/plugin-sdk";
+import type { ExecutionSelection } from "./execution";
 import type { Card, CardAttachment } from "./store";
 
 export type PipelineRole = "intake" | "lead";
 
-export interface PipelineLaunchSettings {
-  providerId: string;
-  model: string;
-  reasoningLevel: "low" | "medium" | "high" | "xhigh" | "max";
+export interface PipelineLaunchSettings extends ExecutionSelection {
   permissionMode: "accept-edits" | "auto" | "full";
 }
 
@@ -73,6 +71,9 @@ export function spawnRequest(input: {
     providerId: settings.providerId,
     model: settings.model,
     reasoningLevel: settings.reasoningLevel,
+    ...(settings.serviceTier === undefined
+      ? {}
+      : { serviceTier: settings.serviceTier }),
     permissionMode: settings.permissionMode,
     title: `${role === "intake" ? "Intake" : "Lead"} · ${card.title}`.slice(
       0,

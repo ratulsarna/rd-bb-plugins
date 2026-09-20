@@ -3,11 +3,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { COLUMNS, COLUMN_LABELS } from "../lib/columns";
+import type { ExecutionDefaults } from "../lib/execution";
 import { makeCard, makeSidebarThread } from "./sdk-fake";
 
 const app = await loadPluginApp(() => import("../app"));
 const panel = app.navPanels[0]!;
 const mounted: Array<ReturnType<typeof renderSlot>> = [];
+const DEFAULT_EXECUTION: ExecutionDefaults = {
+  intake: {
+    providerId: "claude-code",
+    model: "claude-fable-5-1",
+    reasoningLevel: "high",
+  },
+  lead: {
+    providerId: "codex",
+    model: "gpt-5.6-sol",
+    reasoningLevel: "xhigh",
+    serviceTier: "default",
+  },
+};
 
 afterEach(() => {
   while (mounted.length > 0) mounted.pop()!.lifecycle.unmount();
@@ -26,6 +40,7 @@ function renderBoard(options?: {
   listProjects?: ReturnType<typeof vi.fn>;
   listCards?: ReturnType<typeof vi.fn>;
   listMachines?: ReturnType<typeof vi.fn>;
+  executionDefaults?: ReturnType<typeof vi.fn>;
   addCard?: ReturnType<typeof vi.fn>;
   moveCard?: ReturnType<typeof vi.fn>;
   setMachine?: ReturnType<typeof vi.fn>;
@@ -58,6 +73,7 @@ function renderBoard(options?: {
         ],
       },
       rpc: {
+        executionDefaults: options?.executionDefaults ?? (() => DEFAULT_EXECUTION),
         listProjects,
         listCards,
         listMachines: options?.listMachines ?? (() => ({
@@ -198,22 +214,37 @@ describe("pipeline board", () => {
     renderBoard({ addCard });
     await screen.findByText("A pipeline card");
 
-    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    });
     fireEvent.change(screen.getByLabelText("Task title"), {
       target: { value: "Broken card" },
     });
     fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), {
       target: { value: "host_mac" },
     });
+    const intake = await screen.findByRole("group", { name: "Intake" });
+    fireEvent.change(within(intake).getByRole("textbox", { name: "Model" }), {
+      target: { value: "claude-opus-4-7" },
+    });
+    fireEvent.change(within(intake).getByRole("textbox", { name: "Reasoning level" }), {
+      target: { value: "max" },
+    });
+    fireEvent.click(within(intake).getByRole("button", { name: "Apply execution selection" }));
     fireEvent.click(screen.getByRole("button", { name: "Create task" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Could not create card",
     );
+    expect(addCard).toHaveBeenCalledWith(expect.objectContaining({
+      intake: expect.objectContaining({ model: "claude-opus-4-7", reasoningLevel: "max" }),
+    }));
     expect((screen.getByLabelText("Task title") as HTMLInputElement).value).toBe(
       "Broken card",
     );
     expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe("host_mac");
+    expect((within(intake).getByRole("textbox", { name: "Model" }) as HTMLInputElement).value).toBe("claude-opus-4-7");
+    expect((within(intake).getByRole("textbox", { name: "Reasoning level" }) as HTMLInputElement).value).toBe("max");
   });
 
   it("requires an explicit machine for every new card, even with only one available", async () => {
@@ -229,12 +260,144 @@ describe("pipeline board", () => {
     expect(addCard).not.toHaveBeenCalled();
 
     fireEvent.change(machine, { target: { value: "host_mac" } });
+    await screen.findAllByTestId("bb-provider-model-picker");
     fireEvent.click(screen.getByRole("button", { name: "Create task" }));
     await waitFor(() => expect(addCard).toHaveBeenCalledExactlyOnceWith({
-      projectId: "proj_1", hostId: "host_mac", title: "Task", body: "", attachments: [],
+      projectId: "proj_1",
+      hostId: "host_mac",
+      intake: DEFAULT_EXECUTION.intake,
+      lead: DEFAULT_EXECUTION.lead,
+      title: "Task",
+      body: "",
+      attachments: [],
     }));
     fireEvent.click(await screen.findByRole("button", { name: "New task" }));
     expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe("");
+  });
+
+  it("submits independent intake and lead execution choices routed through the selected machine", async () => {
+    const addCard = vi.fn(() => makeCard());
+    renderBoard({
+      addCard,
+      listMachines: vi.fn(() => ({
+        machines: [
+          { id: "host_mac", name: "MacBook", status: "connected" },
+          { id: "host_linux", name: "Linux", status: "connected" },
+        ],
+      })),
+    });
+    await screen.findByText("A pipeline card");
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Delegate roles" } });
+    const machine = screen.getByRole("combobox", { name: "Machine" });
+    expect(screen.queryAllByTestId("bb-provider-model-picker")).toHaveLength(0);
+    fireEvent.change(machine, { target: { value: "host_mac" } });
+    await screen.findAllByTestId("bb-provider-model-picker");
+    fireEvent.change(machine, { target: { value: "host_linux" } });
+
+    const intake = await screen.findByRole("group", { name: "Intake" });
+    const lead = screen.getByRole("group", { name: "Lead" });
+    for (const picker of screen.getAllByTestId("bb-provider-model-picker")) {
+      expect(picker.dataset.routingKind).toBe("host");
+      expect(picker.dataset.routingId).toBe("host_linux");
+    }
+
+    fireEvent.change(within(intake).getByRole("textbox", { name: "Provider ID" }), {
+      target: { value: "pi" },
+    });
+    fireEvent.change(within(intake).getByRole("textbox", { name: "Model" }), {
+      target: { value: "zai/glm-5.3-flash" },
+    });
+    fireEvent.change(within(intake).getByRole("textbox", { name: "Reasoning level" }), {
+      target: { value: "ultra" },
+    });
+    fireEvent.change(within(intake).getByRole("combobox", { name: "Service tier" }), {
+      target: { value: "default" },
+    });
+    fireEvent.click(within(intake).getByRole("button", { name: "Apply execution selection" }));
+
+    fireEvent.change(within(lead).getByRole("textbox", { name: "Model" }), {
+      target: { value: "gpt-6-astra" },
+    });
+    fireEvent.change(within(lead).getByRole("textbox", { name: "Reasoning level" }), {
+      target: { value: "max" },
+    });
+    fireEvent.change(within(lead).getByRole("combobox", { name: "Service tier" }), {
+      target: { value: "fast" },
+    });
+    fireEvent.click(within(lead).getByRole("button", { name: "Apply execution selection" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+
+    await waitFor(() => expect(addCard).toHaveBeenCalledExactlyOnceWith({
+      projectId: "proj_1",
+      hostId: "host_linux",
+      intake: {
+        providerId: "pi",
+        model: "zai/glm-5.3-flash",
+        reasoningLevel: "ultra",
+        serviceTier: "default",
+      },
+      lead: {
+        providerId: "codex",
+        model: "gpt-6-astra",
+        reasoningLevel: "max",
+        serviceTier: "fast",
+      },
+      title: "Delegate roles",
+      body: "",
+      attachments: [],
+    }));
+  });
+
+  it("fetches remembered execution choices again whenever the dialog reopens", async () => {
+    const latest: ExecutionDefaults = {
+      intake: { providerId: "pi", model: "zai/glm-5.3-flash", reasoningLevel: "high" },
+      lead: { providerId: "codex", model: "gpt-6-astra", reasoningLevel: "ultra", serviceTier: "fast" },
+    };
+    const executionDefaults = vi.fn()
+      .mockResolvedValueOnce(DEFAULT_EXECUTION)
+      .mockResolvedValueOnce(latest);
+    renderBoard({ executionDefaults });
+    await screen.findByText("A pipeline card");
+
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "host_mac" } });
+    let intake = await screen.findByRole("group", { name: "Intake" });
+    expect((within(intake).getByRole("textbox", { name: "Model" }) as HTMLInputElement).value).toBe("claude-fable-5-1");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    await waitFor(() => expect(executionDefaults).toHaveBeenCalledTimes(2));
+    fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "host_mac" } });
+    intake = await screen.findByRole("group", { name: "Intake" });
+    expect((within(intake).getByRole("textbox", { name: "Provider ID" }) as HTMLInputElement).value).toBe("pi");
+    expect((within(intake).getByRole("textbox", { name: "Model" }) as HTMLInputElement).value).toBe("zai/glm-5.3-flash");
+    const lead = screen.getByRole("group", { name: "Lead" });
+    expect((within(lead).getByRole("textbox", { name: "Model" }) as HTMLInputElement).value).toBe("gpt-6-astra");
+  });
+
+  it("does not reuse stale choices or submit when refreshing defaults fails", async () => {
+    const addCard = vi.fn(() => makeCard());
+    const executionDefaults = vi.fn()
+      .mockResolvedValueOnce(DEFAULT_EXECUTION)
+      .mockRejectedValueOnce(new Error("Could not load execution choices"));
+    renderBoard({ addCard, executionDefaults });
+    await screen.findByText("A pipeline card");
+
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "host_mac" } });
+    await screen.findAllByTestId("bb-provider-model-picker");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not load execution choices");
+    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Must not submit" } });
+    const machine = screen.getByRole("combobox", { name: "Machine" });
+    fireEvent.change(machine, { target: { value: "host_mac" } });
+    expect(screen.queryAllByTestId("bb-provider-model-picker")).toHaveLength(0);
+    expect((screen.getByRole("button", { name: "Create task" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.submit(machine.closest("form")!);
+    expect(addCard).not.toHaveBeenCalled();
   });
 
   it("keeps a pending task dialog open and prevents a duplicate submission", async () => {
@@ -245,6 +408,7 @@ describe("pipeline board", () => {
     fireEvent.click(screen.getByRole("button", { name: "New task" }));
     fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "One task" } });
     fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "host_mac" } });
+    await screen.findAllByTestId("bb-provider-model-picker");
     const form = screen.getByLabelText("Task title").closest("form")!;
     fireEvent.submit(form);
     await waitFor(() => expect(addCard).toHaveBeenCalledTimes(1));
@@ -542,6 +706,7 @@ describe("pipeline board", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), {
       target: { value: "host_mac" },
     });
+    await screen.findAllByTestId("bb-provider-model-picker");
     fireEvent.change(screen.getByLabelText("Task attachments"), {
       target: {
         files: Array.from(

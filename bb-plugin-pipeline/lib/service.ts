@@ -6,6 +6,14 @@ import type {
 import type { Column } from "./columns";
 import type { IssueDetails } from "./issue";
 import type { JevResult } from "./jev";
+import {
+  executionDefaults,
+  executionSelectionSchema,
+  validateExecutionSelections,
+  type ExecutionDefaults,
+  type ExecutionSelection,
+  type ExecutionSettings,
+} from "./execution";
 import { intakePrompt, leadPrompt } from "./prompts";
 import { resolveMachine } from "./machines";
 import {
@@ -20,12 +28,9 @@ import type {
   CardStore,
   HistoryInput,
 } from "./store";
-import { ownerThread, roleThread } from "./store";
+import { ownerThread, roleThread } from "./card";
 
-export interface PipelineSettings {
-  providerId: string;
-  model: string;
-  reasoningLevel: string;
+export interface PipelineSettings extends ExecutionSettings {
   permissionMode: string;
   jevApiKey?: string;
   jevThreshold: string;
@@ -49,11 +54,14 @@ export interface PipelineService {
   createCard(input: {
     projectId: string;
     hostId: string;
+    intake?: Partial<ExecutionSelection>;
+    lead?: Partial<ExecutionSelection>;
     title: string;
     body?: string;
     attachments?: CardAttachment[];
     source: "ui" | "cli";
   }): Promise<Card>;
+  getExecutionDefaults(): Promise<ExecutionDefaults>;
   setMachine(cardId: string, hostId: string): Promise<Card>;
   launch(cardId: string, role: PipelineRole): Promise<Card>;
   retry(cardId: string): Promise<Card>;
@@ -73,6 +81,7 @@ export interface PipelineServiceDependencies {
   store: CardStore;
   sdk: PluginBbSdk;
   getSettings(): Promise<PipelineSettings>;
+  rememberExecution?(defaults: ExecutionDefaults): Promise<void>;
   readIssue(url: string): Promise<IssueDetails>;
   classify(input: {
     apiKey: string | undefined;
@@ -125,20 +134,35 @@ function parseThreshold(value: string): number {
   return Number.isFinite(parsed) && parsed >= 0.5 && parsed <= 1 ? parsed : 0.7;
 }
 
-function launchSettings(settings: PipelineSettings): PipelineLaunchSettings {
-  if (settings.providerId.trim() === "") throw new Error("provider id is empty");
-  if (settings.model.trim() === "") throw new Error("model is empty");
-  if (!(["low", "medium", "high", "xhigh", "max"] as const).includes(
-    settings.reasoningLevel as PipelineLaunchSettings["reasoningLevel"],
-  )) {
-    throw new Error(`invalid reasoning level ${settings.reasoningLevel}`);
-  }
+function launchSettings(
+  settings: PipelineSettings,
+  execution: ExecutionSelection,
+): PipelineLaunchSettings {
   if (!(["accept-edits", "auto", "full"] as const).includes(
     settings.permissionMode as PipelineLaunchSettings["permissionMode"],
   )) {
     throw new Error(`invalid permission mode ${settings.permissionMode}`);
   }
-  return settings as PipelineLaunchSettings;
+  return {
+    ...execution,
+    permissionMode: settings.permissionMode as PipelineLaunchSettings["permissionMode"],
+  };
+}
+
+function resolveExecution(
+  defaults: ExecutionSelection,
+  override: Partial<ExecutionSelection> | undefined,
+): ExecutionSelection {
+  const selected = executionSelectionSchema.partial().parse(override ?? {});
+  const providerChanged = selected.providerId !== undefined && selected.providerId !== defaults.providerId;
+  if (providerChanged && selected.model === undefined) {
+    throw new Error("specify a model when changing the provider");
+  }
+  const resolved: Partial<ExecutionSelection> = { ...defaults, ...selected };
+  if (providerChanged && selected.serviceTier === undefined) {
+    delete resolved.serviceTier;
+  }
+  return executionSelectionSchema.parse(resolved);
 }
 
 function cancelledStartReason(role: PipelineRole): string {
@@ -190,7 +214,8 @@ export function createPipelineService(
 
   const buildLaunchRequest = async (card: Card, role: PipelineRole) => {
     const configured = await dependencies.getSettings();
-    const settings = launchSettings(configured);
+    const execution = card[role] ?? executionDefaults(configured)[role];
+    const settings = launchSettings(configured, execution);
     if (card.hostId === null) {
       throw new Error(
         "card has no machine assigned; run `bb pipeline set-machine <card-id> --machine <id-or-name>`",
@@ -642,6 +667,9 @@ export function createPipelineService(
   };
 
   const service: PipelineService = {
+    async getExecutionDefaults() {
+      return executionDefaults(await dependencies.getSettings());
+    },
     async createCard(input) {
       const title = input.title.trim();
       if (title === "") throw new Error("title is required");
@@ -649,23 +677,41 @@ export function createPipelineService(
       if (hostReference === "") {
         throw new Error("choose a machine for this card");
       }
+      const defaults = executionDefaults(await dependencies.getSettings());
+      const selected: ExecutionDefaults = {
+        intake: resolveExecution(defaults.intake, input.intake),
+        lead: resolveExecution(defaults.lead, input.lead),
+      };
       const machine = await resolveMachine(
         dependencies.sdk,
         input.projectId,
         hostReference,
       );
+      if (machine.status === "connected") {
+        await validateExecutionSelections(dependencies.sdk, machine, selected);
+      }
       const card = changed(
         store.create({
           id: (dependencies.id ?? (() => randomUUID().slice(0, 12)))(),
           projectId: input.projectId,
           hostId: machine.id,
+          intake: selected.intake,
+          lead: selected.lead,
           title,
           body: input.body ?? "",
           attachments: input.attachments ?? [],
           source: input.source,
         }),
       );
-      return launch(card.id, "intake");
+      const [launched] = await Promise.all([
+        launch(card.id, "intake"),
+        dependencies.rememberExecution?.(selected).catch((cause) => {
+          dependencies.log(
+            `could not remember execution for card ${card.id}: ${errorMessage(cause)}`,
+          );
+        }),
+      ]);
+      return launched;
     },
     async setMachine(cardId, hostId) {
       const card = required(cardId);
@@ -758,6 +804,9 @@ export function createPipelineService(
             input: request.input,
             model: request.model,
             reasoningLevel: request.reasoningLevel,
+            ...(request.serviceTier === undefined
+              ? {}
+              : { serviceTier: request.serviceTier }),
             permissionMode: request.permissionMode,
           });
         } catch (cause) {
