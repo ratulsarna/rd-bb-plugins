@@ -113,6 +113,39 @@ function seedLegacyCard(db: Database, id = "card_legacy"): void {
 }
 
 describe("plugin wiring", () => {
+  it("inherits cleared lead settings and accepts new role selections", async () => {
+    const { host } = await setup();
+    await host.harness.behavior.setSettings({
+      providerId: "codex",
+      model: "gpt-6-astra",
+      reasoningLevel: "ultra",
+      serviceTier: "fast",
+      leadProviderId: "   ",
+      leadModel: "",
+    });
+    const intake = {
+      providerId: "codex",
+      model: "gpt-6-astra",
+      reasoningLevel: "ultra",
+      serviceTier: "fast",
+    };
+    expect(await host.harness.behavior.callRpc("executionDefaults", null)).toEqual({
+      intake,
+      lead: intake,
+    });
+
+    const result = await host.harness.behavior.runCli(
+      ["add", "--title", "Choose roles", "--machine", "Work laptop",
+        "--lead-provider", "pi", "--lead-model", "zai/glm-5.3-flash",
+        "--lead-reasoning", "high", "--json"],
+      { projectId: "proj_1" },
+    );
+    expect(result.exitCode).toBe(0);
+    const lead = { providerId: "pi", model: "zai/glm-5.3-flash", reasoningLevel: "high" };
+    expect(JSON.parse(result.stdout)).toMatchObject({ intake, lead, launchError: null });
+    expect(await host.harness.behavior.callRpc("executionDefaults", null)).toEqual({ intake, lead });
+  });
+
   it("remembers UI selections across reload and lets CLI override each role independently", async () => {
     const { host } = await setup();
     const intake = { providerId: "pi", model: "zai/glm-5.3-flash", reasoningLevel: "none" };

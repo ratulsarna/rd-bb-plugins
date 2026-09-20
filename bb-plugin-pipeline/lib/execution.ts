@@ -54,9 +54,11 @@ export function executionDefaults(settings: ExecutionSettings): ExecutionDefault
       ? {}
       : { serviceTier: settings.serviceTier }),
   });
+  const leadProviderId = settings.leadProviderId?.trim() || undefined;
+  const leadModel = settings.leadModel?.trim() || undefined;
   const hasSavedLead =
-    settings.leadProviderId !== undefined ||
-    settings.leadModel !== undefined ||
+    leadProviderId !== undefined ||
+    leadModel !== undefined ||
     settings.leadReasoningLevel !== undefined ||
     settings.leadServiceTier !== undefined;
   const leadServiceTier = hasSavedLead
@@ -66,8 +68,8 @@ export function executionDefaults(settings: ExecutionSettings): ExecutionDefault
   return {
     intake,
     lead: executionSelectionSchema.parse({
-      providerId: settings.leadProviderId ?? intake.providerId,
-      model: settings.leadModel ?? intake.model,
+      providerId: leadProviderId ?? intake.providerId,
+      model: leadModel ?? intake.model,
       reasoningLevel: settings.leadReasoningLevel ?? intake.reasoningLevel,
       ...(leadServiceTier === undefined ? {} : { serviceTier: leadServiceTier }),
     }),
