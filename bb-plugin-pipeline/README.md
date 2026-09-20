@@ -18,7 +18,11 @@ Use **New task** to add a title, context, attachments, and a machine. **Intake**
 
 At most two Pipeline tasks run per project and machine. Intake, lead, and child threads share the card's slot. A task keeps its slot while it is starting, running, stopping, has tracked background work, or is continuing an active autonomous goal. Once that work stops, queued tasks can run. Replies, retries, and a move to planning wait for capacity when the task no longer holds a slot. Ordinary BB threads do not consume Pipeline slots.
 
-The board and `bb pipeline list` show `Queued` when a task has messages waiting on a plugin, including Pipeline capacity; `list` and `show` JSON output include `queued`. BB owns the durable message queue and resumes waiting messages when their conditions clear. Send now respects the Pipeline limit. An edit-and-resend or manual compaction at capacity is refused before changing the conversation; retry it when capacity is available.
+The board and `bb pipeline queue` show which tasks occupy those slots and why other work is waiting. `list` and `show` JSON output include `queued`, `waitingReasons`, and `runNext`; `queue --json` returns the per-machine occupants, waiting tasks, and selected card. BB owns the durable message queue and resumes waiting messages when their conditions clear. Send now respects the Pipeline limit. An edit-and-resend or manual compaction at capacity is refused before changing the conversation; retry it when capacity is available.
+
+`bb pipeline run-next <card-id>` asks Pipeline to favor a waiting task when capacity opens. The choice is saved per project and machine, survives a reload, and does not interrupt existing work. Choosing another task for the same project and machine replaces it; add `--clear` to remove the choice. The choice clears when that task starts. If it remains blocked for another reason, it does not prevent other eligible work from running. The two-task limit still applies.
+
+Run next is a preference: concurrent BB queue claims can let another task start first. Other tasks yield for at most five seconds per priority wait, then become eligible on BB's next queue check so an unreported blocker cannot stall the queue.
 
 Cancelling a queued kickoff leaves the task waiting for you. **Retry** sends its kickoff again to the same thread and waits for capacity if needed.
 
@@ -47,6 +51,8 @@ bb pipeline add --title <text> --machine <id-or-name> [--body <text>] [--attachm
 bb pipeline set-machine <card-id> --machine <id-or-name>
 bb pipeline list [--project <id>] [--all]
 bb pipeline show <card-id>
+bb pipeline queue [--project <id>]
+bb pipeline run-next <card-id> [--clear]
 bb pipeline move <card-id> <column>
 bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>]
 bb pipeline retry <card-id>

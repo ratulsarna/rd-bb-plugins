@@ -115,8 +115,12 @@ export default async function plugin(bb: BbPluginApi) {
     async listCards({ projectId, includeDone }) {
       return {
         cards: store.list(projectId, includeDone),
-        queuedCardIds: await capacity.queuedCardIds(projectId),
+        queue: await capacity.snapshot(projectId),
       };
+    },
+    async setRunNext({ cardId, enabled }) {
+      await capacity.setRunNext(cardId, enabled);
+      return { ok: true as const };
     },
     async listMachines({ projectId }) {
       return { machines: await listProjectMachines(bb.sdk, projectId) };
@@ -142,7 +146,8 @@ export default async function plugin(bb: BbPluginApi) {
     async showCard({ cardId }) {
       const card = store.get(cardId);
       if (card === null) throw new Error(`unknown card ${cardId}`);
-      const queued = (await capacity.queuedCardIds(card.projectId)).includes(cardId);
+      const queue = await capacity.snapshot(card.projectId);
+      const queued = queue.some((machine) => machine.waiting.some((item) => item.cardId === cardId));
       return { card, history: store.history(cardId), queued };
     },
   });
@@ -160,6 +165,7 @@ export default async function plugin(bb: BbPluginApi) {
   for (const event of ["thread.idle", "thread.failed", "thread.archived", "thread.deleted"] as const) {
     bb.events.on(event, async ({ thread }) => {
       await controls.onActivity(thread);
+      if (event === "thread.archived" || event === "thread.deleted") await capacity.onQueueChanged(thread);
       await bb.experimental_hooks.recheck("message.dispatch");
       await capacity.publish(thread);
     });
@@ -175,12 +181,15 @@ export default async function plugin(bb: BbPluginApi) {
       if (event === "message.cancelled") controls.onMessageCancelled(entry);
       const thread = await bb.sdk.threads.get({ threadId: entry.threadId, experimental_includeDeleted: true });
       if (event !== "message.dispatched") await service.onThreadQueueChanged(thread);
+      if (event === "message.dispatched") await capacity.onStarted(thread);
+      else await capacity.onQueueChanged(thread, event === "message.queued" ? entry : undefined);
       if (event === "message.cancelled") await controls.onActivity(thread);
       await capacity.publish(thread);
     });
   }
 
   bb.events.on("thread.active", async ({ thread }) => {
+    await capacity.onStarted(thread);
     await controls.onActivity(thread, true);
     await service.onThreadActive(thread);
   });
@@ -227,6 +236,7 @@ export default async function plugin(bb: BbPluginApi) {
     async start(signal) {
       await controls.startup();
       await service.startupPass();
+      await capacity.startup();
       await bb.experimental_hooks.recheck("message.dispatch");
       await new Promise<void>((resolve) => {
         if (signal.aborted) return resolve();

@@ -22,7 +22,7 @@ export function PipelineCard(props: {
   questionOpen: boolean;
   dragging: boolean;
   pending: boolean;
-  queued: boolean;
+  queue: { reasons: string[]; canRunNext: boolean; next: boolean } | null;
   onDragStart: DragEventHandler<HTMLElement>;
   onDragEnd(): void;
   onOpen(threadId: string): void;
@@ -30,6 +30,7 @@ export function PipelineCard(props: {
   onPause(): void;
   onResume(): void;
   onStop(): void;
+  onSetRunNext(enabled: boolean): void;
   onRetry(): void;
   onRemove(): void;
 }) {
@@ -115,6 +116,23 @@ export function PipelineCard(props: {
                       </button>
                     </>
                   )}
+                  {props.queue?.next ? (
+                    <button type="button" className="pipeline-button pipeline-ghost" disabled={props.pending}
+                      onClick={() => {
+                        setActionsOpen(false);
+                        props.onSetRunNext(false);
+                      }}>
+                      <Icon name="X" /> Clear run next
+                    </button>
+                  ) : props.queue?.canRunNext ? (
+                    <button type="button" className="pipeline-button pipeline-ghost" disabled={props.pending}
+                      onClick={() => {
+                        setActionsOpen(false);
+                        props.onSetRunNext(true);
+                      }}>
+                      <Icon name="Play" /> Run next
+                    </button>
+                  ) : null}
                 </div>
               )}
               <label className="pipeline-field">
@@ -194,7 +212,7 @@ export function PipelineCard(props: {
           : card.runState === "pausing" ? <span className="pipeline-run-state">Pausing</span>
           : card.runState === "paused" ? <span className="pipeline-run-state">Paused</span>
           : card.runState === "stopping" ? <span className="pipeline-run-state">Stopping</span>
-          : props.queued ? <span className="pipeline-queued">Queued</span>
+          : props.queue !== null ? <><span className="pipeline-queued" title={props.queue.reasons.join(" · ")}>Queued</span>{props.queue.next ? <span className="pipeline-next">Next</span> : null}</>
           : card.reportSignal === "working" && !card.needsUser && !card.attentionUnknown && !props.questionOpen && card.threadError === null && card.launchError === null
             ? <span className="pipeline-working">Working</span> : null}
         {card.tier === null ? null : <span className="pipeline-tier">{card.tier}</span>}

@@ -64,6 +64,26 @@ export const historySchema = z
   })
   .strict();
 
+const queueTaskSchema = z.object({
+  cardId: z.string(),
+  title: z.string(),
+  threadId: z.string().nullable(),
+}).strict();
+
+export const machineQueueSchema = z.object({
+  hostId: z.string(),
+  hostName: z.string(),
+  limit: z.number().int().positive(),
+  occupied: z.array(queueTaskSchema),
+  waiting: z.array(queueTaskSchema.extend({
+    reasons: z.array(z.string()),
+    canRunNext: z.boolean(),
+  })),
+  nextCardId: z.string().nullable(),
+}).strict();
+
+export type MachineQueue = z.infer<typeof machineQueueSchema>;
+
 export const rpcContract = defineRpcContract({
   executionDefaults: {
     input: z.null(),
@@ -80,7 +100,11 @@ export const rpcContract = defineRpcContract({
   },
   listCards: {
     input: z.object({ projectId: z.string(), includeDone: z.boolean() }).strict(),
-    output: z.object({ cards: z.array(cardSchema), queuedCardIds: z.array(z.string()) }).strict(),
+    output: z.object({ cards: z.array(cardSchema), queue: z.array(machineQueueSchema) }).strict(),
+  },
+  setRunNext: {
+    input: z.object({ cardId: z.string(), enabled: z.boolean() }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
   },
   listMachines: {
     input: z.object({ projectId: z.string().min(1) }).strict(),

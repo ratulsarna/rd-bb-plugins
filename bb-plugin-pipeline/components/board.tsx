@@ -7,7 +7,7 @@ import {
   useRealtimeConnectionState,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
-import type { rpcContract } from "@/lib/contract";
+import type { MachineQueue, rpcContract } from "@/lib/contract";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import type { ExecutionSelection } from "@/lib/execution";
 import { ownerThread } from "@/lib/card";
@@ -15,6 +15,7 @@ import type { Card, CardAttachment } from "@/lib/store";
 import { AddCard } from "./add-card";
 import { Icon } from "./icon";
 import { PipelineCard } from "./card";
+import { MachineQueueStatus } from "./machine-queue";
 import type { PipelineMachine } from "@/lib/machines";
 
 const PROJECT_KEY = "pipeline:selected-project";
@@ -57,7 +58,7 @@ export function PipelineBoard() {
   const [machines, setMachines] = useState<PipelineMachine[]>([]);
   const [includeDone, setIncludeDone] = useState(false);
   const [cards, setCards] = useState<Awaited<ReturnType<typeof rpc.call<"listCards">>>["cards"]>([]);
-  const [queuedCardIds, setQueuedCardIds] = useState<ReadonlySet<string>>(new Set());
+  const [queue, setQueue] = useState<MachineQueue[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
@@ -89,7 +90,7 @@ export function PipelineBoard() {
       if (selected === null) {
         setCards([]);
         setMachines([]);
-        setQueuedCardIds(new Set());
+        setQueue([]);
       } else {
         const [result, machineResult] = await Promise.all([
           rpc.call("listCards", {
@@ -100,7 +101,7 @@ export function PipelineBoard() {
         ]);
         if (request !== requestSequence.current) return;
         setCards(result.cards);
-        setQueuedCardIds(new Set(result.queuedCardIds));
+        setQueue(result.queue);
         setMachines(machineResult.machines);
       }
       setError(null);
@@ -138,6 +139,20 @@ export function PipelineBoard() {
     [sidebar.threads],
   );
   const visibleColumns = includeDone ? COLUMNS : COLUMNS.filter((column) => column !== "done");
+  const queuedCards = useMemo(() => {
+    const result = new Map<string, { reasons: string[]; canRunNext: boolean; next: boolean }>();
+    for (const machine of queue) {
+      for (const waiting of machine.waiting) {
+        const previous = result.get(waiting.cardId);
+        result.set(waiting.cardId, {
+          reasons: [...new Set([...(previous?.reasons ?? []), ...waiting.reasons])],
+          canRunNext: waiting.canRunNext || previous?.canRunNext === true,
+          next: machine.nextCardId === waiting.cardId || previous?.next === true,
+        });
+      }
+    }
+    return result;
+  }, [queue]);
   const draggedCard = cards.find(
     (card) =>
       card.id === draggedCardId &&
@@ -216,7 +231,7 @@ export function PipelineBoard() {
               setProjectId(next);
               setCards([]);
               setMachines([]);
-              setQueuedCardIds(new Set());
+              setQueue([]);
               clearDrag();
               void load();
             }}
@@ -251,6 +266,15 @@ export function PipelineBoard() {
       <div className="pipeline-summary">
         <span className="pipeline-summary-label">Board</span>
         <span>{cards.length} {cards.length === 1 ? "task" : "tasks"}</span>
+        <div className="pipeline-machine-queues" aria-label="Machine queues">
+          {queue.map((machineQueue) => (
+            <MachineQueueStatus
+              key={machineQueue.hostId}
+              queue={machineQueue}
+              onOpen={(threadId) => navigate.toThread(threadId)}
+            />
+          ))}
+        </div>
         {needsAttention === 0 ? null : <span className="pipeline-summary-item"><Icon name="MessageQuestion" />{needsAttention} need your attention</span>}
         {loading ? <span role="status" className="pipeline-summary-item"><Icon name="Loading" className="pipeline-spin" />Updating…</span> : null}
         {connection === "connected" ? null : <span role="status">Reconnecting…</span>}
@@ -293,6 +317,7 @@ export function PipelineBoard() {
                   {loading && cards.length === 0 ? <div className="pipeline-skeleton" aria-hidden="true" /> : null}
                   {columnCards.map((card) => {
                     const owner = ownerThread(card);
+                    const queueState = queuedCards.get(card.id);
                     return (
                       <PipelineCard
                         key={card.id}
@@ -301,7 +326,7 @@ export function PipelineBoard() {
                         onSetMachine={(hostId) => void updateCard(card, () => rpc.call("setMachine", { cardId: card.id, hostId }))}
                         dragging={draggedCardId === card.id}
                         pending={pendingCards.has(card.id)}
-                        queued={queuedCardIds.has(card.id)}
+                        queue={queueState ?? null}
                         onDragStart={(event) => {
                           if (card.runState !== "running" || pendingCards.has(card.id)) {
                             event.preventDefault();
@@ -318,6 +343,7 @@ export function PipelineBoard() {
                         onPause={() => void updateCard(card, () => rpc.call("pauseCard", { cardId: card.id }))}
                         onResume={() => void updateCard(card, () => rpc.call("resumeCard", { cardId: card.id }))}
                         onStop={() => void updateCard(card, () => rpc.call("stopCard", { cardId: card.id }))}
+                        onSetRunNext={(enabled) => void updateCard(card, () => rpc.call("setRunNext", { cardId: card.id, enabled }))}
                         onRetry={() => {
                           if (card.runState === "running") {
                             void updateCard(card, () => rpc.call("retryLaunch", { cardId: card.id }));

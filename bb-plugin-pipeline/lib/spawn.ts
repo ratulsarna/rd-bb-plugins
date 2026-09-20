@@ -79,7 +79,7 @@ export function spawnRequest(input: {
       0,
       120,
     ),
-    pluginMetadata: { cardId: card.id, role },
+    pluginMetadata: { cardId: card.id, role, hostId: environment.hostId },
     input: [
       { type: "text" as const, text: prompt, mentions: [] },
       ...attachmentInputs(card.attachments),

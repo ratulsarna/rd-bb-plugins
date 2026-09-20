@@ -95,8 +95,10 @@ async function setup(options?: {
         models: async (input) => testProviderModels(input?.providerId),
       },
       threads: {
+        listRunning: async () => [],
         spawn: async () => makeThreadResponse({ id: "intake" }),
         queue: { list: async () => [] },
+        queuedMessages: { list: async ({ threadId }) => (await host.bb.sdk.threads.queue.list()).filter((entry) => entry.threadId === threadId) },
         interactions: {
           list: options?.listInteractions ?? (async () => []),
         },
@@ -457,7 +459,7 @@ describe("plugin wiring", () => {
     );
 
     expect(await host.harness.behavior.callRpc("listCards", { projectId: "proj_1", includeDone: false }))
-      .toMatchObject({ queuedCardIds: [card.id] });
+      .toMatchObject({ queue: [expect.objectContaining({ waiting: [expect.objectContaining({ cardId: card.id })] })] });
     expect(await host.harness.behavior.callRpc("showCard", { cardId: card.id }))
       .toMatchObject({ queued: true });
     const listed = await host.harness.behavior.runCli(["list", "--json"], { projectId: "proj_1" });
@@ -469,7 +471,7 @@ describe("plugin wiring", () => {
     await host.harness.behavior.emitThreadEvent("message.cancelled", { entry });
     expect(host.harness.inspection.realtimeSignals.at(-1)).toMatchObject({ payload: { projectId: "proj_1" } });
     expect(await host.harness.behavior.callRpc("listCards", { projectId: "proj_1", includeDone: false }))
-      .toMatchObject({ queuedCardIds: [] });
+      .toMatchObject({ queue: [expect.objectContaining({ waiting: [] })] });
   });
 
   it("wakes the queue when work ends, without scheduling another drain every time a message requeues", async () => {

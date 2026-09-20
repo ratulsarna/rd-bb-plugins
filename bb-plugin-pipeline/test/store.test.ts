@@ -24,6 +24,7 @@ describe("card migrations", () => {
         VALUES ('card_1', 'proj_1', 'Existing work', 'implementing', 'lead', 'lead', 1, 2)`).run();
       const before = createCardStore(db).get("card_1")!;
       db.exec(MIGRATIONS[4]);
+      db.exec(MIGRATIONS[5]);
       const store = createCardStore(db);
       expect(store.get("card_1")).toEqual({ ...before, runState: "running", pauseRequestId: null, controlError: null });
       store.update("card_1", { runState: "pausing", pauseRequestId: "request", controlError: "machine offline" });
@@ -104,6 +105,32 @@ describe("card migrations", () => {
       db.close();
     }
   });
+
+  it("adds run-next storage without changing existing cards", () => {
+    const db = new Database(":memory:");
+    try {
+      for (const migration of MIGRATIONS.slice(0, 5)) db.exec(migration);
+      db.prepare(
+        `INSERT INTO cards
+          (id, project_id, host_id, title, body, attachments, "column", run_state, created_at, updated_at)
+         VALUES ('card_1', 'proj_1', 'host_mac', 'Existing card', 'Keep me', '[]', 'todo', 'running', 1, 2)`,
+      ).run();
+
+      db.exec(MIGRATIONS[5]);
+
+      expect(createCardStore(db).get("card_1")).toMatchObject({
+        id: "card_1",
+        projectId: "proj_1",
+        hostId: "host_mac",
+        title: "Existing card",
+        body: "Keep me",
+        column: "todo",
+        updatedAt: 2,
+      });
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("card execution", () => {
@@ -167,6 +194,105 @@ describe("card machines", () => {
         "already assigned to machine host_mac",
       );
       expect(store.get("card_1")?.hostId).toBe("host_mac");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("run next", () => {
+  function addCard(
+    store: ReturnType<typeof createCardStore>,
+    id: string,
+    projectId: string,
+    hostId: string,
+  ) {
+    return store.create({
+      id,
+      projectId,
+      hostId,
+      title: id,
+      body: "",
+      attachments: [],
+      source: "test",
+    });
+  }
+
+  it("persists one nominee per project and machine without touching card timestamps", () => {
+    const db = new Database(":memory:");
+    for (const migration of MIGRATIONS) db.exec(migration);
+    try {
+      let time = 100;
+      const store = createCardStore(db, () => time++);
+      const first = addCard(store, "first", "project_a", "host_a");
+      addCard(store, "replacement", "project_a", "host_a");
+      addCard(store, "other_host", "project_a", "host_b");
+      addCard(store, "other_project", "project_b", "host_a");
+
+      store.setRunNext(first.id);
+      expect(store.get(first.id)?.updatedAt).toBe(first.updatedAt);
+      expect(createCardStore(db).getRunNext("project_a", "host_a")).toBe(first.id);
+
+      store.setRunNext("replacement");
+      store.setRunNext("other_host");
+      store.setRunNext("other_project");
+      expect(store.getRunNext("project_a", "host_a")).toBe("replacement");
+      expect(store.getRunNext("project_a", "host_b")).toBe("other_host");
+      expect(store.getRunNext("project_b", "host_a")).toBe("other_project");
+      const persisted = createCardStore(db).listRunNext();
+      expect(persisted).toHaveLength(3);
+      expect(persisted).toEqual(expect.arrayContaining([
+        { projectId: "project_a", hostId: "host_a", cardId: "replacement" },
+        { projectId: "project_a", hostId: "host_b", cardId: "other_host" },
+        { projectId: "project_b", hostId: "host_a", cardId: "other_project" },
+      ]));
+
+      store.update(first.id, { runState: "pause_requested" });
+      expect(store.clearRunNext(first.id)).toBe(false);
+      expect(store.getRunNext("project_a", "host_a")).toBe("replacement");
+      expect(store.clearRunNext("replacement")).toBe(true);
+      expect(store.getRunNext("project_a", "host_a")).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("requires a known card with a machine", () => {
+    const db = new Database(":memory:");
+    for (const migration of MIGRATIONS) db.exec(migration);
+    try {
+      const store = createCardStore(db);
+      db.prepare(
+        `INSERT INTO cards (id, project_id, title, "column", created_at, updated_at)
+         VALUES ('legacy', 'project_a', 'Legacy', 'backlog', 1, 1)`,
+      ).run();
+
+      expect(() => store.setRunNext("missing")).toThrow("unknown card missing");
+      expect(() => store.setRunNext("legacy")).toThrow("card legacy has no machine");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("clears nominees when they are held, completed, or removed", () => {
+    const db = new Database(":memory:");
+    for (const migration of MIGRATIONS) db.exec(migration);
+    try {
+      const store = createCardStore(db);
+      addCard(store, "held", "project_a", "host_a");
+      addCard(store, "done", "project_a", "host_b");
+      addCard(store, "removed", "project_b", "host_a");
+
+      store.setRunNext("held");
+      store.setRunNext("done");
+      store.setRunNext("removed");
+      store.update("held", { runState: "pause_requested" });
+      store.update("done", { column: "done" });
+      store.remove("removed");
+
+      expect(store.getRunNext("project_a", "host_a")).toBeNull();
+      expect(store.getRunNext("project_a", "host_b")).toBeNull();
+      expect(store.getRunNext("project_b", "host_a")).toBeNull();
     } finally {
       db.close();
     }

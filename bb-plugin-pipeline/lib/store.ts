@@ -169,6 +169,12 @@ export const MIGRATIONS = [
   `ALTER TABLE cards ADD COLUMN run_state TEXT NOT NULL DEFAULT 'running' CHECK (run_state IN ('running', 'pause_requested', 'pausing', 'paused', 'stopping'));
    ALTER TABLE cards ADD COLUMN pause_request_id TEXT;
    ALTER TABLE cards ADD COLUMN control_error TEXT;`,
+  `CREATE TABLE run_next (
+    project_id TEXT NOT NULL,
+    host_id TEXT NOT NULL,
+    card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+    PRIMARY KEY (project_id, host_id)
+  );`,
 ] as const;
 
 function parseAttachments(value: string): CardAttachment[] {
@@ -256,6 +262,10 @@ export interface CardStore {
   list(projectId: string, includeDone?: boolean): Card[];
   listActiveWithOwner(): Card[];
   listControlled(): Card[];
+  listRunNext(): Array<{ projectId: string; hostId: string; cardId: string }>;
+  getRunNext(projectId: string, hostId: string): string | null;
+  setRunNext(cardId: string): void;
+  clearRunNext(cardId: string): boolean;
   update(id: string, patch: CardPatch, history?: HistoryInput): Card;
   recordHistory(id: string, history: HistoryInput): void;
   history(id: string): CardHistory[];
@@ -320,6 +330,12 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         next.updatedAt,
         id,
       );
+      if (
+        (current.runState === "running" && next.runState !== "running") ||
+        (current.column !== "done" && next.column === "done")
+      ) {
+        db.prepare("DELETE FROM run_next WHERE card_id = ?").run(id);
+      }
       if (history !== undefined) addHistory(id, history);
       return read(id)!;
     },
@@ -395,6 +411,30 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
     },
     listControlled() {
       return (db.prepare("SELECT * FROM cards WHERE run_state <> 'running' OR pause_request_id IS NOT NULL").all() as CardRow[]).map(cardFromRow);
+    },
+    listRunNext() {
+      return db.prepare(
+        "SELECT project_id AS projectId, host_id AS hostId, card_id AS cardId FROM run_next",
+      ).all() as Array<{ projectId: string; hostId: string; cardId: string }>;
+    },
+    getRunNext(projectId, hostId) {
+      const row = db
+        .prepare("SELECT card_id FROM run_next WHERE project_id = ? AND host_id = ?")
+        .get(projectId, hostId) as { card_id: string } | undefined;
+      return row?.card_id ?? null;
+    },
+    setRunNext: db.transaction((cardId: string) => {
+      const card = read(cardId);
+      if (card === null) throw new Error(`unknown card ${cardId}`);
+      if (card.hostId === null) throw new Error(`card ${cardId} has no machine`);
+      db.prepare(
+        `INSERT INTO run_next (project_id, host_id, card_id)
+         VALUES (?, ?, ?)
+         ON CONFLICT(project_id, host_id) DO UPDATE SET card_id = excluded.card_id`,
+      ).run(card.projectId, card.hostId, card.id);
+    }),
+    clearRunNext(cardId) {
+      return db.prepare("DELETE FROM run_next WHERE card_id = ?").run(cardId).changes > 0;
     },
     update(id, patch, history) {
       return write(id, patch, history);
