@@ -107,6 +107,27 @@ function seedLegacyCard(db: Database, id = "card_legacy"): void {
 }
 
 describe("plugin wiring", () => {
+  it("surfaces a cancelled kickoff and clears that attention when the same pending thread queues again", async () => {
+    const { host } = await setup();
+    const added = await host.harness.behavior.runCli(
+      ["add", "--title", "Cancelled task", "--machine", "Work laptop", "--json"],
+      { projectId: "proj_1" },
+    );
+    const card = JSON.parse(added.stdout) as { id: string };
+    let thread = makeThreadResponse({ id: "intake", projectId: "proj_1", status: "pending", queuedMessageCount: 0 });
+    host.harness.inspection.sdk.stub("threads.get", async () => thread);
+    const entry = makeQueueEntry({ threadId: thread.id });
+
+    await host.harness.behavior.emitThreadEvent("message.cancelled", { entry });
+    expect(await host.harness.behavior.callRpc("showCard", { cardId: card.id }))
+      .toMatchObject({ card: { intakeThreadId: "intake", needsUser: true, launchError: expect.stringContaining("cancelled") } });
+
+    thread = { ...thread, queuedMessageCount: 1 };
+    await host.harness.behavior.emitThreadEvent("message.queued", { entry });
+    expect(await host.harness.behavior.callRpc("showCard", { cardId: card.id }))
+      .toMatchObject({ card: { intakeThreadId: "intake", needsUser: false, launchError: null } });
+  });
+
   it("reports queued child work through RPC and CLI and clears it when the message is cancelled", async () => {
     const { host } = await setup();
     const added = await host.harness.behavior.runCli(

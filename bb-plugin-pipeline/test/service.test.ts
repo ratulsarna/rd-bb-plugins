@@ -81,6 +81,7 @@ afterEach(async () => {
 
 function setup(options?: {
   spawn?: (request: unknown) => Promise<ReturnType<typeof makeThreadResponse>>;
+  send?: (request: unknown) => Promise<{ ok: true; delivery: "sent" }>;
   getThread?: (input: { threadId: string }) => Promise<ReturnType<typeof makeThreadResponse>>;
   getThreadOutput?: (input: { threadId: string }) => Promise<{ output: string }>;
   project?: typeof project;
@@ -94,6 +95,9 @@ function setup(options?: {
     options?.spawn ??
       (async () => makeThreadResponse({ id: `thr_${nextThread++}` })),
   );
+  const send = vi.fn(
+    options?.send ?? (async () => ({ ok: true as const, delivery: "sent" as const })),
+  );
   const host = createFakePluginHost({
     pluginId: "pipeline",
     sdk: {
@@ -105,6 +109,7 @@ function setup(options?: {
       },
       threads: {
         spawn: spawn as never,
+        send: send as never,
         ...(options?.getThread === undefined
           ? {}
           : { get: options.getThread as never }),
@@ -141,7 +146,7 @@ function setup(options?: {
     publish,
     id: () => "card_new",
   });
-  return { host, db: host.bb.storage.database(), store, service, spawn, classify, readIssue, publish, log };
+  return { host, db: host.bb.storage.database(), store, service, spawn, send, classify, readIssue, publish, log };
 }
 
 function seed(
@@ -767,9 +772,187 @@ describe("launch", () => {
       ]));
     }
   });
+
+  it("re-sends cancelled intake and lead kickoffs on their existing threads", async () => {
+    const attachments: CardAttachment[] = [
+      { path: "attachments/screenshot.png", filename: "screenshot.png", isImage: true },
+      { path: "attachments/notes.txt", filename: "notes.txt", mimeType: "text/plain", sizeBytes: 12, isImage: false },
+    ];
+
+    for (const role of ["intake", "lead"] as const) {
+      const { store, service, spawn, send } = setup({
+        getThread: async ({ threadId }) =>
+          thread(threadId, 0, { status: "pending", queuedMessageCount: 0 }),
+      });
+      const cardId = `card_${role}`;
+      seed(store, { id: cardId, attachments });
+      if (role === "lead") {
+        store.update(cardId, {
+          issueUrl: "https://github.com/o/r/issues/1",
+          ownerRole: "lead",
+        });
+      }
+      await service.launch(cardId, role);
+      const launched = store.get(cardId)!;
+      const threadId = role === "intake"
+        ? launched.intakeThreadId!
+        : launched.leadThreadId!;
+      const originalInput = (spawn.mock.calls[0]![0] as { input: unknown[] }).input;
+
+      await service.onThreadQueueChanged(
+        thread(threadId, 0, { status: "pending", queuedMessageCount: 0 }),
+      );
+
+      expect(store.get(cardId)).toMatchObject({
+        hostId: "host_mac",
+        ownerRole: role,
+        needsUser: true,
+        attentionReason: `${role} start cancelled`,
+        launchError: `${role}: start cancelled`,
+      });
+
+      await service.retry(cardId);
+
+      expect(send).toHaveBeenCalledOnce();
+      expect(send).toHaveBeenCalledWith({
+        threadId,
+        mode: "auto",
+        input: originalInput,
+        model: "claude-fable-5-1",
+        reasoningLevel: "high",
+        permissionMode: "full",
+      });
+      expect(spawn).toHaveBeenCalledOnce();
+      expect(store.get(cardId)).toMatchObject({
+        hostId: "host_mac",
+        ownerRole: role,
+        intakeThreadId: launched.intakeThreadId,
+        leadThreadId: launched.leadThreadId,
+        needsUser: false,
+        attentionReason: null,
+        launchError: null,
+      });
+    }
+  });
+
+  it("serializes concurrent retries of a cancelled start into one send", async () => {
+    let finishSend!: () => void;
+    const sending = new Promise<void>((resolve) => {
+      finishSend = resolve;
+    });
+    const { store, service, send } = setup({
+      getThread: async ({ threadId }) =>
+        thread(threadId, 0, { status: "pending", queuedMessageCount: 0 }),
+      send: async () => {
+        await sending;
+        return { ok: true, delivery: "sent" };
+      },
+    });
+    seed(store);
+    store.update("card_1", { intakeThreadId: "intake" });
+    await service.onThreadQueueChanged(
+      thread("intake", 0, { status: "pending", queuedMessageCount: 0 }),
+    );
+
+    const first = service.retry("card_1");
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    const second = service.retry("card_1");
+    finishSend();
+    await Promise.all([first, second]);
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(store.get("card_1")?.launchError).toBeNull();
+  });
+
+  it("reconciles work queued before retry instead of duplicating the kickoff", async () => {
+    const { store, service, send } = setup({
+      getThread: async ({ threadId }) =>
+        thread(threadId, 0, { status: "pending", queuedMessageCount: 1 }),
+    });
+    seed(store);
+    store.update("card_1", { intakeThreadId: "intake" });
+    await service.onThreadQueueChanged(
+      thread("intake", 0, { status: "pending", queuedMessageCount: 0 }),
+    );
+
+    const retried = await service.retry("card_1");
+
+    expect(send).not.toHaveBeenCalled();
+    expect(retried).toMatchObject({
+      intakeThreadId: "intake",
+      needsUser: false,
+      attentionReason: null,
+      launchError: null,
+    });
+  });
+
+  it("only treats an owning pending thread with an empty queue as cancelled", async () => {
+    const { store, service } = setup();
+    seed(store);
+    const owned = store.update("card_1", {
+      intakeThreadId: "intake",
+      leadThreadId: "lead",
+      ownerRole: "lead",
+    });
+
+    await service.onThreadQueueChanged(
+      thread("intake", 0, { status: "pending", queuedMessageCount: 0 }),
+    );
+    expect(store.get("card_1")).toEqual(owned);
+
+    await service.onThreadQueueChanged(
+      thread("lead", 0, { status: "pending", queuedMessageCount: 1 }),
+    );
+    const followUpAttention = store.update("card_1", {
+      needsUser: true,
+      attentionReason: "Choose a release target",
+      attentionSource: "report",
+      reportSignal: "needs_you",
+    });
+    await service.onThreadQueueChanged(
+      thread("lead", 0, { status: "idle", queuedMessageCount: 0 }),
+    );
+    await service.onThreadQueueChanged(
+      thread("lead", 0, { status: "active", queuedMessageCount: 0 }),
+    );
+    expect(store.get("card_1")).toEqual(followUpAttention);
+
+    await service.onThreadQueueChanged(
+      thread("lead", 0, { status: "pending", queuedMessageCount: 0 }),
+    );
+    expect(store.get("card_1")?.launchError).toBe("lead: start cancelled");
+
+    await service.onThreadQueueChanged(
+      thread("lead", 0, { status: "pending", queuedMessageCount: 1 }),
+    );
+    expect(store.get("card_1")).toMatchObject({
+      leadThreadId: "lead",
+      ownerRole: "lead",
+      needsUser: false,
+      launchError: null,
+    });
+  });
 });
 
 describe("startup pass", () => {
+  it("recovers a missed cancelled-start event", async () => {
+    const { store, service } = setup({
+      getThread: async ({ threadId }) =>
+        thread(threadId, 0, { status: "pending", queuedMessageCount: 0 }),
+    });
+    seed(store);
+    store.update("card_1", { intakeThreadId: "intake" });
+
+    await service.startupPass();
+
+    expect(store.get("card_1")).toMatchObject({
+      intakeThreadId: "intake",
+      needsUser: true,
+      attentionReason: "intake start cancelled",
+      launchError: "intake: start cancelled",
+    });
+  });
+
   it("discards an idle observation overtaken by an active event", async () => {
     let resolveOutput!: (value: { output: string }) => void;
     const output = new Promise<{ output: string }>((resolve) => {
@@ -1056,6 +1239,7 @@ describe("report and active state", () => {
       attentionSource: "report",
       attentionUnknown: true,
       threadError: "boom",
+      launchError: "lead: start cancelled",
       reportSignal: "needs_you",
     });
 
@@ -1066,6 +1250,7 @@ describe("report and active state", () => {
       attentionReason: null,
       attentionUnknown: false,
       threadError: null,
+      launchError: null,
       reportSignal: null,
     });
   });

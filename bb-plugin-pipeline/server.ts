@@ -121,6 +121,7 @@ export default async function plugin(bb: BbPluginApi) {
   for (const event of ["message.queued", "message.dispatched", "message.cancelled"] as const) {
     bb.events.on(event, async ({ entry }) => {
       const thread = await bb.sdk.threads.get({ threadId: entry.threadId, experimental_includeDeleted: true });
+      if (event !== "message.dispatched") await service.onThreadQueueChanged(thread);
       await capacity.publish(thread);
     });
   }

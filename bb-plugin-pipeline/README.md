@@ -16,7 +16,9 @@ Use **New task** to add a title, context, attachments, and a machine. Drag cards
 
 At most two Pipeline tasks run per project and machine. Intake, lead, and child threads share the card's slot. A task keeps its slot while it is starting, running, stopping, has tracked background work, or is continuing an active autonomous goal. Once that work stops, queued tasks can run. Replies, retries, and a move to planning wait for capacity when the task no longer holds a slot. Ordinary BB threads do not consume Pipeline slots.
 
-The board and `bb pipeline list` show `Queued` when a task is waiting for capacity; `list` and `show` JSON output include `queued`. BB owns the durable message queue and resumes waiting messages as capacity frees. Send now respects the Pipeline limit. An edit-and-resend or manual compaction at capacity is refused before changing the conversation; retry it when capacity is available.
+The board and `bb pipeline list` show `Queued` when a task has messages waiting on a plugin, including Pipeline capacity; `list` and `show` JSON output include `queued`. BB owns the durable message queue and resumes waiting messages when their conditions clear. Send now respects the Pipeline limit. An edit-and-resend or manual compaction at capacity is refused before changing the conversation; retry it when capacity is available.
+
+Cancelling a queued kickoff leaves the task waiting for you. **Retry** sends its kickoff again to the same thread and waits for capacity if needed.
 
 Retrying after a thread is deleted starts that role over. A retried lead gets a new managed worktree and the full kickoff prompt.
 

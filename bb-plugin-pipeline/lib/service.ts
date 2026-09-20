@@ -65,6 +65,7 @@ export interface PipelineService {
   onThreadFailed(thread: PipelineThread, error: string | null): Promise<void>;
   onThreadGone(thread: PipelineThread): Promise<void>;
   onThreadUnarchived(thread: PipelineThread): Promise<void>;
+  onThreadQueueChanged(thread: PipelineThread): Promise<void>;
   startupPass(): Promise<void>;
 }
 
@@ -140,6 +141,14 @@ function launchSettings(settings: PipelineSettings): PipelineLaunchSettings {
   return settings as PipelineLaunchSettings;
 }
 
+function cancelledStartReason(role: PipelineRole): string {
+  return `${role} start cancelled`;
+}
+
+function cancelledStartError(role: PipelineRole): string {
+  return `${role}: start cancelled`;
+}
+
 export function createPipelineService(
   dependencies: PipelineServiceDependencies,
 ): PipelineService {
@@ -179,38 +188,55 @@ export function createPipelineService(
     });
   };
 
+  const buildLaunchRequest = async (card: Card, role: PipelineRole) => {
+    const configured = await dependencies.getSettings();
+    const settings = launchSettings(configured);
+    if (card.hostId === null) {
+      throw new Error(
+        "card has no machine assigned; run `bb pipeline set-machine <card-id> --machine <id-or-name>`",
+      );
+    }
+    const project = await sdk.projects.get({ projectId: card.projectId });
+    const environment = await environmentFor(
+      sdk,
+      card.projectId,
+      card.hostId,
+      role,
+      project,
+    );
+    const issueUrl = normalizeIssueUrl(card.issueUrl);
+    if (role === "lead" && issueUrl === null) {
+      throw new Error(MISSING_ISSUE_ERROR);
+    }
+    const prompt =
+      role === "intake"
+        ? intakePrompt(card, project.name)
+        : leadPrompt(card, await dependencies.readIssue(issueUrl!));
+    return spawnRequest({ card, role, prompt, environment, settings });
+  };
+
+  const recordLaunchFailure = (
+    card: Card,
+    role: PipelineRole,
+    cause: unknown,
+  ): Card =>
+    update(
+      card.id,
+      { launchError: `${role}: ${errorMessage(cause)}` },
+      {
+        kind: "launch_failed",
+        source: "system",
+        note: `${role}: ${errorMessage(cause)}`,
+      },
+    );
+
   const doLaunch = async (cardId: string, role: PipelineRole): Promise<Card> => {
     let card = required(cardId);
     const field = role === "intake" ? "intakeThreadId" : "leadThreadId";
     if (card[field] !== null) return card;
 
     try {
-      const configured = await dependencies.getSettings();
-      const settings = launchSettings(configured);
-      if (card.hostId === null) {
-        throw new Error(
-          "card has no machine assigned; run `bb pipeline set-machine <card-id> --machine <id-or-name>`",
-        );
-      }
-      const project = await sdk.projects.get({ projectId: card.projectId });
-      const environment = await environmentFor(
-        sdk,
-        card.projectId,
-        card.hostId,
-        role,
-        project,
-      );
-      const issueUrl = normalizeIssueUrl(card.issueUrl);
-      if (role === "lead" && issueUrl === null) {
-        throw new Error(MISSING_ISSUE_ERROR);
-      }
-      const prompt =
-        role === "intake"
-          ? intakePrompt(card, project.name)
-          : leadPrompt(card, await dependencies.readIssue(issueUrl!));
-      const thread = await sdk.threads.spawn(
-        spawnRequest({ card, role, prompt, environment, settings }),
-      );
+      const thread = await sdk.threads.spawn(await buildLaunchRequest(card, role));
       card = update(
         card.id,
         {
@@ -232,23 +258,18 @@ export function createPipelineService(
       );
       return card;
     } catch (cause) {
-      return update(
-        card.id,
-        { launchError: `${role}: ${errorMessage(cause)}` },
-        {
-          kind: "launch_failed",
-          source: "system",
-          note: `${role}: ${errorMessage(cause)}`,
-        },
-      );
+      return recordLaunchFailure(card, role, cause);
     }
   };
 
-  const launch = async (cardId: string, role: PipelineRole): Promise<Card> => {
+  const serializeLaunch = async (
+    cardId: string,
+    work: () => Promise<Card>,
+  ): Promise<Card> => {
     const previous = launches.get(cardId) ?? Promise.resolve(required(cardId));
     const operation = previous
       .catch(() => required(cardId))
-      .then(() => doLaunch(cardId, role));
+      .then(work);
     launches.set(cardId, operation);
     try {
       return await operation;
@@ -256,6 +277,9 @@ export function createPipelineService(
       if (launches.get(cardId) === operation) launches.delete(cardId);
     }
   };
+
+  const launch = (cardId: string, role: PipelineRole): Promise<Card> =>
+    serializeLaunch(cardId, () => doLaunch(cardId, role));
 
   const move = async (
     cardId: string,
@@ -309,7 +333,7 @@ export function createPipelineService(
       observation.kind === "thread"
         ? observation.thread.id
         : observation.threadId;
-    const initial = store.get(snapshot.id);
+    let initial = store.get(snapshot.id);
     if (
       initial === null ||
       initial.revision !== snapshot.revision ||
@@ -403,6 +427,59 @@ export function createPipelineService(
       return;
     }
 
+    if (thread.status === "pending") {
+      const reason = cancelledStartReason(role);
+      if (thread.queuedMessageCount === 0) {
+        if (
+          initial.launchError === cancelledStartError(role) &&
+          sameAttention(initial, {
+            needsUser: true,
+            attentionReason: reason,
+            attentionSource: "system",
+            attentionUnknown: false,
+          })
+        ) {
+          return;
+        }
+        update(
+          initial.id,
+          {
+            launchError: cancelledStartError(role),
+            needsUser: true,
+            attentionReason: reason,
+            attentionSource: "system",
+            attentionUnknown: false,
+            reportSignal: null,
+          },
+          {
+            kind: "launch_failed",
+            source: "system",
+            threadId,
+            note: reason,
+          },
+        );
+      } else {
+        const cancelledAttention =
+          initial.attentionSource === "system" &&
+          initial.attentionReason === reason;
+        if (initial.launchError === null && !cancelledAttention) return;
+        update(initial.id, {
+          launchError: null,
+          ...(cancelledAttention
+            ? {
+                needsUser: false,
+                attentionReason: null,
+                attentionSource: null,
+                attentionUnknown: false,
+                threadError: null,
+                reportSignal: null,
+              }
+            : {}),
+        });
+      }
+      return;
+    }
+
     if (thread.status === "active" || thread.status === "starting") {
       update(initial.id, {
         needsUser: false,
@@ -410,12 +487,16 @@ export function createPipelineService(
         attentionSource: null,
         attentionUnknown: false,
         threadError: null,
+        launchError: null,
         reportSignal: null,
       });
       return;
     }
 
     if (thread.status !== "idle") return;
+    if (initial.launchError !== null) {
+      initial = update(initial.id, { launchError: null });
+    }
     if (thread.activeBackgroundAgentCount > 0) return;
     if (role === "intake") {
       const nextColumn = initial.column === "backlog" ? "todo" : initial.column;
@@ -602,12 +683,105 @@ export function createPipelineService(
     },
     launch,
     async retry(cardId) {
-      const card = required(cardId);
-      const role = card.ownerRole;
-      if (card.launchError === null || roleThread(card, role) !== null) {
+      const requested = required(cardId);
+      if (requested.launchError === null) {
         throw new Error("nothing to retry");
       }
-      return launch(cardId, role);
+      return serializeLaunch(cardId, async () => {
+        let card = required(cardId);
+        if (card.launchError === null) return card;
+        const role = card.ownerRole;
+        const threadId = roleThread(card, role);
+        if (threadId === null) return doLaunch(cardId, role);
+        const recordRetryFailure = (cause: unknown): Card => {
+          const current = required(cardId);
+          return current.ownerRole === role &&
+            roleThread(current, role) === threadId &&
+            current.launchError !== null
+            ? recordLaunchFailure(current, role, cause)
+            : current;
+        };
+
+        let request;
+        const launchRevision = card.revision;
+        try {
+          request = await buildLaunchRequest(card, role);
+        } catch (cause) {
+          return recordRetryFailure(cause);
+        }
+
+        card = required(cardId);
+        if (
+          card.revision !== launchRevision ||
+          card.ownerRole !== role ||
+          roleThread(card, role) !== threadId ||
+          card.launchError === null
+        ) {
+          return card;
+        }
+
+        let thread: PipelineThread;
+        try {
+          thread = await sdk.threads.get({ threadId });
+        } catch (cause) {
+          if (isThreadNotFound(cause)) {
+            await reconcile(card, role, { kind: "not-found", threadId });
+            return required(cardId);
+          }
+          return recordRetryFailure(cause);
+        }
+
+        if (
+          thread.deletedAt !== null ||
+          thread.archivedAt !== null ||
+          thread.status !== "pending" ||
+          thread.queuedMessageCount > 0
+        ) {
+          await reconcile(card, role, { kind: "thread", thread });
+          return required(cardId);
+        }
+
+        const beforeSend = required(cardId);
+        if (
+          beforeSend.revision !== card.revision ||
+          beforeSend.ownerRole !== role ||
+          roleThread(beforeSend, role) !== threadId ||
+          beforeSend.launchError === null
+        ) {
+          return beforeSend;
+        }
+
+        try {
+          await sdk.threads.send({
+            threadId,
+            mode: "auto",
+            input: request.input,
+            model: request.model,
+            reasoningLevel: request.reasoningLevel,
+            permissionMode: request.permissionMode,
+          });
+        } catch (cause) {
+          return recordRetryFailure(cause);
+        }
+
+        const current = required(cardId);
+        if (
+          current.revision !== card.revision ||
+          current.ownerRole !== role ||
+          roleThread(current, role) !== threadId
+        ) {
+          return current;
+        }
+        return update(current.id, {
+          launchError: null,
+          needsUser: false,
+          attentionReason: null,
+          attentionSource: null,
+          attentionUnknown: false,
+          threadError: null,
+          reportSignal: null,
+        });
+      });
     },
     async report(input) {
       if (input.needsYou !== undefined && input.working) {
@@ -720,6 +894,11 @@ export function createPipelineService(
     },
     onThreadUnarchived(thread) {
       return reconcileThread(thread);
+    },
+    onThreadQueueChanged(thread) {
+      return thread.status === "pending"
+        ? reconcileThread(thread)
+        : Promise.resolve();
     },
     async startupPass() {
       for (const card of store.listActiveWithOwner()) {
