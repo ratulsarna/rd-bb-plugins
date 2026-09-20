@@ -179,6 +179,42 @@ describe("plugin wiring", () => {
     db.prepare("UPDATE cards SET needs_user = 1 WHERE id = 'card_legacy'").run();
     await ask("lead");
     expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
+
+    db.prepare("UPDATE cards SET needs_user = 0, \"column\" = 'done' WHERE id = 'card_legacy'").run();
+    await ask("lead");
+    expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
+    await host.harness.behavior.callRpc("moveCard", { cardId: "card_legacy", column: "implementing" });
+    await ask("lead");
+    expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(2);
+  });
+
+  it("keeps completed cards quiet for reports and failures and notifies again after reopening", async () => {
+    const { host, db } = await setup();
+    seedLegacyCard(db);
+    db.prepare("UPDATE cards SET lead_thread_id = 'lead', owner_role = 'lead', \"column\" = 'done' WHERE id = 'card_legacy'").run();
+    const report = (signal: string[]) => host.harness.behavior.runCli([
+      "report", "--card", "card_legacy", ...signal,
+    ]);
+    const fail = () => host.harness.behavior.emitThreadEvent("thread.failed", {
+      thread: makeThreadResponse({ id: "lead", projectId: "proj_1", status: "error" }),
+      error: "provider stopped",
+    });
+
+    expect((await report(["--needs-you", "Review this again"])).exitCode).toBe(0);
+    expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(0);
+    expect((await report(["--working"])).exitCode).toBe(0);
+    await fail();
+    expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(0);
+
+    await host.harness.behavior.callRpc("moveCard", { cardId: "card_legacy", column: "implementing" });
+    await host.harness.behavior.emitThreadEvent("thread.active", {
+      thread: makeThreadResponse({ id: "lead", projectId: "proj_1", status: "active" }),
+    });
+    await fail();
+    expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
+    expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")[0]![0]).toMatchObject({
+      input: { threadId: "lead", message: "thread failed: provider stopped" },
+    });
   });
 
   it("inherits cleared lead settings and accepts new role selections", async () => {
