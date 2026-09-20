@@ -2,6 +2,8 @@
 
 Pipeline gives each project a ten-column delivery board backed by BB threads. Each card requires an explicit machine choice. A new card starts an intake thread in the project's existing checkout on that machine. Moving the card to planning starts a lead in its own managed worktree on the same machine, carrying the filed issue and the card's attachments into the work.
 
+Feature priorities are tracked in [WISHLIST.md](./WISHLIST.md).
+
 The board tracks:
 
 - `backlog` → `todo` → `planning` → `plan_ready`
