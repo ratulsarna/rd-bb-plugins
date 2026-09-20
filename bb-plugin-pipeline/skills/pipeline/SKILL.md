@@ -1,15 +1,16 @@
 ---
 name: pipeline
-description: "Work the pipeline board: add, list, show, move, pause, and resume tasks. Specify a machine; optionally choose separate intake and lead models and reasoning. Upload attachments first."
+description: "Work the pipeline board: add, start, list, show, move, pause, and resume tasks. Specify a machine; optionally choose separate intake and lead models and reasoning. Upload attachments first."
 ---
 
 # Pipeline: Board
 
-Every task is a card on the pipeline board: a title, a note, a machine, attachments, and a column. The columns, in order: `backlog`, `todo`, `planning`, `plan_ready`, `implementing`, `reviewing`, `qa`, `pr`, `pr_ready`, `done`. Adding a card launches an intake thread for it.
+Every task is a card on the pipeline board: a title, a note, a machine, attachments, and a column. The columns, in order: `backlog`, `todo`, `planning`, `plan_ready`, `implementing`, `reviewing`, `qa`, `pr`, `pr_ready`, `done`. Adding a card launches intake unless `--no-start` is supplied. A saved task creates no thread or queued message until explicitly started.
 
 ## Commands
 
-- `bb pipeline add --title <t> --machine <id-or-name> [--body <text>] [--attachment <uploaded-path>]... [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project.
+- `bb pipeline add --title <t> --machine <id-or-name> [--no-start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project.
+- `bb pipeline start <card-id>` — start intake for a saved task using its stored machine, models, notes, and attachments. Repeated Start requests do not launch again; use Retry after a failed start.
 - `bb pipeline set-machine <card-id> --machine <id-or-name>` — assign a machine to a card that has none. An assigned machine cannot be changed.
 - `bb pipeline list [--project <id>] [--all]` — the board's cards; `done` is hidden unless `--all`.
 - `bb pipeline show <card-id>` — the card, its history, and its threads.
@@ -21,6 +22,10 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 - `bb pipeline resume <card-id>` — continue a Paused task through the normal capacity gate.
 - `bb pipeline stop <card-id>` — hard-stop the task and occupied descendants; use when graceful pause cannot finish.
 - `bb pipeline move <card-id> <column>` — move a card by hand. Moving to planning starts its lead thread if needed and waits for capacity; other moves update the board.
+
+Use `add --no-start` when the user wants to capture a task for later. Start it before moving stages, pausing, stopping, or resuming; saved tasks can be removed without starting. The UI offers the same choice as **Save** and **Save and start**.
+
+An interrupted Start recovers an existing intake thread when found, or exposes Retry. Use `retry` on that card instead of adding another task.
 
 The machine must be explicitly specified for every new card; never infer it from the current thread or choose the first available machine. Use `bb machine list` to find machine IDs and names, and ask the user when their target is unknown. The project must have a checkout on that machine. Intake, lead work, and retries use the card's stored machine.
 
@@ -60,7 +65,7 @@ When you receive a Pipeline pause instruction, follow its request ID. Start no n
 
 Once safe, the current intake or lead must run `bb pipeline report --paused <request-id>` as its last action and end its turn. Workers cannot acknowledge for the owner. Do not report working or continue task work until the user resumes it. Pipeline checks the token and waits for all real task activity to end before showing Paused; acknowledgement alone does not free its capacity slot.
 
-A pending question or offline machine can delay the instruction. Keep the task Pause requested rather than claiming it stopped. Stop now is available to the user as a fallback. Queued messages survive pause and stop; Resume releases them through the capacity gate and continues from the handoff. Task controls preserve the card's stage. Resume before moving, removing, or retrying a held card. Pipeline attention notifications are suppressed while held and for Done cards.
+A pending question or offline machine can delay the instruction. Keep the task Pause requested rather than claiming it stopped. Stop now is available to the user as a fallback. Queued messages survive pause and stop; Resume releases them through the capacity gate and continues from the handoff. Task controls preserve the card's stage. Resume before moving, removing, or retrying a held card. Pipeline attention notifications are suppressed while held and for saved or Done cards.
 
 ## Attachments
 

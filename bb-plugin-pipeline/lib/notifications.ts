@@ -4,6 +4,7 @@ import { ownerThread } from "./card";
 import type { Card } from "./store";
 
 export function userAttentionReason(card: Card): string | null {
+  if (!card.startRequested) return null;
   if (card.needsUser) return card.attentionReason?.trim() || "Needs your input";
   if (card.launchError !== null) return `Launch failed: ${card.launchError}`;
   if (card.threadError !== null) return `Thread failed: ${card.threadError}`;
@@ -16,7 +17,7 @@ export function createAttentionNotifier(bb: BbPluginApi) {
   bb.onDispose(async () => { await Promise.allSettled([...pending]); });
 
   return (card: Card, reason: string): void => {
-    if (card.column === "done" || card.runState !== "running") return;
+    if (!card.startRequested || card.column === "done" || card.runState !== "running") return;
     const delivery = bb.sdk.plugins.callRpc({
       pluginId: "notify",
       method: "send",

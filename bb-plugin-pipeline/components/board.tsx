@@ -38,13 +38,14 @@ async function upload(projectId: string, file: File): Promise<CardAttachment> {
   );
   if (!response.ok) throw new Error(`Could not upload ${file.name}`);
   const value = (await response.json()) as UploadedAttachment;
-  return {
+  const attachment: CardAttachment = {
     path: value.path,
     filename: value.name,
-    mimeType: value.mimeType,
-    sizeBytes: value.sizeBytes,
     isImage: value.type === "localImage",
   };
+  if (value.mimeType !== undefined) attachment.mimeType = value.mimeType;
+  if (value.sizeBytes !== undefined) attachment.sizeBytes = value.sizeBytes;
+  return attachment;
 }
 
 export function PipelineBoard() {
@@ -157,7 +158,8 @@ export function PipelineBoard() {
     (card) =>
       card.id === draggedCardId &&
       card.projectId === projectId &&
-      card.runState === "running",
+      card.runState === "running" &&
+      card.startRequested,
   );
 
   function clearDrag() {
@@ -186,7 +188,7 @@ export function PipelineBoard() {
   }
 
   function move(card: Card, column: Column) {
-    if (card.runState !== "running" || card.column === column) return;
+    if (!card.startRequested || card.runState !== "running" || card.column === column) return;
     void updateCard(card, () => rpc.call("moveCard", { cardId: card.id, column }));
   }
 
@@ -197,15 +199,17 @@ export function PipelineBoard() {
     hostId: string,
     intake: ExecutionSelection,
     lead: ExecutionSelection,
+    start: boolean,
   ) {
     const targetProjectId = projectIdRef.current;
     if (targetProjectId === null) return;
     const attachments = await Promise.all(files.map((file) => upload(targetProjectId, file)));
-    await rpc.call("addCard", { projectId: targetProjectId, hostId, intake, lead, title, body, attachments });
+    await rpc.call("addCard", { projectId: targetProjectId, hostId, intake, lead, title, body, attachments, start });
     await load();
   }
 
   const needsAttention = cards.filter((card) => {
+    if (!card.startRequested) return false;
     const owner = ownerThread(card);
     if (card.runState === "pause_requested") return owner !== null && pendingThreads.has(owner);
     if (card.runState !== "running") return false;
@@ -328,7 +332,7 @@ export function PipelineBoard() {
                         pending={pendingCards.has(card.id)}
                         queue={queueState ?? null}
                         onDragStart={(event) => {
-                          if (card.runState !== "running" || pendingCards.has(card.id)) {
+                          if (card.runState !== "running" || !card.startRequested || pendingCards.has(card.id)) {
                             event.preventDefault();
                             return;
                           }
@@ -339,6 +343,7 @@ export function PipelineBoard() {
                         onDragEnd={clearDrag}
                         questionOpen={owner !== null && pendingThreads.has(owner)}
                         onOpen={(threadId) => navigate.toThread(threadId)}
+                        onStart={() => void updateCard(card, () => rpc.call("startCard", { cardId: card.id }))}
                         onMove={(next) => void move(card, next)}
                         onPause={() => void updateCard(card, () => rpc.call("pauseCard", { cardId: card.id }))}
                         onResume={() => void updateCard(card, () => rpc.call("resumeCard", { cardId: card.id }))}

@@ -96,6 +96,24 @@ function queuedTask(s: ReturnType<typeof setup>, id: string, machine = "machine_
 }
 
 describe("Pipeline task capacity", () => {
+  it("holds saved tasks even for existing-thread turns and excludes them from Run next", async () => {
+    const s = setup();
+    queuedTask(s, "saved");
+    s.store.update("saved", { startRequested: false });
+    s.thread("child", { parent: "saved" });
+    expect(await s.decide("saved", "machine_a", true)).toMatchObject({ action: "wait", reason: expect.stringContaining("not been started") });
+    expect(await s.decide("child")).toMatchObject({ action: "wait" });
+    expect((await s.capacity.snapshot("project_a"))[0]?.waiting[0]).toMatchObject({ canRunNext: false, reasons: expect.arrayContaining(["Not started"]) });
+    await expect(s.capacity.setRunNext("saved", true)).rejects.toThrow("Run next requires");
+
+    s.store.update("saved", { startRequested: true });
+    s.thread("one", { cardId: "one", running: true });
+    s.thread("two", { cardId: "two", running: true });
+    expect(await s.decide("saved")).toMatchObject({ action: "wait", reason: "Pipeline: 2 tasks running" });
+    s.running.pop();
+    expect(await s.decide("saved")).toEqual({ action: "proceed" });
+  });
+
   it("prioritizes a saved nominee in its pool, without clearing on a tentative hook proceed", async () => {
     const s = setup();
     s.thread("working", { cardId: "working", running: true });

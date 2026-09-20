@@ -23,10 +23,9 @@ describe("card migrations", () => {
       db.prepare(`INSERT INTO cards (id, project_id, title, "column", lead_thread_id, owner_role, created_at, updated_at)
         VALUES ('card_1', 'proj_1', 'Existing work', 'implementing', 'lead', 'lead', 1, 2)`).run();
       const before = createCardStore(db).get("card_1")!;
-      db.exec(MIGRATIONS[4]);
-      db.exec(MIGRATIONS[5]);
+      for (const migration of MIGRATIONS.slice(4)) db.exec(migration);
       const store = createCardStore(db);
-      expect(store.get("card_1")).toEqual({ ...before, runState: "running", pauseRequestId: null, controlError: null });
+      expect(store.get("card_1")).toEqual({ ...before, startRequested: true, runState: "running", pauseRequestId: null, controlError: null });
       store.update("card_1", { runState: "pausing", pauseRequestId: "request", controlError: "machine offline" });
       const reloaded = createCardStore(db);
       expect(reloaded.listControlled()).toEqual([expect.objectContaining({
@@ -131,6 +130,25 @@ describe("card migrations", () => {
       db.close();
     }
   });
+
+  it("keeps existing cards started when adding durable start intent", () => {
+    const db = new Database(":memory:");
+    try {
+      for (const migration of MIGRATIONS.slice(0, -1)) db.exec(migration);
+      db.prepare(
+        `INSERT INTO cards
+          (id, project_id, host_id, title, body, attachments, "column", created_at, updated_at)
+         VALUES ('card_1', 'proj_1', 'host_mac', 'Existing card', 'Keep me', '[]', 'todo', 1, 2)`,
+      ).run();
+
+      db.exec(MIGRATIONS.at(-1)!);
+
+      expect(createCardStore(db).get("card_1")?.startRequested).toBe(true);
+      expect(() => db.prepare("UPDATE cards SET start_requested = 2 WHERE id = 'card_1'").run()).toThrow();
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("card execution", () => {
@@ -153,7 +171,86 @@ describe("card execution", () => {
 
       expect(card.intake).toEqual(intake);
       expect(card.lead).toEqual(lead);
+      expect(card.startRequested).toBe(true);
       expect(createCardStore(db).get(card.id)).toMatchObject({ intake, lead });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("round-trips an explicitly saved card and later start request", () => {
+    const db = new Database(":memory:");
+    for (const migration of MIGRATIONS) db.exec(migration);
+    try {
+      const store = createCardStore(db);
+      const saved = store.create({
+        id: "card_saved",
+        projectId: "proj_1",
+        hostId: "host_mac",
+        startRequested: false,
+        title: "Ship later",
+        body: "",
+        attachments: [],
+        source: "ui",
+      });
+
+      expect(saved.startRequested).toBe(false);
+      expect(createCardStore(db).get(saved.id)?.startRequested).toBe(false);
+      store.update(saved.id, { startRequested: true });
+      expect(createCardStore(db).get(saved.id)?.startRequested).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("finds only running unlinked starts with durable explicit intent", () => {
+    const db = new Database(":memory:");
+    for (const migration of MIGRATIONS) db.exec(migration);
+    try {
+      const store = createCardStore(db);
+      const add = (id: string, startRequested = true) =>
+        store.create({
+          id,
+          projectId: "proj_1",
+          hostId: "host_mac",
+          startRequested,
+          title: id,
+          body: "",
+          attachments: [],
+          source: "ui",
+        });
+      add("explicit", false);
+      store.update(
+        "explicit",
+        { startRequested: true },
+        { kind: "start_requested", source: "ui" },
+      );
+      add("implicit");
+      add("saved", false);
+      add("failed", false);
+      store.update(
+        "failed",
+        { startRequested: true, launchError: "intake: offline" },
+        { kind: "start_requested", source: "ui" },
+      );
+      add("linked", false);
+      store.update(
+        "linked",
+        { startRequested: true, intakeThreadId: "intake" },
+        { kind: "start_requested", source: "ui" },
+      );
+      add("held", false);
+      store.update(
+        "held",
+        { startRequested: true, runState: "paused" },
+        { kind: "start_requested", source: "ui" },
+      );
+
+      expect(store.listIncompleteStarts().map((card) => card.id)).toEqual([
+        "explicit",
+      ]);
+      expect(store.getIncompleteStart("explicit")?.id).toBe("explicit");
+      expect(store.getIncompleteStart("implicit")).toBeNull();
     } finally {
       db.close();
     }

@@ -52,6 +52,29 @@ function setup() {
 }
 
 describe("graceful task controls", () => {
+  it("rejects controls for a saved card without changing or launching it", async () => {
+    const s = setup();
+    s.store.update("card", {
+      startRequested: false,
+      leadThreadId: null,
+      ownerRole: "intake",
+      column: "backlog",
+    });
+
+    await expect(s.controls.pause("card")).rejects.toThrow("start it before pausing it");
+    await expect(s.controls.stop("card")).rejects.toThrow("start it before stopping it");
+    await expect(s.controls.resume("card")).rejects.toThrow("start it before resuming it");
+    expect(s.card()).toMatchObject({
+      startRequested: false,
+      runState: "running",
+      intakeThreadId: null,
+      leadThreadId: null,
+    });
+    expect(s.launch).not.toHaveBeenCalled();
+    expect(s.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    expect(s.harness.inspection.sdk.callsTo("threads.stop")).toHaveLength(0);
+  });
+
   it("steers once, waits for acknowledgement and all task activity, and preserves queued work", async () => {
     const s = setup();
     s.thread("worker", "lead");

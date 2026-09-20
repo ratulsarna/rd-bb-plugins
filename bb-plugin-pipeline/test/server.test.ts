@@ -8,7 +8,7 @@ import {
 } from "@get-bb/plugin-sdk/testing";
 import type { Database } from "better-sqlite3";
 import plugin from "../server";
-import type { Card } from "../lib/store";
+import { createCardStore, type Card } from "../lib/store";
 import { testCatalogProviders, testProviderModels } from "./sdk-fake";
 
 const skillIds = [
@@ -118,6 +118,93 @@ function seedLegacyCard(db: Database, id = "card_legacy"): void {
 }
 
 describe("plugin wiring", () => {
+  it("recovers a created intake after reload without starting other saved tasks", async () => {
+    const { host, db } = await setup();
+    const input = {
+      projectId: "proj_1", hostId: "host_wt5difpwsy", title: "Later",
+      body: "", attachments: [], start: false,
+    };
+    const interrupted = await host.harness.behavior.callRpc("addCard", input) as Card;
+    const untouched = await host.harness.behavior.callRpc("addCard", input) as Card;
+    createCardStore(db).update(interrupted.id, { startRequested: true }, {
+      kind: "start_requested", source: "ui",
+    });
+    const orphan = makeThreadResponse({
+      id: "orphan-intake", projectId: "proj_1", status: "starting", originPluginId: "pipeline",
+    });
+    const reloaded = await host.harness.lifecycle.reload(plugin);
+    hosts.push(reloaded);
+    reloaded.harness.inspection.sdk.stub("threads.list", async () => [orphan] as never);
+    reloaded.harness.inspection.sdk.stub("threads.getPluginMetadata", async () => ({
+      cardId: interrupted.id, role: "intake", hostId: "host_wt5difpwsy",
+    }));
+    reloaded.harness.inspection.sdk.stub("threads.get", async () => orphan);
+    const startup = reloaded.harness.behavior.runService("startup-pass");
+    try {
+      await vi.waitFor(async () => {
+        expect(await reloaded.harness.behavior.callRpc("showCard", { cardId: interrupted.id }))
+          .toMatchObject({ card: { intakeThreadId: orphan.id, launchError: null } });
+      });
+      await reloaded.harness.behavior.callRpc("startCard", { cardId: interrupted.id });
+      expect(await reloaded.harness.behavior.callRpc("showCard", { cardId: untouched.id }))
+        .toMatchObject({ card: { startRequested: false, intakeThreadId: null }, queued: false });
+      expect(reloaded.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+      expect(reloaded.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    } finally {
+      startup.controller.abort();
+      await startup.done;
+    }
+  });
+
+  it("saves through RPC without launching, then starts once through concurrent UI and CLI requests", async () => {
+    const { host } = await setup();
+    const saved = await host.harness.behavior.callRpc("addCard", {
+      projectId: "proj_1", hostId: "host_wt5difpwsy", title: "Later", body: "Keep context",
+      attachments: [{ path: "/uploads/design.png", filename: "design.png", isImage: true }], start: false,
+    }) as Card;
+    expect(saved).toMatchObject({ startRequested: false, intakeThreadId: null, launchError: null });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    const listed = await host.harness.behavior.runCli(["list"], { projectId: "proj_1" });
+    expect(listed.stdout).toContain("not started");
+    const shown = await host.harness.behavior.callRpc("showCard", { cardId: saved.id }) as { card: Card; queued: boolean };
+    expect(shown).toMatchObject({ card: { startRequested: false }, queued: false });
+
+    const [started, cli] = await Promise.all([
+      host.harness.behavior.callRpc("startCard", { cardId: saved.id }),
+      host.harness.behavior.runCli(["start", saved.id, "--json"]),
+    ]);
+    expect(started).toMatchObject({ startRequested: true, intakeThreadId: "intake" });
+    expect(cli.exitCode).toBe(0);
+    expect(JSON.parse(cli.stdout)).toMatchObject({ startRequested: true, intakeThreadId: "intake" });
+    const calls = host.harness.inspection.sdk.callsTo("threads.spawn");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![0]).toMatchObject({ input: expect.arrayContaining([{ type: "localImage", path: "/uploads/design.png" }]) });
+    await host.harness.behavior.callRpc("startCard", { cardId: saved.id });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+  });
+
+  it("keeps CLI add automatic unless --no-start is supplied, and rejects misplaced save flags", async () => {
+    const { host, db } = await setup();
+    const args = ["add", "--title", "Later", "--machine", "Work laptop", "--json"];
+    const saved = await host.harness.behavior.runCli([...args, "--no-start"], { projectId: "proj_1" });
+    expect(saved.exitCode).toBe(0);
+    const card = JSON.parse(saved.stdout) as Card;
+    expect(card.startRequested).toBe(false);
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+    for (const argv of [["start", card.id, "--no-start"], ["start"], ["start", card.id, "extra"]]) {
+      expect((await host.harness.behavior.runCli(argv)).exitCode).toBe(1);
+    }
+    await expect(host.harness.behavior.callRpc("addCard", {
+      projectId: "proj_1", hostId: "host_wt5difpwsy", title: "Invalid", body: "", attachments: [], start: "false",
+    })).rejects.toThrow();
+    expect(db.prepare("SELECT count(*) AS n FROM cards").get()).toEqual({ n: 1 });
+    const added = await host.harness.behavior.runCli(args, { projectId: "proj_1" });
+    expect(added.exitCode).toBe(0);
+    expect(JSON.parse(added.stdout)).toMatchObject({ startRequested: true, intakeThreadId: "intake" });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+  });
+
   it("coordinates RPC pause, owner acknowledgement, real activity release and CLI resume", async () => {
     const { host, db } = await setup();
     seedLegacyCard(db);

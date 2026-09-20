@@ -28,9 +28,12 @@ import type {
   CardStore,
   HistoryInput,
 } from "./store";
-import { ownerThread, roleThread } from "./card";
+import { ownerThread, requireStarted, roleThread } from "./card";
 import { userAttentionReason } from "./notifications";
-import { isThreadNotFound } from "./task-threads";
+import {
+  findPipelineThreadByMetadata,
+  isThreadNotFound,
+} from "./task-threads";
 
 export interface PipelineSettings extends ExecutionSettings {
   permissionMode: string;
@@ -61,10 +64,12 @@ export interface PipelineService {
     title: string;
     body?: string;
     attachments?: CardAttachment[];
+    start?: boolean;
     source: "ui" | "cli";
   }): Promise<Card>;
   getExecutionDefaults(): Promise<ExecutionDefaults>;
   setMachine(cardId: string, hostId: string): Promise<Card>;
+  start(cardId: string, source: "ui" | "cli"): Promise<Card>;
   launch(cardId: string, role: PipelineRole): Promise<Card>;
   retry(cardId: string): Promise<Card>;
   report(input: ReportInput): Promise<Card>;
@@ -102,6 +107,10 @@ function errorMessage(cause: unknown): string {
 
 const MISSING_ISSUE_ERROR =
   "no issue yet: let intake finish, or pass --issue <url>";
+const INTERRUPTED_START_ERROR =
+  "intake: start interrupted before its thread was linked";
+const START_RECOVERY_ERROR_PREFIX =
+  "intake: could not check for an existing intake thread: ";
 
 function normalizeIssueUrl(value: string | null): string | null {
   const trimmed = value?.trim() ?? "";
@@ -180,6 +189,7 @@ function requireRunning(card: Card, action: string): void {
 function sameLaunchContext(current: Card, snapshot: Card): boolean {
   return (
     current.ownerRole === snapshot.ownerRole &&
+    current.startRequested === snapshot.startRequested &&
     current.intakeThreadId === snapshot.intakeThreadId &&
     current.leadThreadId === snapshot.leadThreadId
   );
@@ -275,10 +285,37 @@ export function createPipelineService(
       },
     );
 
+  const linkLaunchThread = (
+    cardId: string,
+    role: PipelineRole,
+    threadId: string,
+  ): Card => {
+    const field = role === "intake" ? "intakeThreadId" : "leadThreadId";
+    return update(
+      cardId,
+      {
+        [field]: threadId,
+        needsUser: false,
+        attentionReason: null,
+        attentionSource: null,
+        attentionUnknown: false,
+        threadError: null,
+        launchError: null,
+        reportSignal: null,
+      },
+      {
+        kind: "launched",
+        source: "system",
+        threadId,
+        note: role,
+      },
+    );
+  };
+
   const doLaunch = async (cardId: string, role: PipelineRole): Promise<Card> => {
     let card = required(cardId);
     const field = role === "intake" ? "intakeThreadId" : "leadThreadId";
-    if (card.runState !== "running") return card;
+    if (!card.startRequested || card.runState !== "running") return card;
     if (card[field] !== null) return card;
 
     let request;
@@ -286,38 +323,19 @@ export function createPipelineService(
       request = await buildLaunchRequest(card, role);
     } catch (cause) {
       const current = required(cardId);
-      return current.runState === "running" && sameLaunchContext(current, card)
+      return current.startRequested && current.runState === "running" && sameLaunchContext(current, card)
         ? recordLaunchFailure(current, role, cause)
         : current;
     }
 
     const current = required(cardId);
-    if (current.runState !== "running" || !sameLaunchContext(current, card)) {
+    if (!current.startRequested || current.runState !== "running" || !sameLaunchContext(current, card)) {
       return current;
     }
 
     try {
       const thread = await sdk.threads.spawn(request);
-      card = update(
-        card.id,
-        {
-          [field]: thread.id,
-          needsUser: false,
-          attentionReason: null,
-          attentionSource: null,
-          attentionUnknown: false,
-          threadError: null,
-          launchError: null,
-          reportSignal: null,
-        },
-        {
-          kind: "launched",
-          source: "system",
-          threadId: thread.id,
-          note: role,
-        },
-      );
-      return card;
+      return linkLaunchThread(card.id, role, thread.id);
     } catch (cause) {
       return recordLaunchFailure(card, role, cause);
     }
@@ -340,7 +358,9 @@ export function createPipelineService(
   };
 
   const launch = async (cardId: string, role: PipelineRole): Promise<Card> => {
-    requireRunning(required(cardId), "launching it");
+    const card = required(cardId);
+    requireStarted(card, "launching it");
+    requireRunning(card, "launching it");
     return serializeLaunch(cardId, () => doLaunch(cardId, role));
   };
 
@@ -350,6 +370,7 @@ export function createPipelineService(
     source: "ui" | "cli",
   ): Promise<Card> => {
     const before = required(cardId);
+    requireStarted(before, "moving it");
     requireRunning(before, "moving it");
     if (column === "planning" && normalizeIssueUrl(before.issueUrl) === null) {
       throw new Error(MISSING_ISSUE_ERROR);
@@ -723,6 +744,106 @@ export function createPipelineService(
     await reconcile(card, role, { kind: "thread", thread, ...details });
   };
 
+  const isStartRecoveryError = (error: string | null): boolean =>
+    error === INTERRUPTED_START_ERROR ||
+    error?.startsWith(START_RECOVERY_ERROR_PREFIX) === true;
+
+  const canRecoverStart = (current: Card, snapshot: Card): boolean =>
+    current.startRequested &&
+    current.runState === "running" &&
+    current.column !== "done" &&
+    current.intakeThreadId === null &&
+    current.leadThreadId === null &&
+    current.launchError === snapshot.launchError;
+
+  const recoverInterruptedStart = async (
+    snapshot: Card,
+    markMissing: boolean,
+  ): Promise<{ card: Card; missing: boolean }> => {
+    let thread: PipelineThread | null;
+    try {
+      thread = await findPipelineThreadByMetadata(sdk, {
+        projectId: snapshot.projectId,
+        cardId: snapshot.id,
+        role: "intake",
+      });
+    } catch (cause) {
+      const current = required(snapshot.id);
+      if (!canRecoverStart(current, snapshot)) {
+        return { card: current, missing: false };
+      }
+      return {
+        card: recordLaunchFailure(
+          current,
+          "intake",
+          new Error(
+            `could not check for an existing intake thread: ${errorMessage(cause)}`,
+          ),
+        ),
+        missing: false,
+      };
+    }
+
+    let current = required(snapshot.id);
+    if (!canRecoverStart(current, snapshot)) {
+      return { card: current, missing: false };
+    }
+    if (thread === null) {
+      return {
+        card: markMissing
+          ? recordLaunchFailure(
+              current,
+              "intake",
+              new Error("start interrupted before its thread was linked"),
+            )
+          : current,
+        missing: true,
+      };
+    }
+    const linked = linkLaunchThread(current.id, "intake", thread.id);
+    if (linked.intakeThreadId === thread.id) {
+      await reconcile(linked, "intake", {
+        kind: "thread",
+        thread,
+        startup: true,
+      });
+    }
+    return { card: required(snapshot.id), missing: false };
+  };
+
+  const start = async (
+    cardId: string,
+    source: "ui" | "cli",
+  ): Promise<Card> => serializeLaunch(cardId, async () => {
+    let card = required(cardId);
+    if (card.startRequested) {
+      const incomplete = store.getIncompleteStart(card.id);
+      return incomplete === null
+        ? card
+        : (await recoverInterruptedStart(incomplete, true)).card;
+    }
+    if (card.column === "done") throw new Error("Completed tasks cannot be started");
+    requireRunning(card, "starting it");
+    card = update(
+      card.id,
+      {
+        startRequested: true,
+        needsUser: false,
+        attentionReason: null,
+        attentionSource: null,
+        attentionUnknown: false,
+        reportSignal: null,
+        threadError: null,
+        launchError: null,
+      },
+      {
+        kind: "start_requested",
+        source,
+      },
+    );
+    return doLaunch(card.id, "intake");
+  });
+
   const service: PipelineService = {
     async getExecutionDefaults() {
       return executionDefaults(await dependencies.getSettings());
@@ -754,20 +875,23 @@ export function createPipelineService(
           hostId: machine.id,
           intake: selected.intake,
           lead: selected.lead,
+          startRequested: input.start !== false,
           title,
           body: input.body ?? "",
           attachments: input.attachments ?? [],
           source: input.source,
         }),
       );
-      const [launched] = await Promise.all([
-        launch(card.id, "intake"),
-        dependencies.rememberExecution?.(selected).catch((cause) => {
-          dependencies.log(
-            `could not remember execution for card ${card.id}: ${errorMessage(cause)}`,
-          );
-        }),
-      ]);
+      const remember = dependencies.rememberExecution?.(selected).catch((cause) => {
+        dependencies.log(
+          `could not remember execution for card ${card.id}: ${errorMessage(cause)}`,
+        );
+      });
+      if (!card.startRequested) {
+        await remember;
+        return card;
+      }
+      const [launched] = await Promise.all([launch(card.id, "intake"), remember]);
       return launched;
     },
     async setMachine(cardId, hostId) {
@@ -784,23 +908,36 @@ export function createPipelineService(
       if (card.hostId === machine.id) return card;
       return changed(store.setHost(card.id, machine.id));
     },
+    start,
     launch,
     async retry(cardId) {
       const requested = required(cardId);
+      requireStarted(requested, "retrying it");
       requireRunning(requested, "retrying it");
       if (requested.launchError === null) {
         throw new Error("nothing to retry");
       }
       return serializeLaunch(cardId, async () => {
         let card = required(cardId);
-        if (card.runState !== "running") return card;
+        if (!card.startRequested || card.runState !== "running") return card;
         if (card.launchError === null) return card;
         const role = card.ownerRole;
         const threadId = roleThread(card, role);
-        if (threadId === null) return doLaunch(cardId, role);
+        if (threadId === null) {
+          if (
+            role === "intake" &&
+            card.leadThreadId === null &&
+            isStartRecoveryError(card.launchError)
+          ) {
+            const recovered = await recoverInterruptedStart(card, false);
+            if (!recovered.missing) return recovered.card;
+          }
+          return doLaunch(cardId, role);
+        }
         const recordRetryFailure = (cause: unknown): Card => {
           const current = required(cardId);
           return current.runState === "running" &&
+            current.startRequested &&
             current.ownerRole === role &&
             roleThread(current, role) === threadId &&
             current.launchError !== null
@@ -819,6 +956,7 @@ export function createPipelineService(
         card = required(cardId);
         if (
           card.revision !== launchRevision ||
+          !card.startRequested ||
           card.runState !== "running" ||
           card.ownerRole !== role ||
           roleThread(card, role) !== threadId ||
@@ -851,6 +989,7 @@ export function createPipelineService(
         const beforeSend = required(cardId);
         if (
           beforeSend.revision !== card.revision ||
+          !beforeSend.startRequested ||
           beforeSend.runState !== "running" ||
           beforeSend.ownerRole !== role ||
           roleThread(beforeSend, role) !== threadId ||
@@ -878,6 +1017,7 @@ export function createPipelineService(
         const current = required(cardId);
         if (
           current.revision !== card.revision ||
+          !current.startRequested ||
           current.runState !== "running" ||
           current.ownerRole !== role ||
           roleThread(current, role) !== threadId
@@ -921,11 +1061,12 @@ export function createPipelineService(
         );
       }
       if (
-        card.runState !== "running" &&
+        (!card.startRequested || card.runState !== "running") &&
         input.column !== undefined &&
         (input.column !== card.column ||
           (input.column === "planning" && card.ownerRole !== "lead"))
       ) {
+        requireStarted(card, "changing its phase or owner");
         requireRunning(card, "changing its phase or owner");
       }
       const issueUrl =
@@ -989,6 +1130,7 @@ export function createPipelineService(
         store.recordHistory(card.id, attentionHistory);
       }
       if (
+        next.startRequested &&
         next.runState === "running" &&
         input.column === "planning" &&
         next.leadThreadId === null
@@ -1026,6 +1168,20 @@ export function createPipelineService(
         : Promise.resolve();
     },
     async startupPass() {
+      for (const snapshot of store.listIncompleteStarts()) {
+        try {
+          await serializeLaunch(snapshot.id, async () => {
+            const current = store.getIncompleteStart(snapshot.id);
+            return current === null
+              ? required(snapshot.id)
+              : (await recoverInterruptedStart(current, true)).card;
+          });
+        } catch (cause) {
+          dependencies.log(
+            `startup pass failed to recover card ${snapshot.id}: ${errorMessage(cause)}`,
+          );
+        }
+      }
       for (const card of store.listActiveWithOwner()) {
         const threadId = ownerThread(card)!;
         let thread;

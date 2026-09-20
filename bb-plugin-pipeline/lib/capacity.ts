@@ -81,6 +81,7 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
 
   function reasons(row: QueuedTask, card: Card | null, host: Host | undefined): string[] {
     const result = new Set<string>();
+    if (card !== null && !card.startRequested) result.add("Not started");
     if (card !== null && card.runState !== "running") {
       result.add({ pause_requested: "Pause requested", pausing: "Pausing", paused: "Paused", stopping: "Stopping" }[card.runState]);
     }
@@ -131,7 +132,7 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
       const existing = value.waiting.find((item) => item.cardId === row.cardId);
       if (existing !== undefined) existing.reasons = [...new Set([...existing.reasons, ...labels])];
       else value.waiting.push({ ...taskRef(row.cardId, row.thread), reasons: labels,
-        canRunNext: card !== null && card.runState === "running" && card.column !== "done" && card.hostId === row.hostId && !value.occupied.some((item) => item.cardId === row.cardId),
+        canRunNext: card !== null && card.startRequested && card.runState === "running" && card.column !== "done" && card.hostId === row.hostId && !value.occupied.some((item) => item.cardId === row.cardId),
       });
     }
     for (const value of machines.values()) {
@@ -155,7 +156,7 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
         const queue = await snapshot(card.projectId);
         if (selection.changed) throw new Error("The queue changed; choose Run next again");
         const current = store.get(cardId);
-        if (current === null || current.runState !== "running" || current.column === "done" ||
+        if (current === null || !current.startRequested || current.runState !== "running" || current.column === "done" ||
           !queue.some((machine) => machine.waiting.some((item) => item.cardId === cardId && item.canRunNext))) {
           throw new Error("Run next requires a queued task that is not running or paused");
         }
@@ -172,7 +173,7 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
     const nextId = store.getRunNext(projectId, hostId);
     if (nextId === null || nextId === currentCardId || occupied.has(nextId)) return false;
     const card = store.get(nextId);
-    if (card === null || card.runState !== "running" || card.column === "done") return false;
+    if (card === null || !card.startRequested || card.runState !== "running" || card.column === "done") return false;
     const rows = await queuedTasks(projectId, nextId);
     // A group can run only when every member can run; do not prioritize a ready tail of a held group.
     const groups = new Map<string, QueuedTask[][]>();
@@ -184,7 +185,7 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
       else list.push([row]);
     }
     const current = store.get(nextId);
-    if (store.getRunNext(projectId, hostId) !== nextId || current?.runState !== "running" || current.column === "done") return false;
+    if (store.getRunNext(projectId, hostId) !== nextId || !current?.startRequested || current.runState !== "running" || current.column === "done") return false;
     // Claimed rows disappear from the public queue. The bounded yield also covers that dispatch window.
     if (rows.length === 0) return true;
     return [...groups.values()].some((list) => list.some((group) => group.every((row) =>
@@ -230,6 +231,7 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
       const pauseGate = async (): Promise<MessageDispatchHookDecision | null> => {
         while (true) {
           const card = store.get(task.cardId);
+          if (card !== null && !card.startRequested) return { action: "wait", reason: "Pipeline: task has not been started" };
           if (card === null || card.runState === "running") return null;
           if (card.runState !== "pause_requested") return PAUSE_WAIT;
           if (context.thread.id === ownerThread(card) && context.input.text === pauseInstruction(card)) {

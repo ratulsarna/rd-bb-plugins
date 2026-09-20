@@ -2,7 +2,7 @@
 
 High-value improvements, in priority order:
 
-1. **Cancel a task and create tasks without starting them.** Cancel its intake, lead, workers, and queued messages together while preserving the work. Allow saving a task without immediately starting intake.
+1. **Cancel a task.** Cancel its intake, lead, workers, and queued messages together while preserving the work.
 
 2. **GitHub status synchronization.** Show actual CI failures, review status, and merge status on the card. Move a task to Done when its PR merges, keeping the board consistent with GitHub.
 
