@@ -16,7 +16,7 @@ export function createAttentionNotifier(bb: BbPluginApi) {
   bb.onDispose(async () => { await Promise.allSettled([...pending]); });
 
   return (card: Card, reason: string): void => {
-    if (card.column === "done") return;
+    if (card.column === "done" || card.runState !== "running") return;
     const delivery = bb.sdk.plugins.callRpc({
       pluginId: "notify",
       method: "send",

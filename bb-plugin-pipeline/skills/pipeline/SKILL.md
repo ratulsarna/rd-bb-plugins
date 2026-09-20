@@ -1,6 +1,6 @@
 ---
 name: pipeline
-description: "Work the pipeline board: add, list, show, and move cards. Specify a machine; optionally choose separate intake and lead models and reasoning. Upload attachments first."
+description: "Work the pipeline board: add, list, show, move, pause, and resume tasks. Specify a machine; optionally choose separate intake and lead models and reasoning. Upload attachments first."
 ---
 
 # Pipeline: Board
@@ -14,6 +14,9 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 - `bb pipeline list [--project <id>] [--all]` — the board's cards; `done` is hidden unless `--all`.
 - `bb pipeline show <card-id>` — the card, its history, and its threads.
 - `bb pipeline retry <card-id>` — retry a failed or cancelled kickoff. A cancelled kickoff uses its existing thread and waits for capacity.
+- `bb pipeline pause <card-id>` — ask the owner to pause gracefully and hold new work.
+- `bb pipeline resume <card-id>` — continue a Paused task through the normal capacity gate.
+- `bb pipeline stop <card-id>` — hard-stop the task and occupied descendants; use when graceful pause cannot finish.
 - `bb pipeline move <card-id> <column>` — move a card by hand. Moving to planning starts its lead thread if needed and waits for capacity; other moves update the board.
 
 The machine must be explicitly specified for every new card; never infer it from the current thread or choose the first available machine. Use `bb machine list` to find machine IDs and names, and ask the user when their target is unknown. The project must have a checkout on that machine. Intake, lead work, and retries use the card's stored machine.
@@ -39,6 +42,14 @@ When spawning workers for a card, use `--parent-self` so they belong to the task
 Two Pipeline tasks can run at once per project and machine. A card's intake, lead, and children share one slot until their running work, tracked background work, and active autonomous goals stop. Further starts, replies, and retries queue automatically when both slots are occupied. `bb pipeline list` and `show` expose whether work is queued. Send now cannot bypass this limit. Ordinary BB threads are outside it.
 
 `bb pipeline report --needs-you <reason>` marks the task as needing user input and sends an alert through Notify when attention begins. Use `--working` when that blocker clears. Repeated attention reports do not resend the alert. Notify must be installed and enabled; its foreground and sound preferences apply. Pipeline also alerts for intake waiting, confirmed lead attention, failures, and pending questions or approvals on the owning thread. Do not send an extra `bb notify` for the same blocker.
+
+## Graceful pause
+
+When you receive a Pipeline pause instruction, follow its request ID. Start no new task work. Bring running commands and existing workers to a safe stopping point, preserve files, and leave a concise handoff in the owning conversation. Use your provider's goal controls to pause any active autonomous goal. Existing task threads may coordinate shutdown while the card is Pause requested; new worker starts are held.
+
+Once safe, the current intake or lead must run `bb pipeline report --paused <request-id>` as its last action and end its turn. Workers cannot acknowledge for the owner. Do not report working or continue task work until the user resumes it. Pipeline checks the token and waits for all real task activity to end before showing Paused; acknowledgement alone does not free its capacity slot.
+
+A pending question or offline machine can delay the instruction. Keep the task Pause requested rather than claiming it stopped. Stop now is available to the user as a fallback. Queued messages survive pause and stop; Resume releases them through the capacity gate and continues from the handoff. Task controls preserve the card's stage. Resume before moving, removing, or retrying a held card. Pipeline attention notifications are suppressed while held and for Done cards.
 
 ## Attachments
 

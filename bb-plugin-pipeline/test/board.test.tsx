@@ -44,6 +44,11 @@ function renderBoard(options?: {
   addCard?: ReturnType<typeof vi.fn>;
   moveCard?: ReturnType<typeof vi.fn>;
   setMachine?: ReturnType<typeof vi.fn>;
+  retryLaunch?: ReturnType<typeof vi.fn>;
+  pauseCard?: ReturnType<typeof vi.fn>;
+  resumeCard?: ReturnType<typeof vi.fn>;
+  stopCard?: ReturnType<typeof vi.fn>;
+  removeCard?: ReturnType<typeof vi.fn>;
 }) {
   const listProjects =
     options?.listProjects ??
@@ -87,8 +92,11 @@ function renderBoard(options?: {
             const { cardId, column } = input as { cardId: string; column: string };
             return makeCard({ id: cardId, column: column as never });
           }),
-        retryLaunch: () => makeCard(),
-        removeCard: () => ({ removed: true }),
+        retryLaunch: options?.retryLaunch ?? (() => makeCard()),
+        pauseCard: options?.pauseCard ?? (() => makeCard({ runState: "pause_requested" })),
+        resumeCard: options?.resumeCard ?? (() => makeCard()),
+        stopCard: options?.stopCard ?? (() => makeCard({ runState: "stopping" })),
+        removeCard: options?.removeCard ?? (() => ({ removed: true })),
         showCard: () => ({ card: makeCard(), history: [] }),
       },
     },
@@ -144,6 +152,153 @@ describe("pipeline board", () => {
 
     expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "lead" });
     expect(screen.getByLabelText("Question open")).toBeTruthy();
+  });
+
+  it("sends exact pause, resume, and stop actions for their run states", async () => {
+    const pauseCard = vi.fn(() => makeCard({ runState: "pause_requested" }));
+    const resumeCard = vi.fn(() => makeCard({ runState: "running" }));
+    const stopCard = vi.fn(() => makeCard({ runState: "stopping" }));
+    renderBoard({
+      cards: [
+        makeCard({ id: "running", title: "Running card" }),
+        makeCard({ id: "paused", title: "Paused card", runState: "paused" }),
+        makeCard({ id: "pausing", title: "Pausing card", runState: "pausing" }),
+      ],
+      pauseCard,
+      resumeCard,
+      stopCard,
+    });
+
+    await screen.findByText("Running card");
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Running card" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(pauseCard).toHaveBeenCalledExactlyOnceWith({ cardId: "running" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Paused card" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(resumeCard).toHaveBeenCalledExactlyOnceWith({ cardId: "paused" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Pausing card" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop now" }));
+    await waitFor(() => expect(stopCard).toHaveBeenCalledExactlyOnceWith({ cardId: "pausing" }));
+  });
+
+  it("retries a failed pause through pauseCard and permits force-stop retries", async () => {
+    const pauseCard = vi.fn(() => makeCard({ runState: "pause_requested" }));
+    const stopCard = vi.fn(() => makeCard({ runState: "stopping" }));
+    renderBoard({
+      cards: [
+        makeCard({
+          id: "failed-pause",
+          title: "Failed pause",
+          runState: "pause_requested",
+          controlError: "Owner did not acknowledge pause",
+        }),
+        makeCard({ id: "stopping", title: "Stopping card", runState: "stopping" }),
+      ],
+      pauseCard,
+      stopCard,
+    });
+
+    await screen.findByText("Owner did not acknowledge pause");
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Failed pause" }));
+    expect(screen.getByRole("button", { name: "Stop now" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry pause" }));
+    await waitFor(() => expect(pauseCard).toHaveBeenCalledExactlyOnceWith({ cardId: "failed-pause" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Stopping card" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop now" }));
+    await waitFor(() => expect(stopCard).toHaveBeenCalledExactlyOnceWith({ cardId: "stopping" }));
+  });
+
+  it("shows run-state status and retains a live question that blocks pause delivery", async () => {
+    renderBoard({
+      pending: true,
+      queuedCardIds: ["requested", "pausing", "paused", "stopping"],
+      cards: [
+        makeCard({ id: "requested", title: "Requested", runState: "pause_requested", reportSignal: "working", needsUser: true, attentionReason: "stale question" }),
+        makeCard({ id: "pausing", title: "Pausing card", runState: "pausing", reportSignal: "working" }),
+        makeCard({ id: "paused", title: "Paused card", runState: "paused", reportSignal: "working" }),
+        makeCard({ id: "stopping", title: "Stopping card", runState: "stopping", reportSignal: "working" }),
+      ],
+    });
+
+    await screen.findByText("Pause requested");
+    expect(within(screen.getByRole("article", { name: "Pausing card" })).getByText("Pausing")).toBeTruthy();
+    expect(within(screen.getByRole("article", { name: "Paused card" })).getByText("Paused")).toBeTruthy();
+    expect(within(screen.getByRole("article", { name: "Stopping card" })).getByText("Stopping")).toBeTruthy();
+    expect(screen.queryByText("Queued")).toBeNull();
+    expect(screen.queryByText("Working")).toBeNull();
+    expect(screen.queryByText("stale question")).toBeNull();
+    expect(within(screen.getByRole("article", { name: "Requested" })).getByLabelText("Question open")).toBeTruthy();
+    expect(within(screen.getByRole("article", { name: "Paused card" })).queryByLabelText("Question open")).toBeNull();
+    expect(screen.getByText("1 need your attention")).toBeTruthy();
+  });
+
+  it("shows saving ahead of run state while a control action is pending", async () => {
+    let finishResume!: () => void;
+    const resumeCard = vi.fn(() => new Promise<ReturnType<typeof makeCard>>((resolve) => {
+      finishResume = () => resolve(makeCard({ runState: "running" }));
+    }));
+    renderBoard({
+      cards: [makeCard({ runState: "paused" })],
+      queuedCardIds: ["card_1"],
+      resumeCard,
+    });
+    await screen.findByText("Paused");
+    fireEvent.click(screen.getByRole("button", { name: "Actions for A pipeline card" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+
+    const card = screen.getByRole("article", { name: "A pipeline card" });
+    expect(within(card).getByText("Saving")).toBeTruthy();
+    expect(within(card).queryByText("Paused")).toBeNull();
+    expect(within(card).queryByText("Queued")).toBeNull();
+    expect((within(card).getByRole("button", { name: "Actions for A pipeline card" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(resumeCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
+
+    await act(async () => finishResume());
+    await waitFor(() => expect(within(card).getByText("Paused")).toBeTruthy());
+  });
+
+  it("blocks non-running mutations while preserving actions and owner-thread access", async () => {
+    const moveCard = vi.fn(() => makeCard());
+    const retryLaunch = vi.fn(() => makeCard());
+    const removeCard = vi.fn(() => ({ removed: true }));
+    const { slot } = renderBoard({
+      cards: [makeCard({ runState: "paused", launchError: "old launch failure" })],
+      moveCard,
+      retryLaunch,
+      removeCard,
+    });
+    const title = await screen.findByText("A pipeline card");
+    const card = screen.getByRole("article", { name: "A pipeline card" });
+    expect(card.draggable).toBe(false);
+    expect(within(card).queryByRole("button", { name: "Retry" })).toBeNull();
+
+    fireEvent.click(title.closest("button")!);
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "intake" });
+    fireEvent.click(screen.getByRole("button", { name: "Actions for A pipeline card" }));
+    expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+    expect((screen.getByRole("combobox", { name: "Move A pipeline card" }) as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Move A pipeline card" }), { target: { value: "todo" } });
+    fireEvent.click(screen.getByRole("button", { name: "Actions for A pipeline card" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(moveCard).not.toHaveBeenCalled();
+    expect(retryLaunch).not.toHaveBeenCalled();
+    expect(removeCard).not.toHaveBeenCalled();
+  });
+
+  it("does not offer lifecycle controls for done cards", async () => {
+    renderBoard({ cards: [makeCard({ title: "Finished", column: "done" })] });
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Show done" }));
+    await screen.findByText("Finished");
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Finished" }));
+
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop now" })).toBeNull();
   });
 
   it("refetches when realtime reconnects", async () => {

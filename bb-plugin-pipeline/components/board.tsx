@@ -138,7 +138,12 @@ export function PipelineBoard() {
     [sidebar.threads],
   );
   const visibleColumns = includeDone ? COLUMNS : COLUMNS.filter((column) => column !== "done");
-  const draggedCard = cards.find((card) => card.id === draggedCardId && card.projectId === projectId);
+  const draggedCard = cards.find(
+    (card) =>
+      card.id === draggedCardId &&
+      card.projectId === projectId &&
+      card.runState === "running",
+  );
 
   function clearDrag() {
     setDraggedCardId(null);
@@ -166,7 +171,7 @@ export function PipelineBoard() {
   }
 
   function move(card: Card, column: Column) {
-    if (card.column === column) return;
+    if (card.runState !== "running" || card.column === column) return;
     void updateCard(card, () => rpc.call("moveCard", { cardId: card.id, column }));
   }
 
@@ -187,6 +192,8 @@ export function PipelineBoard() {
 
   const needsAttention = cards.filter((card) => {
     const owner = ownerThread(card);
+    if (card.runState === "pause_requested") return owner !== null && pendingThreads.has(owner);
+    if (card.runState !== "running") return false;
     return card.needsUser || card.launchError !== null || card.threadError !== null || (owner !== null && pendingThreads.has(owner));
   }).length;
   const projectName = projects.find((project) => project.id === projectId)?.name ?? "";
@@ -296,7 +303,7 @@ export function PipelineBoard() {
                         pending={pendingCards.has(card.id)}
                         queued={queuedCardIds.has(card.id)}
                         onDragStart={(event) => {
-                          if (pendingCards.has(card.id)) {
+                          if (card.runState !== "running" || pendingCards.has(card.id)) {
                             event.preventDefault();
                             return;
                           }
@@ -308,8 +315,19 @@ export function PipelineBoard() {
                         questionOpen={owner !== null && pendingThreads.has(owner)}
                         onOpen={(threadId) => navigate.toThread(threadId)}
                         onMove={(next) => void move(card, next)}
-                        onRetry={() => void updateCard(card, () => rpc.call("retryLaunch", { cardId: card.id }))}
-                        onRemove={() => void updateCard(card, () => rpc.call("removeCard", { cardId: card.id }))}
+                        onPause={() => void updateCard(card, () => rpc.call("pauseCard", { cardId: card.id }))}
+                        onResume={() => void updateCard(card, () => rpc.call("resumeCard", { cardId: card.id }))}
+                        onStop={() => void updateCard(card, () => rpc.call("stopCard", { cardId: card.id }))}
+                        onRetry={() => {
+                          if (card.runState === "running") {
+                            void updateCard(card, () => rpc.call("retryLaunch", { cardId: card.id }));
+                          }
+                        }}
+                        onRemove={() => {
+                          if (card.runState === "running") {
+                            void updateCard(card, () => rpc.call("removeCard", { cardId: card.id }));
+                          }
+                        }}
                       />
                     );
                   })}

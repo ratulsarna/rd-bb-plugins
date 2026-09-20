@@ -16,6 +16,29 @@ const lead = {
 };
 
 describe("card migrations", () => {
+  it("migrates running cards and persists an acknowledged pause without losing task data", () => {
+    const db = new Database(":memory:");
+    try {
+      for (const migration of MIGRATIONS.slice(0, 4)) db.exec(migration);
+      db.prepare(`INSERT INTO cards (id, project_id, title, "column", lead_thread_id, owner_role, created_at, updated_at)
+        VALUES ('card_1', 'proj_1', 'Existing work', 'implementing', 'lead', 'lead', 1, 2)`).run();
+      const before = createCardStore(db).get("card_1")!;
+      db.exec(MIGRATIONS[4]);
+      const store = createCardStore(db);
+      expect(store.get("card_1")).toEqual({ ...before, runState: "running", pauseRequestId: null, controlError: null });
+      store.update("card_1", { runState: "pausing", pauseRequestId: "request", controlError: "machine offline" });
+      const reloaded = createCardStore(db);
+      expect(reloaded.listControlled()).toEqual([expect.objectContaining({
+        id: "card_1", column: "implementing", leadThreadId: "lead", runState: "pausing",
+        pauseRequestId: "request", controlError: "machine offline",
+      })]);
+      reloaded.update("card_1", { runState: "running", pauseRequestId: null, controlError: null });
+      expect(reloaded.listControlled()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("backfills lead ownership after an earlier planning move", () => {
     const db = new Database(":memory:");
     try {

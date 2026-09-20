@@ -30,6 +30,7 @@ import type {
 } from "./store";
 import { ownerThread, roleThread } from "./card";
 import { userAttentionReason } from "./notifications";
+import { isThreadNotFound } from "./task-threads";
 
 export interface PipelineSettings extends ExecutionSettings {
   permissionMode: string;
@@ -125,12 +126,6 @@ function sameAttention(
   );
 }
 
-function isThreadNotFound(cause: unknown): boolean {
-  if (cause === null || typeof cause !== "object") return false;
-  const error = cause as { code?: unknown; status?: unknown };
-  return error.status === 404 || error.code === "thread_not_found";
-}
-
 function parseThreshold(value: string): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0.5 && parsed <= 1 ? parsed : 0.7;
@@ -173,6 +168,21 @@ function cancelledStartReason(role: PipelineRole): string {
 
 function cancelledStartError(role: PipelineRole): string {
   return `${role}: start cancelled`;
+}
+
+function requireRunning(card: Card, action: string): void {
+  if (card.runState === "running") return;
+  throw new Error(
+    `card ${card.id} is ${card.runState.replaceAll("_", " ")}; resume it before ${action}`,
+  );
+}
+
+function sameLaunchContext(current: Card, snapshot: Card): boolean {
+  return (
+    current.ownerRole === snapshot.ownerRole &&
+    current.intakeThreadId === snapshot.intakeThreadId &&
+    current.leadThreadId === snapshot.leadThreadId
+  );
 }
 
 export function createPipelineService(
@@ -268,10 +278,26 @@ export function createPipelineService(
   const doLaunch = async (cardId: string, role: PipelineRole): Promise<Card> => {
     let card = required(cardId);
     const field = role === "intake" ? "intakeThreadId" : "leadThreadId";
+    if (card.runState !== "running") return card;
     if (card[field] !== null) return card;
 
+    let request;
     try {
-      const thread = await sdk.threads.spawn(await buildLaunchRequest(card, role));
+      request = await buildLaunchRequest(card, role);
+    } catch (cause) {
+      const current = required(cardId);
+      return current.runState === "running" && sameLaunchContext(current, card)
+        ? recordLaunchFailure(current, role, cause)
+        : current;
+    }
+
+    const current = required(cardId);
+    if (current.runState !== "running" || !sameLaunchContext(current, card)) {
+      return current;
+    }
+
+    try {
+      const thread = await sdk.threads.spawn(request);
       card = update(
         card.id,
         {
@@ -313,8 +339,10 @@ export function createPipelineService(
     }
   };
 
-  const launch = (cardId: string, role: PipelineRole): Promise<Card> =>
-    serializeLaunch(cardId, () => doLaunch(cardId, role));
+  const launch = async (cardId: string, role: PipelineRole): Promise<Card> => {
+    requireRunning(required(cardId), "launching it");
+    return serializeLaunch(cardId, () => doLaunch(cardId, role));
+  };
 
   const move = async (
     cardId: string,
@@ -322,6 +350,7 @@ export function createPipelineService(
     source: "ui" | "cli",
   ): Promise<Card> => {
     const before = required(cardId);
+    requireRunning(before, "moving it");
     if (column === "planning" && normalizeIssueUrl(before.issueUrl) === null) {
       throw new Error(MISSING_ISSUE_ERROR);
     }
@@ -376,6 +405,25 @@ export function createPipelineService(
     ) {
       return;
     }
+    const thread = observation.kind === "thread" ? observation.thread : null;
+    if (initial.runState !== "running") {
+      if (
+        initial.ownerRole === role &&
+        (thread === null || thread.deletedAt !== null)
+      ) {
+        update(
+          initial.id,
+          { [role === "lead" ? "leadThreadId" : "intakeThreadId"]: null },
+          {
+            kind: "thread_gone",
+            source: "system",
+            threadId,
+            note: "deleted",
+          },
+        );
+      }
+      return;
+    }
     if (initial.ownerRole !== role) {
       if (observation.kind === "thread") {
         const state =
@@ -394,7 +442,6 @@ export function createPipelineService(
       return;
     }
 
-    const thread = observation.kind === "thread" ? observation.thread : null;
     if (thread === null || thread.deletedAt !== null) {
       update(
         initial.id,
@@ -740,18 +787,21 @@ export function createPipelineService(
     launch,
     async retry(cardId) {
       const requested = required(cardId);
+      requireRunning(requested, "retrying it");
       if (requested.launchError === null) {
         throw new Error("nothing to retry");
       }
       return serializeLaunch(cardId, async () => {
         let card = required(cardId);
+        if (card.runState !== "running") return card;
         if (card.launchError === null) return card;
         const role = card.ownerRole;
         const threadId = roleThread(card, role);
         if (threadId === null) return doLaunch(cardId, role);
         const recordRetryFailure = (cause: unknown): Card => {
           const current = required(cardId);
-          return current.ownerRole === role &&
+          return current.runState === "running" &&
+            current.ownerRole === role &&
             roleThread(current, role) === threadId &&
             current.launchError !== null
             ? recordLaunchFailure(current, role, cause)
@@ -769,6 +819,7 @@ export function createPipelineService(
         card = required(cardId);
         if (
           card.revision !== launchRevision ||
+          card.runState !== "running" ||
           card.ownerRole !== role ||
           roleThread(card, role) !== threadId ||
           card.launchError === null
@@ -800,6 +851,7 @@ export function createPipelineService(
         const beforeSend = required(cardId);
         if (
           beforeSend.revision !== card.revision ||
+          beforeSend.runState !== "running" ||
           beforeSend.ownerRole !== role ||
           roleThread(beforeSend, role) !== threadId ||
           beforeSend.launchError === null
@@ -826,6 +878,7 @@ export function createPipelineService(
         const current = required(cardId);
         if (
           current.revision !== card.revision ||
+          current.runState !== "running" ||
           current.ownerRole !== role ||
           roleThread(current, role) !== threadId
         ) {
@@ -866,6 +919,14 @@ export function createPipelineService(
         throw new Error(
           `card ${card.id} is now led by ${ownerThread(card) ?? "no thread"}`,
         );
+      }
+      if (
+        card.runState !== "running" &&
+        input.column !== undefined &&
+        (input.column !== card.column ||
+          (input.column === "planning" && card.ownerRole !== "lead"))
+      ) {
+        requireRunning(card, "changing its phase or owner");
       }
       const issueUrl =
         input.issueUrl === undefined
@@ -927,7 +988,11 @@ export function createPipelineService(
       if (moved && attentionHistory !== undefined) {
         store.recordHistory(card.id, attentionHistory);
       }
-      if (input.column === "planning" && next.leadThreadId === null) {
+      if (
+        next.runState === "running" &&
+        input.column === "planning" &&
+        next.leadThreadId === null
+      ) {
         next = await launch(next.id, "lead");
       }
       return next;
@@ -935,6 +1000,7 @@ export function createPipelineService(
     move,
     remove(cardId) {
       const card = required(cardId);
+      requireRunning(card, "removing it");
       const removed = store.remove(cardId);
       if (removed) dependencies.publish(card.projectId);
       return removed;
@@ -986,6 +1052,7 @@ export function createPipelineService(
         try {
           let lastText: string | null | undefined;
           if (
+            baseline.runState === "running" &&
             thread.status === "idle" &&
             thread.deletedAt === null &&
             thread.archivedAt === null

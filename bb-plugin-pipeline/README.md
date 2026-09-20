@@ -24,9 +24,19 @@ Cancelling a queued kickoff leaves the task waiting for you. **Retry** sends its
 
 Retrying after a thread is deleted starts that role over. A retried lead gets a new managed worktree and the full kickoff prompt.
 
+## Pause and resume
+
+Choose **Pause** from a task's actions menu, or run `bb pipeline pause <card-id>`. Pipeline holds new task work and steers a pause instruction to the current intake or lead. The owner brings its workers and commands to a safe stopping point, saves a handoff, pauses any autonomous goal, and acknowledges the request. The card keeps its stage and files.
+
+The card shows **Pause requested** until the owner acknowledges, then **Pausing** until its threads, tracked background work, and active goals have stopped. Only then does it show **Paused**. A task whose kickoff has not started can pause immediately. An offline machine or a pending question can delay delivery; **Retry pause** retries a failed or cancelled instruction.
+
+**Resume** continues the owning thread from its handoff and releases preserved queued messages, subject to the two-task limit. An unstarted task resumes its kickoff; a deleted owner is relaunched. Archived owners must be restored in BB first. Moving, removing, or retrying a held card requires resuming it.
+
+**Stop now** (`bb pipeline stop <card-id>`) is the immediate fallback. It requests a stop for the task's intake, lead, and occupied descendants, and waits for confirmed shutdown before showing Paused. It preserves queued messages and files. An unavailable machine can leave the card **Stopping**; retry Stop now when it reconnects. BB can stop provider sessions and their tracked work, but cannot guarantee shutdown of arbitrary detached processes.
+
 ## Notifications
 
-With Notify installed and enabled, Pipeline sends an alert when a task starts needing your attention: an explicit `--needs-you` report, intake waiting for you, confirmed lead attention, or a launch/thread failure. Repeated updates and reloads do not repeat an existing attention alert. Clearing attention and needing you again sends another alert. Pending questions and approvals on the owning thread also notify. Tasks in Done do not send Pipeline alerts.
+With Notify installed and enabled, Pipeline sends an alert when a task starts needing your attention: an explicit `--needs-you` report, intake waiting for you, confirmed lead attention, or a launch/thread failure. Repeated updates and reloads do not repeat an existing attention alert. Clearing attention and needing you again sends another alert. Pending questions and approvals on the owning thread also notify. Pipeline alerts are suppressed from the moment you request a pause or stop, and for Done tasks.
 
 Alerts include the task title and reason and open its owning thread when one exists. They use Notify's desktop and phone delivery, sound preference, and foreground suppression. They do not require enabling each thread's bell. Unknown idle status and capacity waits stay quiet. A missing or failing Notify plugin is logged without blocking task work; failed requests are not replayed.
 
@@ -40,6 +50,10 @@ bb pipeline show <card-id>
 bb pipeline move <card-id> <column>
 bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>]
 bb pipeline retry <card-id>
+bb pipeline pause <card-id>
+bb pipeline resume <card-id>
+bb pipeline stop <card-id>
+bb pipeline report --paused <request-id>
 bb pipeline remove <card-id>
 ```
 

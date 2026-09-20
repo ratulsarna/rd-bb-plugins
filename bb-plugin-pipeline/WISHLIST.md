@@ -2,7 +2,7 @@
 
 High-value improvements, in priority order:
 
-1. **Pause, resume, and cancel an entire task.** Control its intake, lead, workers, and queued messages together while preserving the work. Keep capacity occupied until running work actually stops. Allow saving a task without immediately starting intake.
+1. **Cancel a task and create tasks without starting them.** Cancel its intake, lead, workers, and queued messages together while preserving the work. Allow saving a task without immediately starting intake.
 
 2. **Queue visibility and “Run next.”** Show which tasks occupy the two slots for a project and machine, and why another task is waiting. Let the user choose the next task when capacity opens, so an urgent fix can move ahead of ordinary work.
 

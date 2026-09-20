@@ -116,6 +116,70 @@ function seedLegacyCard(db: Database, id = "card_legacy"): void {
 }
 
 describe("plugin wiring", () => {
+  it("coordinates RPC pause, owner acknowledgement, real activity release and CLI resume", async () => {
+    const { host, db } = await setup();
+    seedLegacyCard(db);
+    db.prepare("UPDATE cards SET intake_thread_id = 'intake' WHERE id = 'card_legacy'").run();
+    let occupied = true;
+    const thread = makeThreadResponse({ id: "intake", projectId: "proj_1", status: "active" });
+    host.harness.inspection.sdk.stub("threads.get", async () => thread);
+    host.harness.inspection.sdk.stub("threads.listRunning", async () => occupied ? [{ id: "intake", hostId: "host_wt5difpwsy" }] : []);
+    host.harness.inspection.sdk.stub("threads.send", async () => ({ ok: true, delivery: "sent" }));
+    const paused = await host.harness.behavior.callRpc("pauseCard", { cardId: "card_legacy" }) as Card;
+    expect(paused).toMatchObject({ runState: "pause_requested", controlError: null });
+    expect(host.harness.inspection.sdk.callsTo("threads.stop")).toHaveLength(0);
+    const send = host.harness.inspection.sdk.callsTo("threads.send")[0]![0] as Parameters<typeof host.bb.sdk.threads.send>[0];
+    expect(send).toMatchObject({ threadId: "intake", mode: "steer" });
+    await host.harness.behavior.emitThreadEvent("message.cancelled", { entry: makeQueueEntry({
+      threadId: "intake", content: send.input,
+    }) });
+    expect((await host.harness.behavior.callRpc("showCard", { cardId: "card_legacy" }) as { card: Card }).card.controlError).toContain("cancelled");
+    expect((await host.harness.behavior.runCli(["pause", "card_legacy"])).exitCode).toBe(0);
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(2);
+    expect((await host.harness.behavior.runCli(["report", "--card", "card_legacy", "--needs-you", "Safe to pause"])).exitCode).toBe(0);
+    expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(0);
+    expect((await host.harness.behavior.runCli(["move", "card_legacy", "todo"])).exitCode).toBe(1);
+    const ack = ["report", "--card", "card_legacy", "--paused", paused.pauseRequestId!, "--json"];
+    expect((await host.harness.behavior.runCli(ack, { threadId: "worker" })).exitCode).toBe(1);
+    const acknowledged = await host.harness.behavior.runCli(ack, { threadId: "intake" });
+    expect(acknowledged.exitCode).toBe(0);
+    expect(JSON.parse(acknowledged.stdout).runState).toBe("pausing");
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: { ...thread, status: "idle" }, lastAssistantText: null });
+    expect((await host.harness.behavior.callRpc("showCard", { cardId: "card_legacy" }) as { card: Card }).card.runState).toBe("pausing");
+    occupied = false;
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: { ...thread, status: "idle" }, lastAssistantText: null });
+    expect((await host.harness.behavior.callRpc("showCard", { cardId: "card_legacy" }) as { card: Card }).card.runState).toBe("paused");
+    const resumed = await host.harness.behavior.runCli(["resume", "card_legacy", "--json"]);
+    expect(resumed.exitCode).toBe(0);
+    expect(JSON.parse(resumed.stdout)).toMatchObject({ runState: "running", pauseRequestId: null });
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(3);
+    expect((await host.harness.behavior.runCli(ack, { threadId: "intake" })).exitCode).toBe(1);
+  });
+
+  it("resumes a cancelled pending kickoff in place, and replaces an owner deleted before reconciliation", async () => {
+    const { host } = await setup();
+    const card = await host.harness.behavior.callRpc("addCard", {
+      projectId: "proj_1", hostId: "host_wt5difpwsy", title: "Recover me", body: "Keep this context",
+      attachments: [{ path: "uploads/example.png", filename: "example.png", isImage: true }],
+    }) as Card;
+    host.harness.inspection.sdk.stub("threads.listRunning", async () => []);
+    host.harness.inspection.sdk.stub("threads.get", async () => makeThreadResponse({ id: "intake", status: "pending", queuedMessageCount: 0 }));
+    host.harness.inspection.sdk.stub("threads.send", async () => ({ ok: true, delivery: "sent" }));
+    expect((await host.harness.behavior.callRpc("pauseCard", { cardId: card.id }) as Card).runState).toBe("paused");
+    const resumed = await host.harness.behavior.callRpc("resumeCard", { cardId: card.id }) as Card;
+    expect(resumed).toMatchObject({ runState: "running", intakeThreadId: "intake", launchError: null });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+    expect(host.harness.inspection.sdk.callsTo("threads.send")[0]![0]).toMatchObject({
+      threadId: "intake", input: (host.harness.inspection.sdk.callsTo("threads.spawn")[0]![0] as Parameters<typeof host.bb.sdk.threads.spawn>[0]).input,
+    });
+    await host.harness.behavior.callRpc("pauseCard", { cardId: card.id });
+    host.harness.inspection.sdk.stub("threads.get", async () => { throw Object.assign(new Error("gone"), { status: 404 }); });
+    host.harness.inspection.sdk.stub("threads.spawn", async () => makeThreadResponse({ id: "replacement" }));
+    const recovered = await host.harness.behavior.callRpc("resumeCard", { cardId: card.id }) as Card;
+    expect(recovered).toMatchObject({ runState: "running", intakeThreadId: "replacement", controlError: null });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(2);
+  });
+
   it("sends attention through Notify without making delivery a task dependency", async () => {
     const { host, db } = await setup();
     let finish!: () => void;

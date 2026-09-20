@@ -2,6 +2,7 @@ import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { COLUMNS } from "./columns";
 import { executionSelectionSchema } from "./execution";
+import { RUN_STATES } from "./store";
 
 export const columnSchema = z.enum(COLUMNS);
 export const tierSchema = z.enum(["trivial", "small", "standard"]);
@@ -38,6 +39,9 @@ export const cardSchema = z
     intakeThreadId: z.string().nullable(),
     leadThreadId: z.string().nullable(),
     ownerRole: z.enum(["intake", "lead"]),
+    runState: z.enum(RUN_STATES),
+    pauseRequestId: z.string().nullable(),
+    controlError: z.string().nullable(),
     threadError: z.string().nullable(),
     launchError: z.string().nullable(),
     revision: z.number().int(),
@@ -105,6 +109,18 @@ export const rpcContract = defineRpcContract({
     output: cardSchema,
   },
   retryLaunch: {
+    input: z.object({ cardId: z.string() }).strict(),
+    output: cardSchema,
+  },
+  pauseCard: {
+    input: z.object({ cardId: z.string() }).strict(),
+    output: cardSchema,
+  },
+  resumeCard: {
+    input: z.object({ cardId: z.string() }).strict(),
+    output: cardSchema,
+  },
+  stopCard: {
     input: z.object({ cardId: z.string() }).strict(),
     output: cardSchema,
   },

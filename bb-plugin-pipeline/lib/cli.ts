@@ -9,6 +9,7 @@ import { COLUMNS, isColumn } from "./columns";
 import { executionSelectionSchema, type ExecutionSelection } from "./execution";
 import type { PipelineService } from "./service";
 import type { PipelineCapacity } from "./capacity";
+import type { PipelineControls } from "./controls";
 import { ownerThread } from "./card";
 import type { Card, CardAttachment, CardStore } from "./store";
 
@@ -19,6 +20,10 @@ const USAGE = `Usage:
   bb pipeline move <card-id> <column> [--json]
   bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>] [--json]
   bb pipeline retry <card-id> [--json]
+  bb pipeline pause <card-id> [--json]
+  bb pipeline resume <card-id> [--json]
+  bb pipeline stop <card-id> [--json]
+  bb pipeline report --paused <request-id> [--card <id>] [--json]
   bb pipeline set-machine <card-id> --machine <id-or-name> [--json]
   bb pipeline remove <card-id> [--json]
 
@@ -47,6 +52,7 @@ const VALUE_OPTIONS = new Set([
   "issue",
   "pr",
   "tier",
+  "paused",
 ]);
 const BOOLEAN_OPTIONS = new Set(["json", "all", "working"]);
 const MACHINE_COMMANDS = new Set(["add", "set-machine"]);
@@ -141,6 +147,8 @@ function attachment(path: string): CardAttachment {
 
 function formatCard(card: Card, queued = false): string {
   const flags = [
+    card.runState === "running" ? null : card.runState.replaceAll("_", " "),
+    card.controlError,
     queued ? "queued" : null,
     card.tier,
     card.hostId === null ? "machine: unassigned" : `machine: ${card.hostId}`,
@@ -156,6 +164,7 @@ export function createPipelineCli(input: {
   store: CardStore;
   sdk: PluginBbSdk;
   capacity: PipelineCapacity;
+  controls: PipelineControls;
 }): PluginCliRegistration {
   return {
     name: "pipeline",
@@ -167,6 +176,9 @@ export function createPipelineCli(input: {
       { name: "move", summary: "Move a card", usage: "bb pipeline move <card-id> <column> [--json]" },
       { name: "report", summary: "Report phase or attention", usage: "bb pipeline report [options]" },
       { name: "retry", summary: "Retry a failed launch", usage: "bb pipeline retry <card-id> [--json]" },
+      { name: "pause", summary: "Ask the intake or lead to pause the task gracefully", usage: "bb pipeline pause <card-id> [--json]" },
+      { name: "resume", summary: "Resume a paused task", usage: "bb pipeline resume <card-id> [--json]" },
+      { name: "stop", summary: "Stop task execution now and hold queued work", usage: "bb pipeline stop <card-id> [--json]" },
       { name: "set-machine", summary: "Assign a machine to a card that has none", usage: "bb pipeline set-machine <card-id> --machine <id-or-name> [--json]" },
       { name: "remove", summary: "Remove a card", usage: "bb pipeline remove <card-id> [--json]" },
     ],
@@ -194,6 +206,7 @@ export function createPipelineCli(input: {
       if (args.command !== "add" && EXECUTION_OPTIONS.some((name) => args.options.has(name))) {
         return failure("intake and lead execution options are only accepted by add", USAGE);
       }
+      if (args.options.has("paused") && args.command !== "report") return failure("--paused is only accepted by report", USAGE);
 
       try {
         switch (args.command) {
@@ -271,6 +284,14 @@ export function createPipelineCli(input: {
           }
           case "report": {
             if (args.positionals.length > 0) return failure("report takes options only", USAGE);
+            const pauseRequest = option(args, "paused");
+            if (pauseRequest !== undefined) {
+              if ([...args.options.keys()].some((name) => !["paused", "card", "json"].includes(name))) {
+                return failure("--paused cannot be combined with other report changes", USAGE);
+              }
+              const card = await input.controls.acknowledge({ cardId: option(args, "card"), threadId: context.threadId, requestId: pauseRequest });
+              return success(args, card, formatCard(card));
+            }
             const column = option(args, "column");
             if (column !== undefined && !isColumn(column)) {
               return failure(`unknown column ${column}`, USAGE);
@@ -302,6 +323,13 @@ export function createPipelineCli(input: {
           case "retry": {
             if (args.positionals.length !== 1) return failure("retry requires one card id", USAGE);
             const card = await input.service.retry(args.positionals[0]!);
+            return success(args, card, formatCard(card));
+          }
+          case "pause":
+          case "resume":
+          case "stop": {
+            if (args.positionals.length !== 1) return failure(`${args.command} requires one card id`, USAGE);
+            const card = await input.controls[args.command](args.positionals[0]!);
             return success(args, card, formatCard(card));
           }
           case "set-machine": {

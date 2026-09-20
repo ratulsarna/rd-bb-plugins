@@ -6,6 +6,8 @@ import {
 } from "./execution";
 
 export type CardOwnerRole = "intake" | "lead";
+export const RUN_STATES = ["running", "pause_requested", "pausing", "paused", "stopping"] as const;
+export type CardRunState = typeof RUN_STATES[number];
 
 export interface CardAttachment {
   path: string;
@@ -37,6 +39,9 @@ export interface Card {
   intakeThreadId: string | null;
   leadThreadId: string | null;
   ownerRole: CardOwnerRole;
+  runState: CardRunState;
+  pauseRequestId: string | null;
+  controlError: string | null;
   threadError: string | null;
   launchError: string | null;
   revision: number;
@@ -80,6 +85,9 @@ export type CardPatch = Partial<
     | "intakeThreadId"
     | "leadThreadId"
     | "ownerRole"
+    | "runState"
+    | "pauseRequestId"
+    | "controlError"
     | "threadError"
     | "launchError"
   >
@@ -106,6 +114,9 @@ interface CardRow {
   intake_thread_id: string | null;
   lead_thread_id: string | null;
   owner_role: CardOwnerRole;
+  run_state: CardRunState;
+  pause_request_id: string | null;
+  control_error: string | null;
   thread_error: string | null;
   launch_error: string | null;
   revision: number;
@@ -155,6 +166,9 @@ export const MIGRATIONS = [
   `ALTER TABLE cards ADD COLUMN host_id TEXT;`,
   `ALTER TABLE cards ADD COLUMN intake_execution TEXT;
    ALTER TABLE cards ADD COLUMN lead_execution TEXT;`,
+  `ALTER TABLE cards ADD COLUMN run_state TEXT NOT NULL DEFAULT 'running' CHECK (run_state IN ('running', 'pause_requested', 'pausing', 'paused', 'stopping'));
+   ALTER TABLE cards ADD COLUMN pause_request_id TEXT;
+   ALTER TABLE cards ADD COLUMN control_error TEXT;`,
 ] as const;
 
 function parseAttachments(value: string): CardAttachment[] {
@@ -198,6 +212,9 @@ function cardFromRow(row: CardRow): Card {
     intakeThreadId: row.intake_thread_id,
     leadThreadId: row.lead_thread_id,
     ownerRole: row.owner_role,
+    runState: row.run_state ?? "running",
+    pauseRequestId: row.pause_request_id ?? null,
+    controlError: row.control_error ?? null,
     threadError: row.thread_error,
     launchError: row.launch_error,
     revision: row.revision,
@@ -238,6 +255,7 @@ export interface CardStore {
   getByThread(threadId: string): Card | null;
   list(projectId: string, includeDone?: boolean): Card[];
   listActiveWithOwner(): Card[];
+  listControlled(): Card[];
   update(id: string, patch: CardPatch, history?: HistoryInput): Card;
   recordHistory(id: string, history: HistoryInput): void;
   history(id: string): CardHistory[];
@@ -279,7 +297,7 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         `UPDATE cards SET
           "column" = ?, needs_user = ?, attention_reason = ?, attention_source = ?, attention_unknown = ?,
           report_signal = ?, tier = ?, issue_url = ?, pr_url = ?, intake_thread_id = ?, lead_thread_id = ?,
-          owner_role = ?, thread_error = ?, launch_error = ?, revision = revision + 1, updated_at = ?
+          owner_role = ?, run_state = ?, pause_request_id = ?, control_error = ?, thread_error = ?, launch_error = ?, revision = revision + 1, updated_at = ?
          WHERE id = ?`,
       ).run(
         next.column,
@@ -294,6 +312,9 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         next.intakeThreadId,
         next.leadThreadId,
         next.ownerRole,
+        next.runState,
+        next.pauseRequestId,
+        next.controlError,
         next.threadError,
         next.launchError,
         next.updatedAt,
@@ -371,6 +392,9 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
           )
           .all() as CardRow[]
       ).map(cardFromRow);
+    },
+    listControlled() {
+      return (db.prepare("SELECT * FROM cards WHERE run_state <> 'running' OR pause_request_id IS NOT NULL").all() as CardRow[]).map(cardFromRow);
     },
     update(id, patch, history) {
       return write(id, patch, history);

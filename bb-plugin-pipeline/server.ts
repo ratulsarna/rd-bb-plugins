@@ -1,6 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createPipelineCli } from "./lib/cli";
 import { createPipelineCapacity } from "./lib/capacity";
+import { createPipelineControls } from "./lib/controls";
 import { ownerThread } from "./lib/card";
 import { rpcContract } from "./lib/contract";
 import { REASONING_LEVELS } from "./lib/execution";
@@ -101,6 +102,7 @@ export default async function plugin(bb: BbPluginApi) {
     publish: (projectId) => bb.realtime.publish(CARDS_CHANGED, { projectId }),
     onAttention: notifyAttention,
   });
+  const controls = createPipelineControls(bb, store, service);
 
   bb.rpc.register(rpcContract, {
     executionDefaults() {
@@ -131,6 +133,9 @@ export default async function plugin(bb: BbPluginApi) {
     retryLaunch({ cardId }) {
       return service.retry(cardId);
     },
+    pauseCard: ({ cardId }) => controls.pause(cardId),
+    resumeCard: ({ cardId }) => controls.resume(cardId),
+    stopCard: ({ cardId }) => controls.stop(cardId),
     removeCard({ cardId }) {
       return { removed: service.remove(cardId) };
     },
@@ -142,7 +147,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk, capacity }));
+  bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk, capacity, controls }));
 
   bb.events.on("interaction.pending", ({ thread, interaction }) => {
     const card = store.getByThread(thread.id);
@@ -154,24 +159,31 @@ export default async function plugin(bb: BbPluginApi) {
 
   for (const event of ["thread.idle", "thread.failed", "thread.archived", "thread.deleted"] as const) {
     bb.events.on(event, async ({ thread }) => {
+      await controls.onActivity(thread);
       await bb.experimental_hooks.recheck("message.dispatch");
       await capacity.publish(thread);
     });
   }
   bb.events.on("experimental_thread.events", async ({ thread }) => {
+    await controls.onActivity(thread);
     if (thread.status === "active" || thread.status === "starting") return;
     await bb.experimental_hooks.recheck("message.dispatch");
     await capacity.publish(thread);
   });
   for (const event of ["message.queued", "message.dispatched", "message.cancelled"] as const) {
     bb.events.on(event, async ({ entry }) => {
+      if (event === "message.cancelled") controls.onMessageCancelled(entry);
       const thread = await bb.sdk.threads.get({ threadId: entry.threadId, experimental_includeDeleted: true });
       if (event !== "message.dispatched") await service.onThreadQueueChanged(thread);
+      if (event === "message.cancelled") await controls.onActivity(thread);
       await capacity.publish(thread);
     });
   }
 
-  bb.events.on("thread.active", ({ thread }) => service.onThreadActive(thread));
+  bb.events.on("thread.active", async ({ thread }) => {
+    await controls.onActivity(thread, true);
+    await service.onThreadActive(thread);
+  });
   bb.events.on("thread.idle", ({ thread, lastAssistantText }) =>
     service.onThreadIdle(thread, lastAssistantText),
   );
@@ -213,8 +225,9 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.background.service("startup-pass", {
     async start(signal) {
-      await bb.experimental_hooks.recheck("message.dispatch");
+      await controls.startup();
       await service.startupPass();
+      await bb.experimental_hooks.recheck("message.dispatch");
       await new Promise<void>((resolve) => {
         if (signal.aborted) return resolve();
         signal.addEventListener("abort", () => resolve(), { once: true });
