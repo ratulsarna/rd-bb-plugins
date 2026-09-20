@@ -15,6 +15,7 @@ import type { Context } from "hono";
 import { z } from "zod";
 
 import {
+  isThreadId,
   notificationLines,
   notificationUrl,
   oneLine,
@@ -73,6 +74,29 @@ export const rpcContract = defineRpcContract({
       })
       .strict(),
     output: z.object({ enabled: z.boolean() }).strict(),
+  },
+  send: {
+    input: z
+      .object({
+        title: z.string().trim().min(1).max(256).default("bb"),
+        message: z.string().trim().min(1).max(4000),
+        projectId: z
+          .string()
+          .trim()
+          .min(1)
+          .max(256)
+          .refine(isThreadId, "not a project id")
+          .nullish(),
+        threadId: z
+          .string()
+          .trim()
+          .min(1)
+          .max(256)
+          .refine(isThreadId, "not a thread id")
+          .nullish(),
+      })
+      .strict(),
+    output: z.object({ delivery: z.enum(["skipped", "queued", "held"]) }).strict(),
   },
 });
 
@@ -155,6 +179,29 @@ export default async function plugin(bb: BbPluginApi) {
         enabled,
       } satisfies ThreadNotificationChange);
       return { enabled };
+    },
+
+    // Explicit sends share the CLI's policy, independently of thread bells.
+    async send({ title, message, projectId, threadId }) {
+      let targetProjectId = projectId ?? null;
+      if (targetProjectId === null && threadId != null) {
+        try {
+          targetProjectId = (await bb.sdk.threads.get({ threadId })).projectId;
+        } catch {
+          // A deleted thread must not block the notification.
+        }
+      }
+      const project =
+        targetProjectId === null ? null : await projectName(targetProjectId);
+      return {
+        delivery: await post(
+          project,
+          targetProjectId,
+          title,
+          oneLine(plainText(message), BODY_MAX_CHARS),
+          threadId ?? null,
+        ),
+      };
     },
   });
 

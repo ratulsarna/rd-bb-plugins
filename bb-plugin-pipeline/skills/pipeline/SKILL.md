@@ -38,6 +38,8 @@ When spawning workers for a card, use `--parent-self` so they belong to the task
 
 Two Pipeline tasks can run at once per project and machine. A card's intake, lead, and children share one slot until their running work, tracked background work, and active autonomous goals stop. Further starts, replies, and retries queue automatically when both slots are occupied. `bb pipeline list` and `show` expose whether work is queued. Send now cannot bypass this limit. Ordinary BB threads are outside it.
 
+`bb pipeline report --needs-you <reason>` marks the task as needing user input and sends an alert through Notify when attention begins. Use `--working` when that blocker clears. Repeated attention reports do not resend the alert. Notify must be installed and enabled; its foreground and sound preferences apply. Pipeline also alerts for intake waiting, confirmed lead attention, failures, and pending questions or approvals on the owning thread. Do not send an extra `bb notify` for the same blocker.
+
 ## Attachments
 
 Upload each file first, then pass the returned path to `bb pipeline add --attachment`:

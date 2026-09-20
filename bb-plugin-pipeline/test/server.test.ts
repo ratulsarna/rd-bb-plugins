@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
   makeHostResponse,
@@ -34,6 +34,9 @@ async function setup(options?: {
     pluginId: "pipeline",
     agentSkillIds: skillIds,
     sdk: {
+      plugins: {
+        callRpc: async ({ outputSchema }) => outputSchema.parse({ delivery: "held" }),
+      },
       projects: {
         list: async () => [],
         get: async () =>
@@ -113,6 +116,71 @@ function seedLegacyCard(db: Database, id = "card_legacy"): void {
 }
 
 describe("plugin wiring", () => {
+  it("sends attention through Notify without making delivery a task dependency", async () => {
+    const { host, db } = await setup();
+    let finish!: () => void;
+    const blocked = new Promise<void>((resolve) => { finish = resolve; });
+    host.harness.inspection.sdk.stub("plugins.callRpc", async () => {
+      await blocked;
+      return { delivery: "held" };
+    });
+    seedLegacyCard(db);
+    db.prepare("UPDATE cards SET intake_thread_id = 'intake' WHERE id = 'card_legacy'").run();
+    try {
+      const result = await host.harness.behavior.runCli(
+        ["report", "--card", "card_legacy", "--needs-you", "Choose the release target", "--json"],
+      );
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ needsUser: true });
+      expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
+      expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")[0]![0]).toMatchObject({
+        pluginId: "notify", method: "send", input: {
+          title: "Pipeline: Legacy card", message: "Choose the release target",
+          projectId: "proj_1", threadId: "intake",
+        },
+      });
+    } finally {
+      finish();
+    }
+
+    await host.harness.behavior.runCli(["report", "--card", "card_legacy", "--working"]);
+    host.harness.inspection.sdk.stub("plugins.callRpc", async () => { throw new Error("Notify is disabled"); });
+    const result = await host.harness.behavior.runCli(
+      ["report", "--card", "card_legacy", "--needs-you", "Try again", "--json"],
+    );
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ needsUser: true, attentionReason: "Try again" });
+    await vi.waitFor(() => expect(host.harness.inspection.logEntries).toContainEqual(
+      expect.objectContaining({ level: "warn", message: expect.stringContaining("Notify is disabled") }),
+    ));
+  });
+
+  it("notifies pending owner questions but ignores unrelated and former-owner threads", async () => {
+    const { host, db } = await setup();
+    seedLegacyCard(db);
+    db.prepare("UPDATE cards SET intake_thread_id = 'intake', lead_thread_id = 'lead', owner_role = 'lead' WHERE id = 'card_legacy'").run();
+    const ask = (threadId: string) => host.harness.behavior.emitThreadEvent("interaction.pending", {
+      thread: makeThreadResponse({ id: threadId, projectId: "proj_1", status: "active" }),
+      interaction: {
+        id: `question-${threadId}`, threadId, turnId: null,
+        createdAt: 1, resolvedAt: null, status: "pending", statusReason: null,
+        origin: { kind: "plugin", pluginId: "questions", rendererId: "question" },
+        payload: { kind: "plugin", title: "Choose a release", data: {} }, resolution: null,
+      },
+    });
+    await ask("unrelated");
+    await ask("intake");
+    expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(0);
+    await ask("lead");
+    expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
+    expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")[0]![0]).toMatchObject({
+      input: { threadId: "lead", message: "Question waiting for you" },
+    });
+    db.prepare("UPDATE cards SET needs_user = 1 WHERE id = 'card_legacy'").run();
+    await ask("lead");
+    expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
+  });
+
   it("inherits cleared lead settings and accepts new role selections", async () => {
     const { host } = await setup();
     await host.harness.behavior.setSettings({

@@ -161,6 +161,7 @@ function setup(options?: {
       (async () => ({ title: "Issue", body: "Details", labels: [] })),
   );
   const publish = vi.fn();
+  const onAttention = vi.fn();
   const log = vi.fn();
   const rememberExecution = vi.fn(options?.rememberExecution ?? (async () => {}));
   const service = createPipelineService({
@@ -172,9 +173,10 @@ function setup(options?: {
     classify,
     log,
     publish,
+    onAttention,
     id: () => "card_new",
   });
-  return { host, db: host.bb.storage.database(), store, service, spawn, send, classify, readIssue, publish, log, rememberExecution, listProviders, listProviderModels };
+  return { host, db: host.bb.storage.database(), store, service, spawn, send, classify, readIssue, publish, onAttention, log, rememberExecution, listProviders, listProviderModels };
 }
 
 function seed(
@@ -217,6 +219,52 @@ function thread(
 }
 
 describe("idle policy", () => {
+  it("notifies once per attention episode across reports, idle updates, and startup", async () => {
+    const { store, service, onAttention } = setup({
+      getThread: async ({ threadId }) => thread(threadId),
+      getThreadOutput: async () => ({ output: "Ready for you" }),
+    });
+    seed(store);
+    store.update("card_1", { intakeThreadId: "intake" });
+    await service.report({ cardId: "card_1", needsYou: "Approve the scope" });
+    await service.report({ cardId: "card_1", needsYou: "Approve the scope" });
+    await service.onThreadIdle(thread("intake"), "Ready for you");
+    await service.startupPass();
+    expect(onAttention).toHaveBeenCalledOnce();
+    expect(onAttention).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "card_1", needsUser: true }), "Approve the scope",
+    );
+
+    await service.onThreadActive(thread("intake", 0, { status: "active" }));
+    await service.onThreadIdle(thread("intake"), "Another question");
+    expect(onAttention).toHaveBeenCalledTimes(2);
+    expect(onAttention.mock.calls[1]![1]).toBe("intake is waiting for you");
+    await service.onThreadIdle(thread("unrelated"), "Ignore me");
+    store.update("card_1", { ownerRole: "lead", leadThreadId: "lead", needsUser: false });
+    await service.onThreadIdle(thread("intake"), "Old intake");
+    expect(onAttention).toHaveBeenCalledTimes(2);
+  });
+
+  it("notifies launch failure once, then rearms after recovery", async () => {
+    let offline = true;
+    const { store, service, onAttention } = setup({
+      spawn: async () => {
+        if (offline) throw new Error("machine offline");
+        return thread("intake");
+      },
+    });
+    seed(store);
+    await service.launch("card_1", "intake");
+    await service.retry("card_1");
+    expect(onAttention).toHaveBeenCalledOnce();
+    expect(onAttention.mock.calls[0]![1]).toBe("Launch failed: intake: machine offline");
+    offline = false;
+    await service.retry("card_1");
+    await service.onThreadFailed(thread("intake", 0, { status: "error" }), "provider stopped");
+    await service.onThreadFailed(thread("intake", 0, { status: "error" }), "provider stopped");
+    expect(onAttention).toHaveBeenCalledTimes(2);
+  });
+
   it("moves the first intake idle to todo and asks for the user", async () => {
     const { store, service } = setup();
     seed(store);
@@ -312,7 +360,7 @@ describe("idle policy", () => {
     ["no", false, false],
     ["unknown", false, true],
   ] as const)("maps Jev %s to attention state", async (decision, needsUser, unknown) => {
-    const { store, service } = setup({
+    const { store, service, onAttention } = setup({
       classify: async () => ({ decision, probability: decision === "needs" ? 0.9 : decision === "no" ? 0.1 : 0.5 }),
     });
     seed(store);
@@ -322,6 +370,7 @@ describe("idle policy", () => {
     await service.onThreadIdle(thread("lead"), message);
 
     expect(store.get("card_1")).toMatchObject({ needsUser, attentionUnknown: unknown });
+    expect(onAttention).toHaveBeenCalledTimes(needsUser ? 1 : 0);
     if (decision === "needs") expect(store.get("card_1")?.attentionReason).toBe(message.slice(-200));
   });
 

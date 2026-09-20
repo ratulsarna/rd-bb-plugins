@@ -22,6 +22,12 @@ Cancelling a queued kickoff leaves the task waiting for you. **Retry** sends its
 
 Retrying after a thread is deleted starts that role over. A retried lead gets a new managed worktree and the full kickoff prompt.
 
+## Notifications
+
+With Notify installed and enabled, Pipeline sends an alert when a task starts needing your attention: an explicit `--needs-you` report, intake waiting for you, confirmed lead attention, or a launch/thread failure. Repeated updates and reloads do not repeat an existing attention alert. Clearing attention and needing you again sends another alert. Pending questions and approvals on the owning thread also notify.
+
+Alerts include the task title and reason and open its owning thread when one exists. They use Notify's desktop and phone delivery, sound preference, and foreground suppression. They do not require enabling each thread's bell. Unknown idle status and capacity waits stay quiet. A missing or failing Notify plugin is logged without blocking task work; failed requests are not replayed.
+
 ## Commands
 
 ```text
