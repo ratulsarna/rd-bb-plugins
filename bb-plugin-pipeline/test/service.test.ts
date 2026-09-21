@@ -19,12 +19,15 @@ import { ownerThread } from "../lib/card";
 import type { Database } from "better-sqlite3";
 import {
   makeCatalogProvider,
+  makeCheckoutEnvironment,
   testCatalogProviders,
   testProviderModels,
   type TestProviderListInput,
   type TestProviderListResult,
   type TestProviderModelsInput,
   type TestProviderModelsResult,
+  type TestEnvironment,
+  type TestEnvironmentListInput,
 } from "./sdk-fake";
 
 const settings: PipelineSettings = {
@@ -103,6 +106,7 @@ function setup(options?: {
   getThreadOutput?: (input: { threadId: string }) => Promise<{ output: string }>;
   listThreads?: (input: ThreadListInput) => Promise<ThreadListResult>;
   getThreadMetadata?: (input: { threadId: string }) => Promise<ThreadMetadataResult>;
+  listEnvironments?: (input: TestEnvironmentListInput) => Promise<TestEnvironment[]>;
   project?: typeof project;
   hosts?: typeof hostList;
   readIssue?: (url: string) => Promise<{ title: string; body: string; labels: string[] }>;
@@ -124,6 +128,9 @@ function setup(options?: {
   const listProviders = vi.fn(
     options?.listProviders ?? (async () => testCatalogProviders),
   );
+  const listEnvironments = vi.fn(options?.listEnvironments ?? (async (input: TestEnvironmentListInput) => [
+    makeCheckoutEnvironment({ projectId: input.projectId, hostId: input.hostId, path: input.path }),
+  ]));
   const listProviderModels = vi.fn(
     options?.listProviderModels ??
       (async ({ providerId }: TestProviderModelsInput) =>
@@ -138,6 +145,7 @@ function setup(options?: {
       hosts: {
         list: async () => (options?.hosts ?? hostList) as never,
       },
+      environments: { list: listEnvironments as never },
       providers: {
         list: listProviders as never,
         models: listProviderModels as never,
@@ -191,7 +199,7 @@ function setup(options?: {
     onAttention,
     id: () => "card_new",
   });
-  return { host, db: host.bb.storage.database(), store, service, spawn, send, classify, readIssue, publish, onAttention, log, rememberExecution, listProviders, listProviderModels };
+  return { host, db: host.bb.storage.database(), store, service, spawn, send, classify, readIssue, publish, onAttention, log, rememberExecution, listProviders, listProviderModels, listEnvironments };
 }
 
 function seed(
@@ -1941,7 +1949,7 @@ describe("execution selection", () => {
 
   it("retries a cancelled kickoff with its captured model, reasoning, and tier", async () => {
     const mutableSettings: PipelineSettings = { ...settings };
-    const { service, store, send } = setup({
+    const { service, store, send, listEnvironments } = setup({
       settings: mutableSettings,
       getThread: async ({ threadId }) =>
         thread(threadId, 0, { status: "pending", queuedMessageCount: 0 }),
@@ -1964,9 +1972,11 @@ describe("execution selection", () => {
       reasoningLevel: "low",
       serviceTier: "default",
     });
+    listEnvironments.mockRejectedValue(new Error("workspace discovery unavailable"));
 
     await service.retry("card_1");
 
+    expect(listEnvironments).toHaveBeenCalledOnce();
     expect(send).toHaveBeenCalledOnce();
     expect(send).toHaveBeenCalledWith({
       threadId,
@@ -2417,7 +2427,8 @@ describe("saved cards", () => {
     expect(second.intakeThreadId).toBe("thr_1");
     expect(spawn).toHaveBeenCalledOnce();
     expect(spawn.mock.calls[0]![0]).toMatchObject({
-      environment: { type: "host", hostId: "host_mac" },
+      environment: { type: "reuse", environmentId: "env_checkout" },
+      pluginMetadata: { hostId: "host_mac" },
       providerId: "codex",
       model: "gpt-6-astra",
       reasoningLevel: "ultra",
@@ -2541,6 +2552,101 @@ describe("saved cards", () => {
   });
 });
 
+describe("intake checkout reuse", () => {
+  it("reuses a shared checkout with preserved provider inputs for concurrent intakes", async () => {
+    const environment = makeCheckoutEnvironment();
+    const original = structuredClone(environment);
+    const { service, store, spawn, listEnvironments } = setup({
+      project: { ...project, sources: [{ ...projectSource, path: "/repo///" }] },
+      listEnvironments: async () => [environment],
+    });
+    for (const id of ["one", "two", "three"]) seed(store, { id });
+
+    await Promise.all(["one", "two", "three"].map((id) => service.launch(id, "intake")));
+
+    expect(spawn).toHaveBeenCalledTimes(3);
+    for (const [request] of spawn.mock.calls) {
+      expect(request).toMatchObject({
+        environment: { type: "reuse", environmentId: environment.id },
+        pluginMetadata: { role: "intake", hostId: "host_mac" },
+      });
+      expect((request as { environment: unknown }).environment).toEqual({
+        type: "reuse", environmentId: environment.id,
+      });
+    }
+    expect(listEnvironments).toHaveBeenCalledWith({ projectId: "proj_1", hostId: "host_mac", path: "/repo" });
+    expect(environment).toEqual(original);
+  });
+
+  it.each([
+    makeCheckoutEnvironment({ status: "creating" }),
+    makeCheckoutEnvironment({ status: "provisioning" }),
+    makeCheckoutEnvironment({ status: "error" }),
+    makeCheckoutEnvironment({ lifecycle: { phase: "retiring", retireAt: 123, teardown: null } }),
+    makeCheckoutEnvironment({ lifecycle: { phase: "teardown", retireAt: 123, teardown: { status: "running", attempt: 1 } } }),
+  ])("does not prepare a checkout in $status/$lifecycle.phase", async (environment) => {
+    const { service, store, spawn } = setup({ listEnvironments: async () => [environment] });
+    seed(store);
+
+    const failed = await service.launch("card_1", "intake");
+
+    expect(failed.launchError).toContain(`${environment.status}/${environment.lifecycle.phase}`);
+    expect(failed.intakeThreadId).toBeNull();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "lookup failure"])("offers Retry without preparing a checkout after %s", async (failure) => {
+    let ready = false;
+    const { service, store, spawn, listEnvironments } = setup({
+      listEnvironments: async () => {
+        if (ready) return [makeCheckoutEnvironment()];
+        if (failure === "lookup failure") throw new Error("discovery unavailable");
+        return [];
+      },
+    });
+    seed(store);
+    const failed = await service.launch("card_1", "intake");
+
+    expect(failed.launchError).toContain(failure === "missing" ? "open the project checkout" : "discovery unavailable");
+    expect(failed.intakeThreadId).toBeNull();
+    expect(spawn).not.toHaveBeenCalled();
+    ready = true;
+
+    const retried = await service.retry("card_1");
+
+    expect(retried).toMatchObject({ launchError: null, intakeThreadId: "thr_1" });
+    expect(listEnvironments).toHaveBeenCalledTimes(2);
+    expect(spawn).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      environment: { type: "reuse", environmentId: "env_checkout" },
+    }));
+  });
+
+  it("does not fall back to preparation if the checkout becomes busy before spawn", async () => {
+    let busy = true;
+    const { service, store, spawn } = setup({
+      spawn: async () => {
+        if (busy) throw Object.assign(new Error("workspace is being prepared"), { status: 409, code: "workspace_busy" });
+        return makeThreadResponse({ id: "intake" });
+      },
+    });
+    seed(store);
+
+    const failed = await service.launch("card_1", "intake");
+    expect(failed.launchError).toContain("workspace is being prepared");
+    expect(spawn).toHaveBeenCalledOnce();
+    busy = false;
+    await service.retry("card_1");
+
+    expect(spawn).toHaveBeenCalledTimes(2);
+    for (const [request] of spawn.mock.calls) {
+      expect((request as { environment: unknown }).environment).toEqual({
+        type: "reuse", environmentId: "env_checkout",
+      });
+    }
+    expect(store.get("card_1")?.launchError).toBeNull();
+  });
+});
+
 describe("machine selection", () => {
   it.each(["", "   "])(
     "rejects a %j machine before creating a card or thread",
@@ -2616,7 +2722,7 @@ describe("machine selection", () => {
   });
 
   it("launches intake on the selected machine when several have checkouts", async () => {
-    const { service, spawn } = setup({ project: twoMachineProject });
+    const { service, spawn, listEnvironments } = setup({ project: twoMachineProject });
 
     const card = await service.createCard({
       projectId: "proj_1",
@@ -2628,14 +2734,15 @@ describe("machine selection", () => {
     expect(card.hostId).toBe("host_linux");
     expect(spawn).toHaveBeenCalledOnce();
     const request = spawn.mock.calls[0]![0] as {
-      environment: { hostId: string; workspace: { type: string; path: string } };
+      environment: { type: string; environmentId: string };
       pluginMetadata: { cardId: string; hostId: string };
     };
-    expect(request.environment.hostId).toBe("host_linux");
+    expect(listEnvironments).toHaveBeenCalledWith({
+      projectId: "proj_1", hostId: "host_linux", path: "/repo-linux",
+    });
     expect(request.pluginMetadata).toMatchObject({ cardId: card.id, hostId: "host_linux" });
-    expect(request.environment.workspace).toEqual({
-      type: "unmanaged",
-      path: "/repo-linux",
+    expect(request.environment).toEqual({
+      type: "reuse", environmentId: "env_checkout",
     });
   });
 
@@ -2670,14 +2777,10 @@ describe("machine selection", () => {
     const retried = await service.retry(card.id);
     expect(retried.leadThreadId).not.toBeNull();
 
-    const launchedHosts = spawn.mock.calls.map(
-      (call) =>
-        (call[0] as { environment: { hostId: string } }).environment.hostId,
-    );
-    expect(launchedHosts).toEqual([
-      "host_linux",
-      "host_linux",
-      "host_linux",
+    expect(spawn.mock.calls.map(([request]) => (request as { environment: unknown }).environment)).toEqual([
+      { type: "reuse", environmentId: "env_checkout" },
+      { type: "host", hostId: "host_linux", workspace: { type: "managed-worktree", baseBranch: { kind: "default" } } },
+      { type: "host", hostId: "host_linux", workspace: { type: "managed-worktree", baseBranch: { kind: "default" } } },
     ]);
   });
 
@@ -2710,9 +2813,11 @@ describe("machine selection", () => {
 
     expect(spawn).toHaveBeenCalledOnce();
     const request = spawn.mock.calls[0]![0] as {
-      environment: { hostId: string };
+      environment: { type: string; environmentId: string };
+      pluginMetadata: { hostId: string };
     };
-    expect(request.environment.hostId).toBe("host_mac");
+    expect(request.environment).toEqual({ type: "reuse", environmentId: "env_checkout" });
+    expect(request.pluginMetadata.hostId).toBe("host_mac");
   });
 
   it("rejects changing an assigned card's machine but allows the same machine", async () => {

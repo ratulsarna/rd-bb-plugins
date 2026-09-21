@@ -23,20 +23,30 @@ export async function environmentFor(
   if (source === undefined) {
     throw new Error(`project has no checkout on ${hostId}`);
   }
-  return role === "intake"
-    ? ({
-        type: "host",
-        hostId,
-        workspace: { type: "unmanaged", path: source.path },
-      } as const)
-    : ({
-        type: "host",
-        hostId,
-        workspace: {
-          type: "managed-worktree",
-          baseBranch: { kind: "default" },
-        },
-      } as const);
+  if (role === "lead") {
+    return {
+      type: "host",
+      hostId,
+      workspace: {
+        type: "managed-worktree",
+        baseBranch: { kind: "default" },
+      },
+    } as const;
+  }
+
+  const path = source.path.replace(/\/+$/u, "") || "/";
+  const [environment] = await sdk.environments.list({ projectId, hostId, path });
+  if (environment === undefined) {
+    throw new Error(
+      `open the project checkout ${path} on ${hostId} in BB once, then retry intake`,
+    );
+  }
+  if (environment.status !== "ready" || environment.lifecycle.phase !== "active") {
+    throw new Error(
+      `project checkout ${environment.id} on ${hostId} is ${environment.status}/${environment.lifecycle.phase}; open or restore the checkout in BB, then retry intake`,
+    );
+  }
+  return { type: "reuse", environmentId: environment.id } as const;
 }
 
 export function attachmentInputs(attachments: CardAttachment[]) {
@@ -57,17 +67,15 @@ export function attachmentInputs(attachments: CardAttachment[]) {
   );
 }
 
-export function spawnRequest(input: {
+export function kickoffRequest(input: {
   card: Card;
   role: PipelineRole;
   prompt: string;
-  environment: Awaited<ReturnType<typeof environmentFor>>;
   settings: PipelineLaunchSettings;
 }) {
-  const { card, role, prompt, environment, settings } = input;
+  const { card, role, prompt, settings } = input;
   return {
     projectId: card.projectId,
-    environment,
     providerId: settings.providerId,
     model: settings.model,
     reasoningLevel: settings.reasoningLevel,
@@ -79,7 +87,7 @@ export function spawnRequest(input: {
       0,
       120,
     ),
-    pluginMetadata: { cardId: card.id, role, hostId: environment.hostId },
+    pluginMetadata: { cardId: card.id, role, hostId: card.hostId },
     input: [
       { type: "text" as const, text: prompt, mentions: [] },
       ...attachmentInputs(card.attachments),
