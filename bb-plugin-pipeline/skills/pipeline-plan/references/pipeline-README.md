@@ -22,11 +22,11 @@ The user tiers the task during intake. The lead states the tier in one line and 
 
 | Tier | Looks like | Flow |
 |---|---|---|
-| **Trivial** | Typo, one-liner, pure plumbing | Lead does it inline. Verify by exercising the changed behavior, not just tests. Short ticket filed at kickoff. No workers. |
-| **Small** | Single-seam change, clear intent, low blast radius | Confirm intent in chat only if ambiguous. Short ticket at kickoff. A quick plan sanity-checked with Oracle — a round-trip, not a plan doc. One implementation worker. Reviewer passes + QA on the diff. Close out. |
+| **Trivial** | Typo, one-liner, pure plumbing | Lead does it inline. Verify by exercising the changed behavior, not just tests. Short ticket filed at kickoff. Brief implementation walkthrough before close-out. No workers. |
+| **Small** | Single-seam change, clear intent, low blast radius | Confirm intent in chat only if ambiguous. Short ticket at kickoff. A quick plan sanity-checked with Oracle — a round-trip, not a plan doc. One implementation worker. Reviewer passes, implementation walkthrough, then QA on the diff. Close out. |
 | **Standard** | Multi-seam feature, new behavior, real design surface | Full flow: spec → plan → implement → close-out. |
 
-Bugs get their final tier after the RCA; you cannot size what you have not diagnosed. Smaller tiers drop the user touchpoints, not the gates: the short ticket and the draft PR carry the record.
+Bugs get their final tier after the RCA; you cannot size what you have not diagnosed. Smaller tiers skip the plan walkthrough, but retain the implementation walkthrough in `pipeline-implement`: the user reviews what was built before QA and close-out.
 
 ## Non-negotiables
 
@@ -38,12 +38,13 @@ Bugs get their final tier after the RCA; you cannot size what you have not diagn
 6. Every non-trivial diff gets two independent reviewer passes, and user-facing behavior gets one QA smoke of the acceptance criteria; triviality is judged by consequence and risk, not diff size. Anything beyond that smoke is named in the plan, so the user sees it in the walkthrough before it runs.
 7. Never non-trivial work on main without explicit consent.
 8. Stop at a draft PR. Ready-for-review, merge, release, and external posting need the user's explicit go.
+9. After code reviews clear, walk the user through the implementation one step at a time and wait for their final go before QA. `pipeline-implement` owns this gate and its rework rules.
 
 ## Artifacts
 
 Working files live at `~/.ai/artifacts/<project>/YYYY-MM-DD-<topic>/`, out of the repo:
 
-- `run.md` — the lead's run card, created at kickoff before any plan and updated at every gate and every waiver. Eight lines:
+- `run.md` — the lead's run card, created at kickoff before any plan and updated at every gate and every waiver:
 
   ```
   ticket: #NNNN            tier: trivial | small | standard
@@ -51,10 +52,13 @@ Working files live at `~/.ai/artifacts/<project>/YYYY-MM-DD-<topic>/`, out of th
   scope: <platforms, variants, device at hand>
   deadline: <none | date, reason>
   phase: plan | implement | close-out
-  gates: oracle R1 R2 | review R1 (<harness>, <harness>) | qa R1 blocked | bot pending
+  gates: oracle R1 R2 | review R1 (<harness>, <harness>) | walkthrough awaiting user | qa not started | bot pending
+  walkthrough: commit <sha> | step N/M | awaiting user / approved
   waived: qa (user, date, reason)
   owed: <what is still due>
   ```
+
+  Keep the implementation walkthrough's step outline beneath the run card so a resumed lead can continue at the recorded step. Record the user's final approval with the reviewed commit.
 
   Ticket, base branch, scope, and deadline are facts only the user holds: read them from the user's message, or ask once in the first reply. After a compaction, read this file before anything else, then the skill named on its phase line. If the path is lost, take the newest directory under `~/.ai/artifacts/<project>/`.
 - `plan.md` — the implementation plan.
@@ -80,10 +84,12 @@ The card lives on the pipeline board. Report every column change and every stop 
 | implement | start (right after the go on the last walkthrough step; no separate stop) | `--column implementing` |
 | implement | review passes start | `--column reviewing` |
 | implement | when findings send it back to the worker | `--column implementing` |
+| implement | each implementation walkthrough step, after code reviews clear | `--column reviewing --needs-you "implementation walkthrough; step N of M"` |
+| implement | walkthrough changes return to the worker | `--column implementing` |
 | implement | QA starts | `--column qa` |
 | implement | when QA sends it back | `--column implementing` |
 | close-out | draft PR opened | `--column pr --pr <url>` |
 | close-out | draft PR review-clean, waiting for the user | `--column pr_ready --needs-you "review clean; mark the PR ready and merge"` |
 | any | lead stops for the user for another reason | `--needs-you "<why>"` |
 
-Small and trivial tiers skip the walkthrough, so the walkthrough reports do not occur on those flows.
+Small and trivial tiers skip the plan walkthrough. Every tier reports its implementation walkthrough; small changes may need only one step.

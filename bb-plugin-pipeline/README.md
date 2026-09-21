@@ -12,6 +12,8 @@ The board tracks:
 
 `pr_ready` means the draft PR is review-clean and waiting for the user to mark it ready and merge it.
 
+After the two implementation reviews clear, the lead walks you through the result before QA. It uses `/show-me` and code snippets, one step per turn, with up to eight steps and fewer for small changes. The walkthrough covers how the code works, deviations from the approved plan and why, and what still awaits verification. The card stays in Reviewing with **Needs you** until you approve the final step. Material changes after approval return to the affected steps.
+
 Cards show why the user is needed, open the owning thread, link the issue and PR, and expose launch retry when the target machine is unavailable. Explicit `bb pipeline report` calls are authoritative; Jev classifies an unsignalled lead idle as needs-you, not waiting, or unchecked.
 
 Use **New task** to add a title, context, attachments, and a machine. **Intake** and **Lead** each have a provider, model, and reasoning picker. They start from Pipeline settings and remember the last task's choices across the UI and CLI. Each card saves both selections for its launches and retries.
