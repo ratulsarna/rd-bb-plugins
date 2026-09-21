@@ -1,6 +1,6 @@
 ---
 name: pipeline-implement
-description: Build an approved plan through workers, then review and QA the landed change.
+description: Build an approved plan, review the change, walk the user through the implementation, then run QA.
 ---
 
 # Pipeline: Implement
@@ -16,7 +16,7 @@ A worker whose job has a template in `templates/` starts from it: read the file 
 
 ## Execution
 
-- Continuous: no user approvals between tasks. Short milestone updates only.
+- Continue through implementation tasks and code review with short milestone updates. Pause for the implementation walkthrough before QA.
 - Workers own implementation decisions and tests. Answer their questions with the why, not just the answer. Check on a worker by reading its thread. Steer it only when it is going well off track, sparingly and with patience: a worker that is thinking is not stalled.
 - A worker's "done" is a claim. Read the diff against the plan, and the evidence, before advancing to gates.
 - Worker-raised questions resolve against the code and the plan. When the answer is a decision, put it to the Oracle session from planning; every objection ends in evidence that it does not hold or a change, and a reply without a read list is not a round. The user only for product or UX judgment.
@@ -49,9 +49,20 @@ One cycle over the landed change, where reviewers and QA see the whole picture:
    - the fix commits touch only comments or docs: a lead read of the delta, no pass.
    Every pass is a fresh session; prior findings stay with the lead, not the reviewer.
    When findings send it back to the worker: `bb pipeline report --column implementing --working`
-5. **QA worker** from `templates/qa.md`, after reviews clear. Give it the flows as the plan named them, not implementation reasoning. It designs its own steps within that and exercises real behavior, with whatever real-system tools are reachable. Findings are blocking: the owning worker fixes, the same QA session re-runs, and QA never changes code. A pass with any criterion not reached is partial, not clear: the unreached criteria run again after the blocker is fixed, or the user waives them, recorded in `run.md`.
+5. **Implementation walkthrough — the user's review.** After the review findings and required re-reviews clear, stop for the user before QA or close-out. Every tier gets this walkthrough; trivial work reaches it after its verification without adding reviewer passes.
+
+   Prepare from the actual reviewed diff, the approved plan (or agreed short design), and the implementation ledger. Plan at most eight steps, usually five to eight and fewer for small changes. Explain the resulting behavior, important code paths and responsibilities, and every meaningful deviation from the plan: what changed, why, and its consequences. Distinguish verified behavior from what still awaits QA.
+
+   Start with step 1 in the same message that announces the implementation is ready to walk through. Use `/show-me` at each step: focused code snippets, diagrams, or other visuals where they aid understanding. Present one step per turn, then wait for the user to ask to continue. Answer questions within the current step; never dump the remaining steps or advance on silence.
+
+   `bb pipeline report --column reviewing --needs-you "implementation walkthrough; step N of M"`
+
+   Keep the step outline, current step, reviewed commit, and approval status in `run.md`; after a context reset, resume from that record. Only an explicit go after the final step releases this gate for QA, or close-out for trivial work already verified inline. Earlier permission to implement or to advance one step does not approve the remainder.
+
+   Requested changes return to the owning worker and the review gates above. Once clear, revisit the affected walkthrough steps and obtain approval for the updated result. Later QA or PR-review fixes that materially change behavior, design, scope, or an explained deviation also reopen the affected steps before proceeding to close-out; unchanged steps need not repeat.
+6. **QA worker** from `templates/qa.md`, after the user approves the implementation walkthrough. Give it the flows as the plan named them, not implementation reasoning. It designs its own steps within that and exercises real behavior, with whatever real-system tools are reachable. Findings are blocking: the owning worker fixes, the same QA session re-runs, and QA never changes code. A pass with any criterion not reached is partial, not clear: the unreached criteria run again after the blocker is fixed, or the user waives them, recorded in `run.md`.
    `bb pipeline report --column qa --working`
    When QA sends it back: `bb pipeline report --column implementing --working`
-6. **Acceptance.** The lead maps the verified behavior back to the ticket; code review does not substitute for this judgment.
+7. **Acceptance.** The lead maps the verified behavior back to the ticket; code review and walkthrough approval do not substitute for this judgment.
 
 **Exit:** all gates clear → `pipeline-close-out`.

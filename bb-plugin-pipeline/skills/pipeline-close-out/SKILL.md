@@ -7,6 +7,8 @@ description: Verify with fresh evidence, open a draft PR, and hand off.
 
 ## Process
 
+Entry: the implementation walkthrough is approved in `run.md` and the implementation gates are clear. If subsequent changes materially alter what the user approved, follow `pipeline-implement`'s rework rule before continuing.
+
 1. **Fresh verification.** On the current tree, run the verification promised by the plan, the repository's required checks and tests, and an end-to-end smoke test of the changed behavior; capture real output. Broaden to subsystem or full-suite testing when repository rules, shared seams, or blast radius warrant it. If verification fails, stop here: report the failure with its output, no PR.
    For user-facing work, anything the user sees or interacts with, screen-record the smoke test showing the change working. The lead watches the final recording against the acceptance criteria before upload; if it does not show them, recapture. Upload only that file.
 2. **Open a draft PR.** Push the branch and create the PR as a draft. Write the body per the `pr-descriptions` skill: what changed and why, behavior changes a reviewer must know, one line on verification. The detailed evidence (command output, QA detail, ledger entries, residual risks) goes in the chat report and the ticket, not the PR body.
