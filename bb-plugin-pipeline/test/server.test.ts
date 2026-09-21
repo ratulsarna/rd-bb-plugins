@@ -9,7 +9,7 @@ import {
 import type { Database } from "better-sqlite3";
 import plugin from "../server";
 import { createCardStore, type Card } from "../lib/store";
-import { testCatalogProviders, testProviderModels } from "./sdk-fake";
+import { makeCheckoutEnvironment, testCatalogProviders, testProviderModels } from "./sdk-fake";
 
 const skillIds = [
   "pipeline",
@@ -93,6 +93,11 @@ async function setup(options?: {
       providers: {
         list: async () => testCatalogProviders,
         models: async (input) => testProviderModels(input?.providerId),
+      },
+      environments: {
+        list: async (input) => [makeCheckoutEnvironment({
+          projectId: input?.projectId, hostId: input?.hostId, path: input?.path,
+        })],
       },
       threads: {
         listRunning: async () => [],

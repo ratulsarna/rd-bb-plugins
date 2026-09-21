@@ -2,6 +2,27 @@ import type { PluginBbSdk, PluginSidebarThread } from "@get-bb/plugin-sdk";
 import type { ExecutionSelection } from "../lib/execution";
 import type { Card } from "../lib/store";
 
+export type TestEnvironment = Awaited<
+  ReturnType<PluginBbSdk["environments"]["get"]>
+>;
+export type TestEnvironmentListInput = NonNullable<
+  Parameters<PluginBbSdk["environments"]["list"]>[0]
+>;
+
+export function makeCheckoutEnvironment(overrides: Partial<TestEnvironment> = {}): TestEnvironment {
+  const hostId = overrides.hostId ?? "host_mac";
+  return {
+    id: "env_checkout", projectId: "proj_1", hostId: "host_mac", path: "/repo",
+    status: "ready", lifecycle: { phase: "active", retireAt: null, teardown: null },
+    environmentProviderId: "project-checkout", environmentProviderInstanceKey: "original-thread",
+    environmentProviderSelection: { machine: { type: "existing", hostId }, inputs: {} },
+    managed: false, workspaceProvisionType: "unmanaged", isGitRepo: true, isWorktree: false,
+    name: null, branchName: "main", defaultBranch: "main", baseBranch: null, mergeBaseBranch: null,
+    createdAt: 1, updatedAt: 1,
+    ...overrides,
+  };
+}
+
 export type TestProviderListResult = Awaited<
   ReturnType<PluginBbSdk["providers"]["list"]>
 >;

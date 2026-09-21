@@ -29,6 +29,8 @@ An interrupted Start recovers an existing intake thread when found, or exposes R
 
 The machine must be explicitly specified for every new card; never infer it from the current thread or choose the first available machine. Use `bb machine list` to find machine IDs and names, and ask the user when their target is unknown. The project must have a checkout on that machine. Intake, lead work, and retries use the card's stored machine.
 
+Intake reuses that checkout's ready BB environment. If it has never been opened in BB, open a regular thread there with **Project checkout**, wait until ready, and retry the same card. Checkout discovery and readiness failures are recoverable with `bb pipeline retry <card-id>`.
+
 ### Intake and lead choices
 
 `add` accepts optional `--intake-provider <id>`, `--intake-model <id>`, `--intake-reasoning <level>`, `--lead-provider <id>`, `--lead-model <id>`, and `--lead-reasoning <level>`.

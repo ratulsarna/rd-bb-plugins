@@ -90,6 +90,8 @@ All role options are optional. Omitted fields use the remembered Pipeline settin
 
 Choose a machine in New task or pass its ID or unambiguous name with `--machine`. Run `bb machine list` to find IDs and names. The project must have a checkout on the chosen machine. The choice stays with the card for intake, lead work, and retries.
 
+Intake reuses the ready BB environment at that checkout. Before first use, open a regular BB thread there using **Project checkout**, then retry the Pipeline task once the environment is ready. A missing, busy, or unavailable checkout leaves a launch error with **Retry**. Lead launches use their own managed worktrees.
+
 Cards without a machine show a machine picker on the board. Assign one there or with `set-machine` before launching further work. Assignment does not relocate existing threads, and an assigned card's machine cannot be changed.
 
 Removing a card removes only its board data. It does not stop the intake or lead threads; archive those threads in BB if needed.

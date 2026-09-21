@@ -18,7 +18,7 @@ import { intakePrompt, leadPrompt } from "./prompts";
 import { resolveMachine } from "./machines";
 import {
   environmentFor,
-  spawnRequest,
+  kickoffRequest,
   type PipelineLaunchSettings,
   type PipelineRole,
 } from "./spawn";
@@ -242,7 +242,7 @@ export function createPipelineService(
     });
   };
 
-  const buildLaunchRequest = async (card: Card, role: PipelineRole) => {
+  const buildKickoffRequest = async (card: Card, role: PipelineRole) => {
     const configured = await dependencies.getSettings();
     const execution = card[role] ?? executionDefaults(configured)[role];
     const settings = launchSettings(configured, execution);
@@ -252,13 +252,6 @@ export function createPipelineService(
       );
     }
     const project = await sdk.projects.get({ projectId: card.projectId });
-    const environment = await environmentFor(
-      sdk,
-      card.projectId,
-      card.hostId,
-      role,
-      project,
-    );
     const issueUrl = normalizeIssueUrl(card.issueUrl);
     if (role === "lead" && issueUrl === null) {
       throw new Error(MISSING_ISSUE_ERROR);
@@ -267,7 +260,19 @@ export function createPipelineService(
       role === "intake"
         ? intakePrompt(card, project.name)
         : leadPrompt(card, await dependencies.readIssue(issueUrl!));
-    return spawnRequest({ card, role, prompt, environment, settings });
+    return {
+      project,
+      hostId: card.hostId,
+      request: kickoffRequest({ card, role, prompt, settings }),
+    };
+  };
+
+  const buildLaunchRequest = async (card: Card, role: PipelineRole) => {
+    const { project, hostId, request } = await buildKickoffRequest(card, role);
+    const environment = await environmentFor(
+      sdk, card.projectId, hostId, role, project,
+    );
+    return { ...request, environment };
   };
 
   const recordLaunchFailure = (
@@ -948,7 +953,7 @@ export function createPipelineService(
         let request;
         const launchRevision = card.revision;
         try {
-          request = await buildLaunchRequest(card, role);
+          request = (await buildKickoffRequest(card, role)).request;
         } catch (cause) {
           return recordRetryFailure(cause);
         }
