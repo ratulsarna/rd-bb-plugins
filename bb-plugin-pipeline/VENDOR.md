@@ -32,7 +32,7 @@ Not copied: `agents/openai.yaml` in each upstream skill directory (no counterpar
 - `pipeline-README.md`: sizing says the lead does not re-tier except for a bug, whose intake tier stays provisional until the RCA stop and is finalized by the user there.
 - `pipeline-implement/SKILL.md`: every tier has a user walkthrough of the resulting implementation before QA or close-out. It owns step-by-step `/show-me` delivery, deviation explanations, approval, resume, and rework rules. Its execution instructions permit this approval stop.
 - `pipeline-README.md`: sizing retains the implementation walkthrough for small and trivial work; `run.md` records its outline, progress, reviewed commit, and approval.
-- `pipeline-close-out/SKILL.md`: entry requires the approved implementation walkthrough; material changes return through its rework rule. External review uses `review-wait` and asynchronous feedback batches instead of provider-specific polling.
+- `pipeline-close-out/SKILL.md`: entry requires the approved implementation walkthrough; material changes return through its rework rule. External review uses `review-wait` and asynchronous feedback batches instead of provider-specific polling. The Oracle remains available for subsequent review decisions.
 
 ## Additions: board report lines
 
