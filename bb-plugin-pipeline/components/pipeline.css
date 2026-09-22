@@ -245,3 +245,10 @@
 
 .pipeline-error > span { flex: 1; min-width: 0; }
 .pipeline-error > .pipeline-button { flex: none; padding: 0 6px; min-height: 26px; }
+@container (max-width: 680px) {
+  .pipeline-toolbar-actions .pipeline-button, .pipeline-error > .pipeline-button { min-height: 44px; }
+}
+@media (max-width: 680px) {
+  .pipeline-form-footer .pipeline-button { min-height: 44px; }
+  .pipeline-detail-header .pipeline-icon-button { width: 44px; height: 44px; }
+}
