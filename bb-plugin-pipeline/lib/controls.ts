@@ -138,7 +138,6 @@ export function createPipelineControls(
     return serialize(id, async () => {
       const card = required(id);
       requireStarted(card, "stopping it");
-      if (card.column === "done") throw new Error("Completed tasks cannot be stopped from Pipeline");
       update(id, { runState: "stopping", controlError: null }, "stop_requested");
       try {
         const occupied = await tasks.occupied(id);

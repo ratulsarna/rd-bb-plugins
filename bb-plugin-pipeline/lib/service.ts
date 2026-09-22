@@ -30,6 +30,7 @@ import type {
 } from "./store";
 import { ownerThread, requireStarted, roleThread } from "./card";
 import { userAttentionReason } from "./notifications";
+import { normalizePullRequestUrl } from "./github";
 import {
   findPipelineThreadByMetadata,
   isThreadNotFound,
@@ -98,6 +99,7 @@ export interface PipelineServiceDependencies {
   log(message: string): void;
   publish(projectId: string): void;
   onAttention(card: Card, reason: string): void;
+  onPrChanged?(card: Card): void;
   id?: () => string;
 }
 
@@ -662,6 +664,8 @@ export function createPipelineService(
       return;
     }
     if (initial.reportSignal === "needs_you") return;
+    const github = store.getGithub(initial.id);
+    if (github?.awaitingReviewRevision === initial.revision && (github.batch === null || github.batch.state === "handled")) return;
     if (
       observation.kind === "thread" &&
       observation.startup &&
@@ -1090,7 +1094,11 @@ export function createPipelineService(
 
       const patch: Parameters<CardStore["update"]>[1] = {};
       if (issueUrl !== undefined) patch.issueUrl = issueUrl;
-      if (input.prUrl !== undefined) patch.prUrl = input.prUrl;
+      if (input.prUrl !== undefined) {
+        const prUrl = normalizePullRequestUrl(input.prUrl);
+        if (prUrl === null) throw new Error("--pr requires a github.com pull request URL");
+        patch.prUrl = prUrl;
+      }
       if (input.tier !== undefined) patch.tier = input.tier;
       if (input.needsYou !== undefined) {
         patch.needsUser = true;
@@ -1142,6 +1150,7 @@ export function createPipelineService(
       ) {
         next = await launch(next.id, "lead");
       }
+      if (next.prUrl !== card.prUrl) dependencies.onPrChanged?.(next);
       return next;
     },
     move,

@@ -170,6 +170,10 @@ export function PipelineBoard() {
     }
     return result;
   }, [queue]);
+  const occupiedCards = useMemo(
+    () => new Set(queue.flatMap((machine) => machine.occupied.map((task) => task.cardId))),
+    [queue],
+  );
   function questionOpen(card: Card) {
     const owner = ownerThread(card);
     return owner !== null && pendingThreads.has(owner);
@@ -211,7 +215,12 @@ export function PipelineBoard() {
         if ("removed" in result && result.removed) {
           setCards((current) => current.filter((item) => item.id !== card.id));
         } else if ("id" in result) {
-          setCards((current) => current.map((item) => item.id === result.id && result.revision >= item.revision ? result : item));
+          setCards((current) => current.map((item) => {
+            if (item.id !== result.id || result.revision < item.revision) return item;
+            const newerGithub = item.prUrl === result.prUrl && item.github !== null &&
+              (result.github === null || item.github.revision > result.github.revision);
+            return { ...result, github: newerGithub ? item.github : result.github };
+          }));
         }
       }
       await load();
@@ -287,6 +296,7 @@ export function PipelineBoard() {
         }}
         onDragEnd={clearDrag}
         questionOpen={questionOpen(card)}
+        occupied={occupiedCards.has(card.id)}
         onOpen={(threadId) => navigate.toThread(threadId)}
         onStart={() => void updateCard(card, () => rpc.call("startCard", { cardId: card.id }))}
         onMove={(next) => void move(card, next)}
@@ -300,6 +310,8 @@ export function PipelineBoard() {
         onRemove={() => {
           if (card.runState === "running") void updateCard(card, () => rpc.call("removeCard", { cardId: card.id }));
         }}
+        onSyncGithub={() => void updateCard(card, () => rpc.call("syncGithub", { cardId: card.id }))}
+        onRetryReview={() => void updateCard(card, () => rpc.call("retryReview", { cardId: card.id }))}
       />
     );
   }

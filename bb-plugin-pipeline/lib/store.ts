@@ -1,5 +1,6 @@
 import type { Database } from "better-sqlite3";
 import type { Column } from "./columns";
+import type { GithubStatus, GithubSyncState } from "./github-types";
 import {
   executionSelectionSchema,
   type ExecutionSelection,
@@ -37,6 +38,7 @@ export interface Card {
   tier: "trivial" | "small" | "standard" | null;
   issueUrl: string | null;
   prUrl: string | null;
+  github: GithubStatus | null;
   intakeThreadId: string | null;
   leadThreadId: string | null;
   ownerRole: CardOwnerRole;
@@ -114,6 +116,7 @@ interface CardRow {
   tier: "trivial" | "small" | "standard" | null;
   issue_url: string | null;
   pr_url: string | null;
+  github_state: string | null;
   intake_thread_id: string | null;
   lead_thread_id: string | null;
   owner_role: CardOwnerRole;
@@ -179,6 +182,7 @@ export const MIGRATIONS = [
     PRIMARY KEY (project_id, host_id)
   );`,
   `ALTER TABLE cards ADD COLUMN start_requested INTEGER NOT NULL DEFAULT 1 CHECK (start_requested IN (0, 1));`,
+  `ALTER TABLE cards ADD COLUMN github_state TEXT;`,
 ] as const;
 
 function parseAttachments(value: string): CardAttachment[] {
@@ -220,6 +224,7 @@ function cardFromRow(row: CardRow): Card {
     tier: row.tier,
     issueUrl: row.issue_url,
     prUrl: row.pr_url,
+    github: row.github_state == null ? null : (JSON.parse(row.github_state) as GithubSyncState).status,
     intakeThreadId: row.intake_thread_id,
     leadThreadId: row.lead_thread_id,
     ownerRole: row.owner_role,
@@ -270,6 +275,9 @@ export interface CardStore {
   list(projectId: string, includeDone?: boolean): Card[];
   listActiveWithOwner(): Card[];
   listControlled(): Card[];
+  listGithubCards(): Card[];
+  getGithub(id: string): GithubSyncState | null;
+  setGithub(id: string, url: string, state: GithubSyncState): boolean;
   listRunNext(): Array<{ projectId: string; hostId: string; cardId: string }>;
   getRunNext(projectId: string, hostId: string): string | null;
   setRunNext(cardId: string): void;
@@ -356,6 +364,9 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       ) {
         db.prepare("DELETE FROM run_next WHERE card_id = ?").run(id);
       }
+      if (current.prUrl !== next.prUrl) {
+        db.prepare("UPDATE cards SET github_state = NULL WHERE id = ?").run(id);
+      }
       if (history !== undefined) addHistory(id, history);
       return read(id)!;
     },
@@ -400,6 +411,19 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       return read(id)!;
     }),
     get: read,
+    listGithubCards() {
+      return (db.prepare(`SELECT * FROM cards WHERE pr_url IS NOT NULL AND "column" <> 'done' AND start_requested = 1`).all() as CardRow[]).map(cardFromRow);
+    },
+    getGithub(id) {
+      const row = getRow.get(id) as CardRow | undefined;
+      return row?.github_state == null ? null : JSON.parse(row.github_state) as GithubSyncState;
+    },
+    setGithub(id, url, state) {
+      // Remote observations must not invalidate in-flight task actions.
+      state.status.revision = (read(id)?.github?.revision ?? 0) + 1;
+      return db.prepare("UPDATE cards SET github_state = ? WHERE id = ? AND pr_url = ?")
+        .run(JSON.stringify(state), id, url).changes > 0;
+    },
     getByThread(threadId) {
       const row = db
         .prepare(

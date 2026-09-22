@@ -89,7 +89,8 @@ The card lives on the pipeline board. Report every column change and every stop 
 | implement | QA starts | `--column qa` |
 | implement | when QA sends it back | `--column implementing` |
 | close-out | draft PR opened | `--column pr --pr <url>` |
-| close-out | draft PR review-clean, waiting for the user | `--column pr_ready --needs-you "review clean; mark the PR ready and merge"` |
+| close-out | external review handoff | `bb pipeline review-wait`; end the turn |
+| close-out | delivered feedback triaged | `bb pipeline review-wait --handled <batch-id>`; end the turn |
 | any | lead stops for the user for another reason | `--needs-you "<why>"` |
 
 Small and trivial tiers skip the plan walkthrough. Every tier reports its implementation walkthrough; small changes may need only one step.

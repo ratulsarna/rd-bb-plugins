@@ -2,7 +2,18 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { ownerThread } from "@/lib/card";
 import type { ExecutionSelection } from "@/lib/execution";
 import { usePortalScopeProps } from "@/lib/portal-scope";
-import { taskDiagnostics, taskPresentationState, taskStage } from "./task-state";
+import {
+  GITHUB_CHECK_LABELS,
+  taskDiagnostics,
+  taskGithubFollowup,
+  taskGithubMergeLabel,
+  taskGithubRetryable,
+  taskGithubReviewLabel,
+  taskGithubStateLabel,
+  taskGithubSyncedLabel,
+  taskPresentationState,
+  taskStage,
+} from "./task-state";
 import type { PipelineCardProps } from "./card";
 import { CardActions } from "./card-actions";
 import { MachineSelect } from "./machine-select";
@@ -23,6 +34,8 @@ export function TaskDetails(props: PipelineCardProps) {
   const machine = props.machines.find((candidate) => candidate.id === card.hostId);
   const state = taskPresentationState(card, props);
   const diagnostics = taskDiagnostics(card, props);
+  const followup = taskGithubFollowup(card);
+  const reviewRetryable = taskGithubRetryable(card);
   const portalScope = usePortalScopeProps();
   const threadActions = [
     owner === null ? null : { label: "Open owner thread", threadId: owner },
@@ -109,11 +122,89 @@ export function TaskDetails(props: PipelineCardProps) {
                   data-tone={diagnostic.kind === "error" ? "error" : diagnostic.kind === "question" ? "attention" : undefined}
                   aria-label={diagnostic.kind === "question" ? "Question open" : undefined}
                 >
-                  <Icon name={diagnostic.kind === "question" ? "MessageQuestion" : diagnostic.kind === "queue" ? "Clock" : "AlertCircle"} />
+                  <Icon
+                    name={
+                      diagnostic.kind === "question" ? "MessageQuestion"
+                      : diagnostic.kind === "working" ? "Loading"
+                      : diagnostic.kind === "queue" ? "Clock"
+                      : "AlertCircle"
+                    }
+                    className={diagnostic.kind === "working" ? "pipeline-spin" : ""}
+                  />
                   {diagnostic.message}
                 </p>
               ))}
             </div>
+          )}
+
+          {card.prUrl === null ? null : (
+            <section className="pipeline-github" aria-label="GitHub pull request">
+              <h3>GitHub</h3>
+              {card.github === null ? <p className="pipeline-github-empty">Not synced yet</p> : (
+                <dl className="pipeline-github-fields">
+                  <dt>Pull request</dt>
+                  <dd>{card.github.number === null ? "Not synced yet" : `#${card.github.number} · ${taskGithubStateLabel(card)}`}</dd>
+                  <dt>Review</dt>
+                  <dd>{taskGithubReviewLabel(card)}</dd>
+                  <dt>Decision</dt>
+                  <dd>{card.github.reviewDecision ?? "None"}</dd>
+                  <dt>Merge</dt>
+                  <dd>{taskGithubMergeLabel(card)}</dd>
+                  <dt>Checks</dt>
+                  <dd>
+                    {card.github.checks.length === 0 ? "No checks" : (
+                      <ul className="pipeline-check-list">
+                        {card.github.checks.map((check) => (
+                          <li key={`${check.name}:${check.url ?? ""}`} className="pipeline-check" data-state={check.state}>
+                            <span className="pipeline-check-name">{check.name}</span>
+                            <span className="pipeline-check-state">{GITHUB_CHECK_LABELS[check.state]}</span>
+                            {check.url === null ? null : (
+                              <a href={check.url} target="_blank" rel="noreferrer" aria-label={`Open ${check.name} details`}>
+                                <Icon name="ExternalLink" />
+                              </a>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </dd>
+                  <dt>Synced</dt>
+                  <dd>{taskGithubSyncedLabel(card)}</dd>
+                  {followup === null ? null : (
+                    <>
+                      <dt>Follow-up</dt>
+                      <dd>{followup}</dd>
+                    </>
+                  )}
+                </dl>
+              )}
+              {card.github === null || card.github.error === null ? null : (
+                <p className="pipeline-task-reason pipeline-card-error" data-tone="error">
+                  <Icon name="AlertCircle" />
+                  GitHub sync failed: {card.github.error}
+                </p>
+              )}
+              <div className="pipeline-github-actions">
+                <button
+                  type="button"
+                  className="pipeline-button pipeline-ghost"
+                  disabled={props.pending}
+                  onClick={props.onSyncGithub}
+                >
+                  <Icon name="RotateCcw" /> Refresh GitHub
+                </button>
+                {reviewRetryable ? (
+                  <button
+                    type="button"
+                    className="pipeline-button pipeline-ghost"
+                    disabled={props.pending}
+                    onClick={props.onRetryReview}
+                  >
+                    <Icon name="RotateCcw" /> Retry review
+                  </button>
+                ) : null}
+              </div>
+            </section>
           )}
 
           {card.body.trim() === "" ? null : (

@@ -10,6 +10,7 @@ import { executionSelectionSchema, type ExecutionSelection } from "./execution";
 import type { PipelineService } from "./service";
 import type { PipelineCapacity } from "./capacity";
 import type { PipelineControls } from "./controls";
+import type { GithubSync } from "./github-sync";
 import { ownerThread } from "./card";
 import type { MachineQueue } from "./contract";
 import type { Card, CardAttachment, CardStore } from "./store";
@@ -23,6 +24,9 @@ const USAGE = `Usage:
   bb pipeline run-next <card-id> [--clear] [--json]
   bb pipeline move <card-id> <column> [--json]
   bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>] [--json]
+  bb pipeline github-sync <card-id> [--json]
+  bb pipeline review-wait [--card <id>] [--handled <batch-id>] [--json]
+  bb pipeline review-retry <card-id> [--json]
   bb pipeline retry <card-id> [--json]
   bb pipeline pause <card-id> [--json]
   bb pipeline resume <card-id> [--json]
@@ -57,6 +61,7 @@ const VALUE_OPTIONS = new Set([
   "pr",
   "tier",
   "paused",
+  "handled",
 ]);
 const BOOLEAN_OPTIONS = new Set(["json", "all", "working", "clear", "no-start"]);
 const MACHINE_COMMANDS = new Set(["add", "set-machine"]);
@@ -187,6 +192,8 @@ function formatCard(
     card.needsUser ? `needs you: ${card.attentionReason ?? "unknown"}` : null,
     card.attentionUnknown ? "idle, unchecked" : null,
     card.launchError,
+    card.github === null ? null : card.github.number === null ? "PR not synced" : `PR #${card.github.number}: ${card.github.state}; review ${card.github.review}`,
+    card.github?.error ?? null,
   ].filter((value): value is string => value !== null);
   return `${card.id}  ${card.column.padEnd(12)}  ${card.title}${flags.length === 0 ? "" : `  [${flags.join("; ")}]`}`;
 }
@@ -223,6 +230,7 @@ export function createPipelineCli(input: {
   sdk: PluginBbSdk;
   capacity: PipelineCapacity;
   controls: PipelineControls;
+  github: GithubSync;
 }): PluginCliRegistration {
   return {
     name: "pipeline",
@@ -236,6 +244,9 @@ export function createPipelineCli(input: {
       { name: "run-next", summary: "Choose or clear the next task for its machine", usage: "bb pipeline run-next <card-id> [--clear] [--json]" },
       { name: "move", summary: "Move a card", usage: "bb pipeline move <card-id> <column> [--json]" },
       { name: "report", summary: "Report phase or attention", usage: "bb pipeline report [options]" },
+      { name: "github-sync", summary: "Refresh linked PR status", usage: "bb pipeline github-sync <card-id> [--json]" },
+      { name: "review-wait", summary: "Request external review and hand off", usage: "bb pipeline review-wait [--card <id>] [--handled <batch-id>] [--json]" },
+      { name: "review-retry", summary: "Retry review feedback delivery", usage: "bb pipeline review-retry <card-id> [--json]" },
       { name: "retry", summary: "Retry a failed launch", usage: "bb pipeline retry <card-id> [--json]" },
       { name: "pause", summary: "Ask the intake or lead to pause the task gracefully", usage: "bb pipeline pause <card-id> [--json]" },
       { name: "resume", summary: "Resume a paused task", usage: "bb pipeline resume <card-id> [--json]" },
@@ -267,6 +278,7 @@ export function createPipelineCli(input: {
       if (args.command !== "add" && EXECUTION_OPTIONS.some((name) => args.options.has(name))) {
         return failure("intake and lead execution options are only accepted by add", USAGE);
       }
+      if (args.options.has("handled") && args.command !== "review-wait") return failure("--handled is only accepted by review-wait", USAGE);
       if (args.options.has("paused") && args.command !== "report") return failure("--paused is only accepted by report", USAGE);
       if (args.options.has("clear") && args.command !== "run-next") return failure("--clear is only accepted by run-next", USAGE);
       if (args.options.has("no-start") && args.command !== "add") return failure("--no-start is only accepted by add", USAGE);
@@ -410,6 +422,19 @@ export function createPipelineCli(input: {
               prUrl: option(args, "pr"),
               tier: tier as "trivial" | "small" | "standard" | undefined,
             });
+            return success(args, card, formatCard(card));
+          }
+          case "github-sync":
+          case "review-retry": {
+            if (args.positionals.length !== 1) return failure(`${args.command} requires one card id`, USAGE);
+            const card = await input.github[args.command === "github-sync" ? "sync" : "retry"](args.positionals[0]!);
+            return success(args, card, formatCard(card));
+          }
+          case "review-wait": {
+            if (args.positionals.length > 0) return failure("review-wait takes options only", USAGE);
+            const cardId = option(args, "card") ?? (context.threadId === undefined ? undefined : input.store.getByThread(context.threadId)?.id);
+            if (cardId === undefined) return failure("Pass --card or run from the owning lead thread", USAGE);
+            const card = await input.github.waitForReview(cardId, context.threadId, option(args, "handled"));
             return success(args, card, formatCard(card));
           }
           case "retry": {

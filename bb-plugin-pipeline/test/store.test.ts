@@ -134,14 +134,14 @@ describe("card migrations", () => {
   it("keeps existing cards started when adding durable start intent", () => {
     const db = new Database(":memory:");
     try {
-      for (const migration of MIGRATIONS.slice(0, -1)) db.exec(migration);
+      for (const migration of MIGRATIONS.slice(0, 6)) db.exec(migration);
       db.prepare(
         `INSERT INTO cards
           (id, project_id, host_id, title, body, attachments, "column", created_at, updated_at)
          VALUES ('card_1', 'proj_1', 'host_mac', 'Existing card', 'Keep me', '[]', 'todo', 1, 2)`,
       ).run();
 
-      db.exec(MIGRATIONS.at(-1)!);
+      db.exec(MIGRATIONS[6]);
 
       expect(createCardStore(db).get("card_1")?.startRequested).toBe(true);
       expect(() => db.prepare("UPDATE cards SET start_requested = 2 WHERE id = 'card_1'").run()).toThrow();

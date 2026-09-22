@@ -5,6 +5,7 @@ import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { COLUMNS, COLUMN_LABELS } from "../lib/columns";
 import { PAUSE_DELIVERY_PENDING } from "../lib/card";
 import type { MachineQueue } from "../lib/contract";
+import type { GithubStatus } from "../lib/github-types";
 import type { ExecutionDefaults } from "../lib/execution";
 import { makeCard, makeSidebarThread } from "./sdk-fake";
 
@@ -33,6 +34,26 @@ function makeMachineQueue(overrides: Partial<MachineQueue> = {}): MachineQueue {
     occupied: [],
     waiting: [],
     nextCardId: null,
+    ...overrides,
+  };
+}
+
+function makeGithub(overrides: Partial<GithubStatus> = {}): GithubStatus {
+  return {
+    revision: 1,
+    url: "https://github.com/example/repo/pull/12",
+    number: 12,
+    state: "open",
+    draft: false,
+    headSha: "abc123",
+    checks: [],
+    mergeable: "mergeable",
+    reviewDecision: null,
+    review: "waiting",
+    followup: null,
+    batchId: "batch_1",
+    syncedAt: Date.UTC(2025, 0, 1, 12, 30),
+    error: null,
     ...overrides,
   };
 }
@@ -77,6 +98,8 @@ function renderBoard(options?: {
   setRunNext?: ReturnType<typeof vi.fn>;
   removeCard?: ReturnType<typeof vi.fn>;
   startCard?: ReturnType<typeof vi.fn>;
+  syncGithub?: ReturnType<typeof vi.fn>;
+  retryReview?: ReturnType<typeof vi.fn>;
 }) {
   const listProjects =
     options?.listProjects ??
@@ -127,6 +150,8 @@ function renderBoard(options?: {
         setRunNext: options?.setRunNext ?? (() => ({ ok: true as const })),
         removeCard: options?.removeCard ?? (() => ({ removed: true })),
         startCard: options?.startCard ?? (() => makeCard()),
+        syncGithub: options?.syncGithub ?? (() => makeCard()),
+        retryReview: options?.retryReview ?? (() => makeCard()),
         showCard: () => ({ card: makeCard(), history: [], queued: false }),
       },
     },
@@ -1518,6 +1543,222 @@ describe("pipeline board", () => {
     expect(screen.queryByRole("article")).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByText("Old machine")).toBeNull();
+  });
+
+  it("surfaces github failures through Needs you with refresh and retry review", async () => {
+    const prUrl = "https://github.com/example/repo/pull/12";
+    const quietError = makeCard({
+      id: "quiet-error",
+      title: "Quiet error",
+      prUrl,
+      github: makeGithub({ error: "stale token" }),
+    });
+    const closedCard = makeCard({
+      id: "closed-pr",
+      title: "Closed early",
+      prUrl,
+      github: makeGithub({ state: "closed", review: "unknown", mergeable: "unknown" }),
+    });
+    let card = makeCard({
+      id: "flaky",
+      title: "Flaky sync",
+      prUrl,
+      github: makeGithub({ error: "rate limited", followup: "cancelled" }),
+    });
+    const retryReview = vi.fn(() => {
+      card = makeCard({
+        id: "flaky",
+        title: "Flaky sync",
+        prUrl,
+        github: makeGithub({ review: "waiting", error: null }),
+      });
+      return card;
+    });
+    renderBoard({
+      retryReview,
+      listCards: vi.fn(() => ({ cards: [card, quietError, closedCard], queue: [makeMachineQueue()] })),
+    });
+    await screen.findByText("Review follow-up cancelled; retry when ready");
+    expect(screen.getByRole("button", { name: "Needs you 3" })).toBeTruthy();
+    const row = screen.getByRole("article", { name: "Flaky sync" });
+    expect(within(row).getByText("Sync failed")).toBeTruthy();
+    expect(within(screen.getByRole("article", { name: "Closed early" })).getByText("PR closed")).toBeTruthy();
+
+    fireEvent.click(within(row).getByRole("button", { name: "Details for Flaky sync" }));
+    const detail = screen.getByRole("dialog");
+    expect(within(detail).getByRole("button", { name: "Refresh GitHub" })).toBeTruthy();
+    fireEvent.click(within(detail).getByRole("button", { name: "Retry review" }));
+    await waitFor(() => expect(retryReview).toHaveBeenCalledExactlyOnceWith({ cardId: "flaky" }));
+
+    await waitFor(() => expect(within(row).getByText("Awaiting review")).toBeTruthy());
+    expect(within(detail).queryByRole("button", { name: "Retry review" })).toBeNull();
+    expect(within(detail).getByRole("button", { name: "Refresh GitHub" })).toBeTruthy();
+
+    fireEvent.click(within(detail).getByRole("button", { name: "Close task details" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("button", { name: "Needs you 2" })).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("article", { name: "Quiet error" })).getByRole("button", { name: "Details for Quiet error" }));
+    const quietDetail = screen.getByRole("dialog");
+    expect(within(quietDetail).getByRole("button", { name: "Refresh GitHub" })).toBeTruthy();
+    expect(within(quietDetail).queryByRole("button", { name: "Retry review" })).toBeNull();
+  });
+
+  it("treats awaiting review as idle, shows No checks, and surfaces the merge decision", async () => {
+    const prUrl = "https://github.com/example/repo/pull/12";
+    renderBoard({
+      cards: [
+        makeCard({ id: "awaiting", title: "Waiting task", prUrl, github: makeGithub({ review: "waiting" }) }),
+        makeCard({
+          id: "cleared",
+          title: "Cleared task",
+          prUrl,
+          github: makeGithub({ review: "clear", reviewDecision: "APPROVED", mergeable: "mergeable" }),
+        }),
+      ],
+    });
+    await screen.findByText("Awaiting review");
+    expect(screen.getByRole("button", { name: "Needs you 1" })).toBeTruthy();
+    const awaiting = screen.getByRole("article", { name: "Waiting task" });
+    expect(within(awaiting).getByText("Open")).toBeTruthy();
+    expect(within(awaiting).queryByText("Needs you")).toBeNull();
+    const cleared = screen.getByRole("article", { name: "Cleared task" });
+    expect(within(cleared).getByText("Review settled")).toBeTruthy();
+
+    fireEvent.click(within(awaiting).getByRole("button", { name: "Details for Waiting task" }));
+    const detail = screen.getByRole("dialog");
+    expect(within(detail).getByText("No checks")).toBeTruthy();
+    expect(within(detail).getByText("Awaiting review", { selector: "dd" })).toBeTruthy();
+    expect(within(detail).getByText("2025-01-01 12:30 UTC")).toBeTruthy();
+    expect(within(detail).queryByText(/checks passed/i)).toBeNull();
+
+    fireEvent.click(within(detail).getByRole("button", { name: "Close task details" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(within(cleared).getByRole("button", { name: "Details for Cleared task" }));
+    const clearedDetail = screen.getByRole("dialog");
+    expect(within(clearedDetail).getByText("Review settled", { selector: "dd" })).toBeTruthy();
+    expect(within(clearedDetail).getByText("APPROVED", { selector: "dd" })).toBeTruthy();
+    expect(within(clearedDetail).getByText("No conflicts", { selector: "dd" })).toBeTruthy();
+  });
+
+  it("applies a fresh sync snapshot and ignores a stale one", async () => {
+    let card = makeCard({
+      revision: 7,
+      prUrl: "https://github.com/example/repo/pull/12",
+      github: makeGithub({ review: "waiting" }),
+    });
+    let resolveSync!: (value: ReturnType<typeof makeCard>) => void;
+    const syncGithub = vi.fn(() => new Promise<ReturnType<typeof makeCard>>((resolve) => {
+      resolveSync = resolve;
+    }));
+    renderBoard({
+      syncGithub,
+      listCards: vi.fn(() => ({ cards: [card], queue: [] })),
+    });
+    const row = await screen.findByRole("article", { name: "A pipeline card" });
+    expect(within(row).getByText("Awaiting review")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+    fireEvent.click(within(detail).getByRole("button", { name: "Refresh GitHub" }));
+    expect(syncGithub).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
+    await act(async () => resolveSync(makeCard({ revision: 6, github: makeGithub({ review: "feedback" }) })));
+    await waitFor(() => expect(
+      (within(detail).getByRole("button", { name: "Refresh GitHub" }) as HTMLButtonElement).disabled,
+    ).toBe(false));
+    expect(within(row).getByText("Awaiting review")).toBeTruthy();
+
+    fireEvent.click(within(detail).getByRole("button", { name: "Refresh GitHub" }));
+    card = makeCard({
+      revision: 8,
+      prUrl: "https://github.com/example/repo/pull/12",
+      github: makeGithub({ review: "feedback" }),
+    });
+    await act(async () => resolveSync(card));
+    await waitFor(() => expect(within(row).getByText("Feedback for lead")).toBeTruthy());
+  });
+
+  it("keeps a newer GitHub observation when an action returns an older snapshot at the same task revision", async () => {
+    const card = makeCard({ prUrl: "https://github.com/example/repo/pull/12", github: makeGithub({ review: "waiting" }) });
+    const updated = { ...card, github: makeGithub({ review: "clear", revision: 2 }) };
+    let finishAction!: (value: typeof card) => void;
+    let finishLoad!: (value: { cards: typeof card[]; queue: never[] }) => void;
+    const syncGithub = vi.fn(() => new Promise<typeof card>((resolve) => { finishAction = resolve; }));
+    const listCards = vi.fn().mockResolvedValueOnce({ cards: [card], queue: [] })
+      .mockResolvedValueOnce({ cards: [updated], queue: [] })
+      .mockImplementationOnce(() => new Promise((resolve) => { finishLoad = resolve; }));
+    const { slot } = renderBoard({ syncGithub, listCards });
+    fireEvent.click(await screen.findByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+    fireEvent.click(within(detail).getByRole("button", { name: "Refresh GitHub" }));
+    await slot.behavior.emitRealtime("cards:changed", {});
+    expect(within(detail).getByText("Review settled", { selector: "dd" })).toBeTruthy();
+    await act(async () => finishAction(card));
+    await waitFor(() => expect(listCards).toHaveBeenCalledTimes(3));
+    expect(within(detail).getByText("Review settled", { selector: "dd" })).toBeTruthy();
+    await act(async () => finishLoad({ cards: [updated], queue: [] }));
+  });
+
+  it("keeps a successful GitHub action visible when the following board reload fails", async () => {
+    const card = makeCard({ prUrl: "https://github.com/example/repo/pull/12", github: makeGithub() });
+    const updated = { ...card, github: makeGithub({ review: "clear", revision: 2 }) };
+    const listCards = vi.fn().mockResolvedValueOnce({ cards: [card], queue: [] })
+      .mockRejectedValueOnce(new Error("Board reload unavailable"));
+    renderBoard({ listCards, syncGithub: vi.fn(async () => updated) });
+    fireEvent.click(await screen.findByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+    fireEvent.click(within(detail).getByRole("button", { name: "Refresh GitHub" }));
+    await screen.findByText("Board reload unavailable");
+    expect(within(detail).getByText("Review settled", { selector: "dd" })).toBeTruthy();
+  });
+
+  it("holds the refresh lock while syncing and recovers from a failed refresh", async () => {
+    let failSync!: (cause: Error) => void;
+    const syncGithub = vi.fn(() => new Promise<ReturnType<typeof makeCard>>((_, reject) => {
+      failSync = reject;
+    }));
+    renderBoard({
+      syncGithub,
+      cards: [makeCard({ prUrl: "https://github.com/example/repo/pull/12" })],
+    });
+    const row = await screen.findByRole("article", { name: "A pipeline card" });
+    fireEvent.click(screen.getByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+    const refresh = within(detail).getByRole("button", { name: "Refresh GitHub" });
+    fireEvent.click(refresh);
+
+    expect(syncGithub).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
+    expect((refresh as HTMLButtonElement).disabled).toBe(true);
+    expect(within(row).getByText("Saving")).toBeTruthy();
+    fireEvent.click(refresh);
+    expect(syncGithub).toHaveBeenCalledTimes(1);
+
+    await act(async () => failSync(new Error("GitHub unavailable")));
+    expect((await within(detail).findByRole("alert")).textContent).toContain("GitHub unavailable");
+    expect((within(detail).getByRole("button", { name: "Refresh GitHub" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(within(row).queryByText("Saving")).toBeNull();
+  });
+
+  it("keeps Stop now available while workers still occupy a done task", async () => {
+    const stopCard = vi.fn(() => makeCard({ column: "done", runState: "stopping" }));
+    renderBoard({
+      stopCard,
+      cards: [
+        makeCard({ id: "card_1", title: "Wrapped", column: "done" }),
+        makeCard({ id: "idle-done", title: "Idle done", column: "done" }),
+      ],
+      queue: [makeMachineQueue({
+        occupied: [{ cardId: "card_1", title: "Wrapped", threadId: null }],
+      })],
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
+    const row = await screen.findByRole("article", { name: "Wrapped" });
+    expect(within(row).getByText("Work still running")).toBeTruthy();
+    expect(within(screen.getByRole("article", { name: "Idle done" })).queryByText("Work still running")).toBeNull();
+
+    fireEvent.click(within(row).getByRole("button", { name: "Details for Wrapped" }));
+    const detail = screen.getByRole("dialog");
+    fireEvent.click(within(detail).getByRole("button", { name: "Stop now" }));
+    await waitFor(() => expect(stopCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" }));
   });
 
 });

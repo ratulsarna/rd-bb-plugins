@@ -7,6 +7,7 @@ import { rpcContract } from "./lib/contract";
 import { REASONING_LEVELS } from "./lib/execution";
 import { readIssue } from "./lib/issue";
 import { askJev } from "./lib/jev";
+import { createGithubSync } from "./lib/github-sync";
 import { listProjectMachines } from "./lib/machines";
 import { createAttentionNotifier, userAttentionReason } from "./lib/notifications";
 import { createPipelineService } from "./lib/service";
@@ -58,6 +59,11 @@ export default async function plugin(bb: BbPluginApi) {
       options: ["accept-edits", "auto", "full"],
       default: "full",
     },
+    reviewRequestComment: {
+      type: "string",
+      label: "Review request comment (empty for automatic reviews)",
+      default: "@codex review",
+    },
     jevApiKey: {
       type: "string",
       label: "TypeSafe API key",
@@ -65,7 +71,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     jevThreshold: {
       type: "string",
-      label: "Jev needs-you threshold (0.5..1)",
+      label: "Jev confidence threshold (0.5..1)",
       default: "0.7",
     },
   });
@@ -75,7 +81,13 @@ export default async function plugin(bb: BbPluginApi) {
   const store = createCardStore(db);
   const notifyAttention = createAttentionNotifier(bb);
   const capacity = createPipelineCapacity(bb, store);
-  bb.experimental_hooks.on("message.dispatch", capacity.decide, { experimental_enforcement: "strict" });
+  const github = createGithubSync({ bb, store, getSettings: () => settings.get(), notify: notifyAttention });
+  bb.experimental_hooks.on("message.dispatch", async (context) => {
+    const reviewDecision = github.decide(context);
+    if (reviewDecision !== null) return reviewDecision;
+    const decision = await capacity.decide(context);
+    return github.decide(context) ?? decision;
+  }, { experimental_enforcement: "strict" });
   const service = createPipelineService({
     store,
     sdk: bb.sdk,
@@ -101,6 +113,7 @@ export default async function plugin(bb: BbPluginApi) {
     log: (message) => bb.log.warn(message),
     publish: (projectId) => bb.realtime.publish(CARDS_CHANGED, { projectId }),
     onAttention: notifyAttention,
+    onPrChanged: (card) => { void github.sync(card.id).catch((cause) => bb.log.warn(String(cause))); },
   });
   const controls = createPipelineControls(bb, store, service);
 
@@ -118,6 +131,8 @@ export default async function plugin(bb: BbPluginApi) {
         queue: await capacity.snapshot(projectId),
       };
     },
+    syncGithub: ({ cardId }) => github.sync(cardId),
+    retryReview: ({ cardId }) => github.retry(cardId),
     async setRunNext({ cardId, enabled }) {
       await capacity.setRunNext(cardId, enabled);
       return { ok: true as const };
@@ -155,7 +170,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk, capacity, controls }));
+  bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk, capacity, controls, github }));
 
   bb.events.on("interaction.pending", ({ thread, interaction }) => {
     const card = store.getByThread(thread.id);
@@ -181,6 +196,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   for (const event of ["message.queued", "message.dispatched", "message.cancelled"] as const) {
     bb.events.on(event, async ({ entry }) => {
+      github.onMessage(event === "message.queued" ? "queued" : event === "message.dispatched" ? "dispatched" : "cancelled", entry);
       if (event === "message.cancelled") controls.onMessageCancelled(entry);
       const thread = await bb.sdk.threads.get({ threadId: entry.threadId, experimental_includeDeleted: true });
       if (event !== "message.dispatched") await service.onThreadQueueChanged(thread);
@@ -235,11 +251,13 @@ export default async function plugin(bb: BbPluginApi) {
     return { tools: [], skills: ["pipeline"] };
   });
 
+  bb.background.schedule("github-sync", "* * * * *", () => github.poll());
   bb.background.service("startup-pass", {
     async start(signal) {
       await controls.startup();
       await service.startupPass();
       await capacity.startup();
+      await github.poll();
       await bb.experimental_hooks.recheck("message.dispatch");
       await new Promise<void>((resolve) => {
         if (signal.aborted) return resolve();
