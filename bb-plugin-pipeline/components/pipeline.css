@@ -242,3 +242,6 @@
 
 .pipeline-card > .pipeline-task-main > .pipeline-task-reason { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .pipeline-detail-fields a { display: inline-flex; align-items: center; gap: 6px; }
+
+.pipeline-error > span { flex: 1; min-width: 0; }
+.pipeline-error > .pipeline-button { flex: none; padding: 0 6px; min-height: 26px; }

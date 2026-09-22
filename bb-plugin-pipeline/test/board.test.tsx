@@ -1433,4 +1433,36 @@ describe("pipeline board", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+
+  it("keeps a successful removal applied when the follow-up refresh fails", async () => {
+    const removeCard = vi.fn(() => ({ removed: true }));
+    const listCards = vi.fn().mockResolvedValueOnce({ cards: [makeCard()], queue: [] })
+      .mockRejectedValueOnce(new Error("Refresh unavailable"))
+      .mockResolvedValue({ cards: [], queue: [] });
+    renderBoard({ listCards, removeCard });
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for A pipeline card" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Refresh unavailable");
+    expect(screen.queryByRole("article", { name: "A pipeline card" })).toBeNull();
+    expect(removeCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await screen.findByText("No open tasks");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("includes failed task controls in Needs you while keeping healthy held tasks quiet", async () => {
+    renderBoard({ cards: [
+      makeCard({ id: "stop", title: "Failed stop", runState: "stopping", controlError: "Machine offline" }),
+      makeCard({ id: "pause", title: "Failed pause", runState: "pause_requested", controlError: "Could not deliver pause" }),
+      makeCard({ id: "resume", title: "Failed resume", runState: "paused", controlError: "Resume failed" }),
+      makeCard({ id: "quiet", title: "Paused normally", runState: "paused" }),
+      makeCard({ id: "saved", title: "Saved", startRequested: false, controlError: "stale" }),
+      makeCard({ id: "done", title: "Done", column: "done", controlError: "stale" }),
+    ] });
+    fireEvent.click(await screen.findByRole("button", { name: "Needs you 3" }));
+    expect(screen.getAllByRole("article").map((row) => row.getAttribute("aria-label")).sort()).toEqual(["Failed pause", "Failed resume", "Failed stop"]);
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Failed stop" }));
+    expect(screen.getByRole("button", { name: "Stop now" })).toBeTruthy();
+  });
+
 });

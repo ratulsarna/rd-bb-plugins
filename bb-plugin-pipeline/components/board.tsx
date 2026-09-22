@@ -195,13 +195,20 @@ export function PipelineBoard() {
     setDropColumn(null);
   }
 
-  async function updateCard(card: Card, update: () => Promise<unknown>) {
+  async function updateCard(card: Card, update: () => Promise<Card | { removed: boolean } | { ok: true }>) {
     if (pendingCards.has(card.id) || card.projectId !== projectIdRef.current) return;
     setPendingCards((current) => new Set(current).add(card.id));
     setError(null);
     setActionError(null);
     try {
-      await update();
+      const result = await update();
+      if (projectIdRef.current === card.projectId) {
+        if ("removed" in result && result.removed) {
+          setCards((current) => current.filter((item) => item.id !== card.id));
+        } else if ("id" in result) {
+          setCards((current) => current.map((item) => item.id === result.id && result.revision >= item.revision ? result : item));
+        }
+      }
       await load();
     } catch (cause) {
       if (projectIdRef.current === card.projectId) {
@@ -376,7 +383,7 @@ export function PipelineBoard() {
           <Icon name="ChevronDown" />
         </label>
       </div>
-      {error === null ? null : <p role="alert" className="pipeline-error"><Icon name="AlertCircle" />{error}</p>}
+      {error === null ? null : <div role="alert" className="pipeline-error"><Icon name="AlertCircle" /><span>{error}</span><button type="button" className="pipeline-button pipeline-ghost" disabled={loading} onClick={() => void load()}>Refresh</button></div>}
       <div className="pipeline-scroll" onKeyDown={(event) => { if (event.key === "Escape") clearDrag(); }}>
         {filteredCards.length === 0 ? (
           loading ? <div className="pipeline-skeleton" aria-hidden="true" /> : (

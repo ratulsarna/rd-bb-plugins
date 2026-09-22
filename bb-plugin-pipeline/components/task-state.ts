@@ -125,6 +125,7 @@ export function taskPrimaryReason(
 
 export function taskNeedsAttention(card: Card, questionOpen: boolean): boolean {
   if (!card.startRequested || card.column === "done") return false;
+  if (card.controlError !== null) return true;
   if (card.runState === "pause_requested") return questionOpen;
   if (card.runState !== "running") return false;
   return card.needsUser ||
