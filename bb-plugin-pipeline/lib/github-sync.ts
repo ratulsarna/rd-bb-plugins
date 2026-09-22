@@ -253,12 +253,14 @@ export function createGithubSync(input: {
         if (current(id, url)?.runState !== "running" || ownerThread(required(id)) !== card.leadThreadId) throw new Error("Task changed during review handoff");
         if (snapshot.state !== "open") throw new Error("Review handoff requires an open PR");
         const state = store.getGithub(id) ?? initialState(url);
+        const alreadyHandedOff = handled === undefined || state.batch?.state === "handled";
         if (handled !== undefined) {
           if (state.batch?.id !== handled) throw new Error("This review feedback batch is no longer current");
           state.batch.state = "handled";
         } else if (state.batch !== null && !["handled", "cancelled"].includes(state.batch.state)) {
           throw new Error(`Acknowledge the current feedback with --handled ${state.batch.id}`);
         }
+        if (alreadyHandedOff && state.awaitingReview && state.requestedSha === snapshot.headSha) return syncUnlocked(id);
         const comment = (await input.getSettings()).reviewRequestComment?.trim() ?? "@codex review";
         const marker = `<!-- pipeline-review-request:${id}:${snapshot.headSha} -->`;
         if (!(handled !== undefined && state.batch?.headSha === snapshot.headSha) && comment !== "" && state.requestedSha !== snapshot.headSha && !snapshot.feedback.some((item) => item.body.includes(marker))) {

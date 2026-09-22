@@ -11,7 +11,7 @@ afterEach(async () => { while (hosts.length) await hosts.pop()!.harness.lifecycl
 const url = "https://github.com/example/repo/pull/12";
 const feedback = (overrides: Partial<GithubFeedback> = {}): GithubFeedback => ({
   id: "inline:1", kind: "inline", author: "reviewer", body: "This loses saved data", url: `${url}#discussion_r1`,
-  commitSha: "abc", state: null, updatedAt: Date.now(), inReplyTo: null, ...overrides,
+  commitSha: "abc", state: null, updatedAt: 1, inReplyTo: null, ...overrides,
 });
 function setup() {
   let snapshot: GithubSnapshot = { url, number: 12, state: "open", draft: true, headSha: "abc", author: "owner", checks: [],
@@ -70,6 +70,20 @@ describe("GitHub review handoff", () => {
     await expect(s.sync.waitForReview("card", "lead")).rejects.toThrow("lost response");
     await s.sync.waitForReview("card", "lead");
     expect(s.post).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a settled review and a later user question when the same handoff is repeated", async () => {
+    const s = setup();
+    await s.sync.waitForReview("card", "lead");
+    s.classify.mockResolvedValue({ decision: "clear", probability: .99 });
+    s.change({ feedback: [feedback({ kind: "review", body: "No findings" })] });
+    await s.sync.poll();
+    s.store.update("card", { needsUser: true, attentionReason: "Which release?", reportSignal: "needs_you" });
+    await s.sync.waitForReview("card", "lead");
+    expect(s.card()).toMatchObject({ needsUser: true, attentionReason: "Which release?", github: { review: "clear" } });
+    expect(s.post).toHaveBeenCalledTimes(1);
+    expect(s.classify).toHaveBeenCalledTimes(1);
+    expect(s.store.history("card").filter((entry) => entry.kind === "review_waiting")).toHaveLength(1);
   });
 
   it("coalesces feedback into one durable follow-up across repeated scans and reload", async () => {
