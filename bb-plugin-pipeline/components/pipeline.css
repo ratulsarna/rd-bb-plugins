@@ -239,3 +239,6 @@
 .pipeline-detail-fields a { color: var(--foreground); text-underline-offset: 3px; }
 .pipeline-queue-trigger > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pipeline-queue-usage { flex: none; }
+
+.pipeline-card > .pipeline-task-main > .pipeline-task-reason { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.pipeline-detail-fields a { display: inline-flex; align-items: center; gap: 6px; }
