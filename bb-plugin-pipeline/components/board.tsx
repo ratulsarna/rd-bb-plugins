@@ -217,8 +217,9 @@ export function PipelineBoard() {
         } else if ("id" in result) {
           setCards((current) => current.map((item) => {
             if (item.id !== result.id || result.revision < item.revision) return item;
-            // GitHub can change during an action; the fresh list owns that snapshot.
-            return { ...result, github: item.prUrl === result.prUrl ? item.github : result.github };
+            const newerGithub = item.prUrl === result.prUrl && item.github !== null &&
+              (result.github === null || item.github.revision > result.github.revision);
+            return { ...result, github: newerGithub ? item.github : result.github };
           }));
         }
       }

@@ -40,6 +40,7 @@ function makeMachineQueue(overrides: Partial<MachineQueue> = {}): MachineQueue {
 
 function makeGithub(overrides: Partial<GithubStatus> = {}): GithubStatus {
   return {
+    revision: 1,
     url: "https://github.com/example/repo/pull/12",
     number: 12,
     state: "open",
@@ -1678,7 +1679,7 @@ describe("pipeline board", () => {
 
   it("keeps a newer GitHub observation when an action returns an older snapshot at the same task revision", async () => {
     const card = makeCard({ prUrl: "https://github.com/example/repo/pull/12", github: makeGithub({ review: "waiting" }) });
-    const updated = { ...card, github: makeGithub({ review: "clear" }) };
+    const updated = { ...card, github: makeGithub({ review: "clear", revision: 2 }) };
     let finishAction!: (value: typeof card) => void;
     let finishLoad!: (value: { cards: typeof card[]; queue: never[] }) => void;
     const syncGithub = vi.fn(() => new Promise<typeof card>((resolve) => { finishAction = resolve; }));
@@ -1695,6 +1696,19 @@ describe("pipeline board", () => {
     await waitFor(() => expect(listCards).toHaveBeenCalledTimes(3));
     expect(within(detail).getByText("Review settled", { selector: "dd" })).toBeTruthy();
     await act(async () => finishLoad({ cards: [updated], queue: [] }));
+  });
+
+  it("keeps a successful GitHub action visible when the following board reload fails", async () => {
+    const card = makeCard({ prUrl: "https://github.com/example/repo/pull/12", github: makeGithub() });
+    const updated = { ...card, github: makeGithub({ review: "clear", revision: 2 }) };
+    const listCards = vi.fn().mockResolvedValueOnce({ cards: [card], queue: [] })
+      .mockRejectedValueOnce(new Error("Board reload unavailable"));
+    renderBoard({ listCards, syncGithub: vi.fn(async () => updated) });
+    fireEvent.click(await screen.findByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+    fireEvent.click(within(detail).getByRole("button", { name: "Refresh GitHub" }));
+    await screen.findByText("Board reload unavailable");
+    expect(within(detail).getByText("Review settled", { selector: "dd" })).toBeTruthy();
   });
 
   it("holds the refresh lock while syncing and recovers from a failed refresh", async () => {

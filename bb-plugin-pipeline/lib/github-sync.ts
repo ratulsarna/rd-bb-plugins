@@ -17,7 +17,7 @@ function fingerprint(item: GithubFeedback): string {
 
 function initialState(url: string): GithubSyncState {
   return {
-    status: { url, number: null, state: "open", draft: true, headSha: "", checks: [],
+    status: { revision: 0, url, number: null, state: "open", draft: true, headSha: "", checks: [],
       mergeable: "unknown", reviewDecision: null, review: "waiting", followup: null, batchId: null, syncedAt: null, error: null },
     observed: {}, batch: null, requestedSha: null, awaitingReviewRevision: null, readFailures: 0,
   };
@@ -257,11 +257,12 @@ export function createGithubSync(input: {
     },
     async waitForReview(id: string, threadId?: string, handled?: string): Promise<Card> {
       return serial(id, async () => {
-        const card = canonicalPr(required(id));
+        let card = required(id);
         if (!card.startRequested || card.runState !== "running" || card.column === "done" || card.ownerRole !== "lead" || card.leadThreadId === null) {
           throw new Error("Review handoff requires a running task with a lead");
         }
         if (threadId !== undefined && threadId !== card.leadThreadId) throw new Error("Only the owning lead can hand off its review");
+        card = canonicalPr(card);
         const url = card.prUrl;
         if (url === null || normalizePullRequestUrl(url) === null) throw new Error("Link the PR before handing off its review");
         const snapshot = await read(url, abort.signal);

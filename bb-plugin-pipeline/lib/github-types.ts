@@ -31,6 +31,7 @@ export interface GithubSnapshot {
 }
 
 export const githubStatusSchema = z.object({
+  revision: z.number().int().nonnegative(),
   url: z.string(), number: z.number().int().positive().nullable(), state: z.enum(["open", "closed", "merged"]),
   draft: z.boolean(), headSha: z.string(), checks: z.array(githubCheckSchema),
   mergeable: z.enum(["mergeable", "conflicting", "unknown"]), reviewDecision: z.string().nullable(),
