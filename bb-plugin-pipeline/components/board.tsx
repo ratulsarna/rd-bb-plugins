@@ -15,10 +15,13 @@ import type { Card, CardAttachment } from "@/lib/store";
 import { AddCard } from "./add-card";
 import { Icon } from "./icon";
 import { PipelineCard } from "./card";
+import { taskNeedsAttention } from "./task-state";
 import { MachineQueueStatus } from "./machine-queue";
 import type { PipelineMachine } from "@/lib/machines";
 
 const PROJECT_KEY = "pipeline:selected-project";
+const VIEW_KEY = "pipeline:view";
+type TaskFilter = "open" | "attention" | "queued" | "done";
 const CARD_DRAG_TYPE = "application/x-bb-pipeline-card";
 
 interface UploadedAttachment {
@@ -57,11 +60,14 @@ export function PipelineBoard() {
   const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [machines, setMachines] = useState<PipelineMachine[]>([]);
-  const [includeDone, setIncludeDone] = useState(false);
+  const [view, setView] = useState<"list" | "board">(() => localStorage.getItem(VIEW_KEY) === "board" ? "board" : "list");
+  const [filter, setFilter] = useState<TaskFilter>("open");
+  const [stage, setStage] = useState<Column | "all">("all");
   const [cards, setCards] = useState<Awaited<ReturnType<typeof rpc.call<"listCards">>>["cards"]>([]);
   const [queue, setQueue] = useState<MachineQueue[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<{ cardId: string; message: string } | null>(null);
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
   const [dropColumn, setDropColumn] = useState<Column | null>(null);
   const [pendingCards, setPendingCards] = useState<Set<string>>(new Set());
@@ -84,6 +90,13 @@ export function PipelineBoard() {
       const selected = nextProjects.some((project) => project.id === preferred)
         ? preferred
         : (nextProjects[0]?.id ?? null);
+      if (selected !== current) {
+        includeDoneRef.current = false;
+        setFilter("open");
+        setStage("all");
+        setDraggedCardId(null);
+        setDropColumn(null);
+      }
       projectIdRef.current = selected;
       setProjects(nextProjects);
       setProjectId(selected);
@@ -139,7 +152,6 @@ export function PipelineBoard() {
       ),
     [sidebar.threads],
   );
-  const visibleColumns = includeDone ? COLUMNS : COLUMNS.filter((column) => column !== "done");
   const queuedCards = useMemo(() => {
     const result = new Map<string, { reasons: string[]; canRunNext: boolean; next: boolean }>();
     for (const machine of queue) {
@@ -154,13 +166,29 @@ export function PipelineBoard() {
     }
     return result;
   }, [queue]);
-  const draggedCard = cards.find(
-    (card) =>
-      card.id === draggedCardId &&
-      card.projectId === projectId &&
-      card.runState === "running" &&
-      card.startRequested,
-  );
+  function questionOpen(card: Card) {
+    const owner = ownerThread(card);
+    return owner !== null && pendingThreads.has(owner);
+  }
+  function queued(card: Card) {
+    return card.column !== "done" && card.startRequested && card.runState === "running" && queuedCards.has(card.id);
+  }
+  const openCards = cards.filter((card) => card.column !== "done");
+  const needsAttention = openCards.filter((card) => taskNeedsAttention(card, questionOpen(card))).length;
+  const queuedCount = openCards.filter(queued).length;
+  const filteredCards = cards.filter((card) => {
+    if (filter === "done") return card.column === "done";
+    if (card.column === "done") return false;
+    if (filter === "attention") return taskNeedsAttention(card, questionOpen(card));
+    if (filter === "queued") return queued(card);
+    return true;
+  }).filter((card) => stage === "all" || card.column === stage)
+    .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+  const draggedCard = view === "board" ? filteredCards.find(
+    (card) => card.id === draggedCardId && card.projectId === projectId && card.runState === "running" && card.startRequested,
+  ) : undefined;
+  const stageColumns = COLUMNS.filter((column) => filter === "done" ? column === "done" : column !== "done");
+  const visibleColumns = stageColumns.filter((column) => Boolean(draggedCard) || filteredCards.some((card) => card.column === column));
 
   function clearDrag() {
     setDraggedCardId(null);
@@ -171,12 +199,15 @@ export function PipelineBoard() {
     if (pendingCards.has(card.id) || card.projectId !== projectIdRef.current) return;
     setPendingCards((current) => new Set(current).add(card.id));
     setError(null);
+    setActionError(null);
     try {
       await update();
       await load();
     } catch (cause) {
       if (projectIdRef.current === card.projectId) {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setError(message);
+        setActionError({ cardId: card.id, message });
       }
     } finally {
       setPendingCards((current) => {
@@ -208,14 +239,58 @@ export function PipelineBoard() {
     await load();
   }
 
-  const needsAttention = cards.filter((card) => {
-    if (!card.startRequested) return false;
-    const owner = ownerThread(card);
-    if (card.runState === "pause_requested") return owner !== null && pendingThreads.has(owner);
-    if (card.runState !== "running") return false;
-    return card.needsUser || card.launchError !== null || card.threadError !== null || (owner !== null && pendingThreads.has(owner));
-  }).length;
   const projectName = projects.find((project) => project.id === projectId)?.name ?? "";
+
+  function selectFilter(next: TaskFilter) {
+    setFilter(next);
+    setStage("all");
+    clearDrag();
+    if (includeDoneRef.current !== (next === "done")) {
+      requestSequence.current += 1;
+      includeDoneRef.current = next === "done";
+      void load();
+    }
+  }
+
+  function renderCard(card: Card) {
+    return (
+      <PipelineCard
+        key={card.id}
+        layout={view}
+        actionError={actionError?.cardId === card.id ? actionError.message : null}
+        card={card}
+        machines={machines}
+        onSetMachine={(hostId) => void updateCard(card, () => rpc.call("setMachine", { cardId: card.id, hostId }))}
+        dragging={draggedCardId === card.id}
+        pending={pendingCards.has(card.id)}
+        queue={queuedCards.get(card.id) ?? null}
+        onDragStart={(event) => {
+          if (view !== "board" || card.runState !== "running" || !card.startRequested || pendingCards.has(card.id)) {
+            event.preventDefault();
+            return;
+          }
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData(CARD_DRAG_TYPE, card.id);
+          setDraggedCardId(card.id);
+        }}
+        onDragEnd={clearDrag}
+        questionOpen={questionOpen(card)}
+        onOpen={(threadId) => navigate.toThread(threadId)}
+        onStart={() => void updateCard(card, () => rpc.call("startCard", { cardId: card.id }))}
+        onMove={(next) => void move(card, next)}
+        onPause={() => void updateCard(card, () => rpc.call("pauseCard", { cardId: card.id }))}
+        onResume={() => void updateCard(card, () => rpc.call("resumeCard", { cardId: card.id }))}
+        onStop={() => void updateCard(card, () => rpc.call("stopCard", { cardId: card.id }))}
+        onSetRunNext={(enabled) => void updateCard(card, () => rpc.call("setRunNext", { cardId: card.id, enabled }))}
+        onRetry={() => {
+          if (card.runState === "running") void updateCard(card, () => rpc.call("retryLaunch", { cardId: card.id }));
+        }}
+        onRemove={() => {
+          if (card.runState === "running") void updateCard(card, () => rpc.call("removeCard", { cardId: card.id }));
+        }}
+      />
+    );
+  }
 
   return (
     <div className="pipeline-ui pipeline-board">
@@ -234,8 +309,13 @@ export function PipelineBoard() {
               localStorage.setItem(PROJECT_KEY, next);
               setProjectId(next);
               setCards([]);
+              setError(null);
+              setActionError(null);
               setMachines([]);
               setQueue([]);
+              setFilter("open");
+              setStage("all");
+              includeDoneRef.current = false;
               clearDrag();
               void load();
             }}
@@ -246,17 +326,6 @@ export function PipelineBoard() {
           <Icon name="ChevronDown" />
         </label>
         <div className="pipeline-toolbar-actions">
-          <label className="pipeline-toggle">
-            <input type="checkbox" checked={includeDone}
-              onChange={(event) => {
-                requestSequence.current += 1;
-                includeDoneRef.current = event.target.checked;
-                setIncludeDone(event.target.checked);
-                clearDrag();
-                void load();
-              }} />
-            Show done
-          </label>
           <AddCard
             key={projectId}
             projectName={projectName}
@@ -267,109 +336,92 @@ export function PipelineBoard() {
           />
         </div>
       </header>
-      <div className="pipeline-summary">
-        <span className="pipeline-summary-label">Board</span>
-        <span>{cards.length} {cards.length === 1 ? "task" : "tasks"}</span>
-        <div className="pipeline-machine-queues" aria-label="Machine queues">
-          {queue.map((machineQueue) => (
-            <MachineQueueStatus
-              key={machineQueue.hostId}
-              queue={machineQueue}
-              onOpen={(threadId) => navigate.toThread(threadId)}
-            />
+      <div className="pipeline-viewbar">
+        <div className="pipeline-views" role="group" aria-label="Layout">
+          {(["list", "board"] as const).map((value) => (
+            <button key={value} type="button" aria-pressed={view === value} onClick={() => {
+              setView(value);
+              localStorage.setItem(VIEW_KEY, value);
+              clearDrag();
+            }}>{value === "list" ? "Tasks" : "Board"}</button>
           ))}
         </div>
-        {needsAttention === 0 ? null : <span className="pipeline-summary-item"><Icon name="MessageQuestion" />{needsAttention} need your attention</span>}
-        {loading ? <span role="status" className="pipeline-summary-item"><Icon name="Loading" className="pipeline-spin" />Updating…</span> : null}
-        {connection === "connected" ? null : <span role="status">Reconnecting…</span>}
+        <div className="pipeline-machine-queues" aria-label="Machine queues">
+          {queue.map((machineQueue) => <MachineQueueStatus key={machineQueue.hostId} queue={machineQueue} onOpen={(threadId) => navigate.toThread(threadId)} />)}
+        </div>
+        {loading ? <span role="status" className="pipeline-load-status"><Icon name="Loading" className="pipeline-spin" /><span className="sr-only">Updating…</span></span> : null}
+        {connection === "reconnecting" ? <span role="status" className="pipeline-load-status">Reconnecting…</span> : null}
+      </div>
+      <div className="pipeline-filters">
+        <div className="pipeline-filter-buttons" role="group" aria-label="Task filter">
+          {([
+            ["open", "Open", openCards.length],
+            ["attention", "Needs you", needsAttention],
+            ["queued", "Queued", queuedCount],
+            ["done", "Done", null],
+          ] as const).map(([value, label, count]) => (
+            <button key={value} type="button" aria-pressed={filter === value} onClick={() => selectFilter(value)}>
+              {label}{count === null ? null : <span className="pipeline-filter-count">{count}</span>}
+            </button>
+          ))}
+        </div>
+        <label className="pipeline-stage-filter pipeline-select-wrap">
+          <select className="pipeline-select" aria-label="Filter by stage" value={stage} onChange={(event) => {
+            setStage(event.target.value as Column | "all");
+            clearDrag();
+          }}>
+            <option value="all">All stages</option>
+            {stageColumns.map((column) => <option key={column} value={column}>{COLUMN_LABELS[column]}</option>)}
+          </select>
+          <Icon name="ChevronDown" />
+        </label>
       </div>
       {error === null ? null : <p role="alert" className="pipeline-error"><Icon name="AlertCircle" />{error}</p>}
-      <div className="pipeline-scroll">
-        <div className="pipeline-columns">
-          {visibleColumns.map((column) => {
-            const columnCards = cards.filter((card) => card.column === column);
-            return (
-              <section
-                key={column}
-                aria-label={COLUMN_LABELS[column]}
-                className="pipeline-column"
-                data-drop={Boolean(draggedCard && dropColumn === column)}
-                onDragOver={(event) => {
-                  if (!draggedCard || draggedCard.column === column || pendingCards.has(draggedCard.id) || !event.dataTransfer.types.includes(CARD_DRAG_TYPE)) return;
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                  setDropColumn(column);
-                }}
-                onDragLeave={(event) => {
-                  if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
-                    setDropColumn((current) => current === column ? null : current);
-                  }
-                }}
-                onDrop={(event) => {
-                  if (!draggedCard || event.dataTransfer.getData(CARD_DRAG_TYPE) !== draggedCard.id) return;
-                  event.preventDefault();
-                  void move(draggedCard, column);
-                  clearDrag();
-                }}
-              >
-                <div className="pipeline-column-header">
-                  <span className="pipeline-stage" data-stage={column} aria-hidden="true" />
-                  <h2>{COLUMN_LABELS[column]}</h2>
-                  <span className="pipeline-column-count">{columnCards.length}</span>
-                </div>
-                <div className="pipeline-column-body">
-                  {loading && cards.length === 0 ? <div className="pipeline-skeleton" aria-hidden="true" /> : null}
-                  {columnCards.map((card) => {
-                    const owner = ownerThread(card);
-                    const queueState = queuedCards.get(card.id);
-                    return (
-                      <PipelineCard
-                        key={card.id}
-                        card={card}
-                        machines={machines}
-                        onSetMachine={(hostId) => void updateCard(card, () => rpc.call("setMachine", { cardId: card.id, hostId }))}
-                        dragging={draggedCardId === card.id}
-                        pending={pendingCards.has(card.id)}
-                        queue={queueState ?? null}
-                        onDragStart={(event) => {
-                          if (card.runState !== "running" || !card.startRequested || pendingCards.has(card.id)) {
-                            event.preventDefault();
-                            return;
-                          }
-                          event.dataTransfer.effectAllowed = "move";
-                          event.dataTransfer.setData(CARD_DRAG_TYPE, card.id);
-                          setDraggedCardId(card.id);
-                        }}
-                        onDragEnd={clearDrag}
-                        questionOpen={owner !== null && pendingThreads.has(owner)}
-                        onOpen={(threadId) => navigate.toThread(threadId)}
-                        onStart={() => void updateCard(card, () => rpc.call("startCard", { cardId: card.id }))}
-                        onMove={(next) => void move(card, next)}
-                        onPause={() => void updateCard(card, () => rpc.call("pauseCard", { cardId: card.id }))}
-                        onResume={() => void updateCard(card, () => rpc.call("resumeCard", { cardId: card.id }))}
-                        onStop={() => void updateCard(card, () => rpc.call("stopCard", { cardId: card.id }))}
-                        onSetRunNext={(enabled) => void updateCard(card, () => rpc.call("setRunNext", { cardId: card.id, enabled }))}
-                        onRetry={() => {
-                          if (card.runState === "running") {
-                            void updateCard(card, () => rpc.call("retryLaunch", { cardId: card.id }));
-                          }
-                        }}
-                        onRemove={() => {
-                          if (card.runState === "running") {
-                            void updateCard(card, () => rpc.call("removeCard", { cardId: card.id }));
-                          }
-                        }}
-                      />
-                    );
-                  })}
-                  {draggedCard && draggedCard.column !== column && columnCards.length === 0 ? (
-                    <div className="pipeline-empty">Drop here</div>
-                  ) : null}
-                </div>
-              </section>
-            );
-          })}
-        </div>
+      <div className="pipeline-scroll" onKeyDown={(event) => { if (event.key === "Escape") clearDrag(); }}>
+        {filteredCards.length === 0 ? (
+          loading ? <div className="pipeline-skeleton" aria-hidden="true" /> : (
+            <div className="pipeline-empty-view">
+              <p>{projectId === null ? "No projects" : filter === "open" && stage === "all" ? "No open tasks" : "No tasks in this view"}</p>
+              {filter === "open" && stage === "all" ? null : <button className="pipeline-button pipeline-ghost" type="button" onClick={() => selectFilter("open")}>Show open tasks</button>}
+            </div>
+          )
+        ) : view === "list" ? (
+          <div className="pipeline-task-list">
+            <div className="pipeline-list-head" aria-hidden="true"><span>Task</span><span>Stage</span><span>Status</span><span>Machine</span><span /></div>
+            {filteredCards.map(renderCard)}
+          </div>
+        ) : (
+          <div className="pipeline-columns">
+            {visibleColumns.map((column) => {
+              const columnCards = filteredCards.filter((card) => card.column === column);
+              return (
+                <section key={column} aria-label={COLUMN_LABELS[column]} className="pipeline-column"
+                  data-drop={Boolean(draggedCard && dropColumn === column)}
+                  onDragOver={(event) => {
+                    if (!draggedCard || draggedCard.column === column || pendingCards.has(draggedCard.id) || !event.dataTransfer.types.includes(CARD_DRAG_TYPE)) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    setDropColumn(column);
+                  }}
+                  onDragLeave={(event) => {
+                    if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropColumn((current) => current === column ? null : current);
+                  }}
+                  onDrop={(event) => {
+                    if (!draggedCard || event.dataTransfer.getData(CARD_DRAG_TYPE) !== draggedCard.id) return;
+                    event.preventDefault();
+                    move(draggedCard, column);
+                    clearDrag();
+                  }}>
+                  <div className="pipeline-column-header"><span className="pipeline-stage" data-stage={column} aria-hidden="true" /><h2>{COLUMN_LABELS[column]}</h2><span className="pipeline-column-count">{columnCards.length}</span></div>
+                  <div className="pipeline-column-body">
+                    {columnCards.map(renderCard)}
+                    {draggedCard && draggedCard.column !== column && columnCards.length === 0 ? <div className="pipeline-empty">Drop here</div> : null}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

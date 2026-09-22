@@ -1,233 +1,163 @@
 import { useRef, useState, type DragEventHandler } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import * as Popover from "@radix-ui/react-popover";
-import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import { ownerThread } from "@/lib/card";
-import type { Card } from "@/lib/store";
 import type { PipelineMachine } from "@/lib/machines";
 import { usePortalScopeProps } from "@/lib/portal-scope";
-import { MachineSelect } from "./machine-select";
+import type { CardActionProps } from "./card-actions";
+import { CardActions, StartTaskButton } from "./card-actions";
 import { Icon } from "./icon";
+import { MachineSelect } from "./machine-select";
+import { TaskDetails } from "./task-details";
+import {
+  taskPresentationState,
+  taskPrimaryReason,
+  taskQuestionOpen,
+  taskStage,
+} from "./task-state";
 
-function attention(card: Card): string | null {
-  if (card.needsUser) return card.attentionReason ?? "Needs your input";
-  if (card.threadError !== null) return `Thread failed: ${card.threadError}`;
-  if (card.attentionUnknown) return "Idle · awaiting status";
-  return null;
-}
-
-export function PipelineCard(props: {
-  card: Card;
+export interface PipelineCardProps extends CardActionProps {
+  layout: "list" | "board";
+  actionError?: string | null;
   machines: PipelineMachine[];
   onSetMachine(hostId: string): void;
   questionOpen: boolean;
   dragging: boolean;
-  pending: boolean;
-  queue: { reasons: string[]; canRunNext: boolean; next: boolean } | null;
   onDragStart: DragEventHandler<HTMLElement>;
   onDragEnd(): void;
   onOpen(threadId: string): void;
-  onStart(): void;
-  onMove(column: Column): void;
-  onPause(): void;
-  onResume(): void;
-  onStop(): void;
-  onSetRunNext(enabled: boolean): void;
-  onRetry(): void;
-  onRemove(): void;
-}) {
+}
+
+function stateClass(kind: ReturnType<typeof taskPresentationState>["kind"]): string {
+  if (kind === "saving" || kind === "working") return "pipeline-working";
+  if (kind === "queued") return "pipeline-queued";
+  if (kind === "held") return "pipeline-run-state";
+  if (kind === "attention") return "pipeline-attention";
+  return "";
+}
+
+export function PipelineCard(props: PipelineCardProps) {
   const { card } = props;
-  const running = card.runState === "running";
-  const started = card.startRequested;
   const owner = ownerThread(card);
+  const running = card.runState === "running";
   const dragAllowed = useRef(true);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const portalScope = usePortalScopeProps();
-  const reason = attention(card);
+  const state = taskPresentationState(card, props);
+  const reason = taskPrimaryReason(card, props);
+  const questionOpen = taskQuestionOpen(card, props.questionOpen);
   const machineName = props.machines.find((machine) => machine.id === card.hostId)?.name ?? card.hostId;
 
   return (
-    <article
-      aria-label={card.title}
-      aria-busy={props.pending}
-      draggable={running && started && !props.pending}
-      data-dragging={props.dragging}
-      onPointerDownCapture={(event) => {
-        dragAllowed.current = !(event.target as Element).closest("[data-card-control]");
-      }}
-      onDragStart={(event) => {
-        if (!dragAllowed.current) {
-          event.preventDefault();
-          return;
-        }
-        setActionsOpen(false);
-        props.onDragStart(event);
-      }}
-      onDragEnd={props.onDragEnd}
-      className="pipeline-card"
-    >
-      <div className="pipeline-card-header">
-        <button type="button" className="pipeline-card-title" disabled={owner === null}
-          onClick={() => owner !== null && props.onOpen(owner)}>
-          {card.title}
-        </button>
-        <Popover.Root open={actionsOpen} onOpenChange={setActionsOpen}>
-          <Popover.Trigger asChild>
-            <button type="button" data-card-control className="pipeline-icon-button" aria-label={`Actions for ${card.title}`}
-              title="Task actions" disabled={props.pending}>
-              <Icon name="MoreHorizontal" />
-            </button>
-          </Popover.Trigger>
-          <Popover.Portal>
-            <Popover.Content {...portalScope} data-card-control className="pipeline-ui pipeline-popover" align="end" sideOffset={6}
-              aria-label={`Actions for ${card.title}`}>
-              {!started || card.column === "done" ? null : (
-                <div className="pipeline-card-controls">
-                  {card.runState === "running" ? (
-                    <button type="button" className="pipeline-button pipeline-ghost" disabled={props.pending}
-                      onClick={() => {
-                        setActionsOpen(false);
-                        props.onPause();
-                      }}>
-                      <Icon name="Pause" /> Pause
-                    </button>
-                  ) : card.runState === "paused" ? (
-                    <button type="button" className="pipeline-button pipeline-ghost" disabled={props.pending}
-                      onClick={() => {
-                        setActionsOpen(false);
-                        props.onResume();
-                      }}>
-                      <Icon name="Play" /> Resume
-                    </button>
-                  ) : (
-                    <>
-                      {card.runState === "pause_requested" && card.controlError !== null ? (
-                        <button type="button" className="pipeline-button pipeline-ghost" disabled={props.pending}
-                          onClick={() => {
-                            setActionsOpen(false);
-                            props.onPause();
-                          }}>
-                          <Icon name="RotateCcw" /> Retry pause
-                        </button>
-                      ) : null}
-                      <button type="button" className="pipeline-button pipeline-ghost pipeline-stop" disabled={props.pending}
-                        onClick={() => {
-                          setActionsOpen(false);
-                          props.onStop();
-                        }}>
-                        <Icon name="Square" /> Stop now
-                      </button>
-                    </>
-                  )}
-                  {props.queue?.next ? (
-                    <button type="button" className="pipeline-button pipeline-ghost" disabled={props.pending}
-                      onClick={() => {
-                        setActionsOpen(false);
-                        props.onSetRunNext(false);
-                      }}>
-                      <Icon name="X" /> Clear run next
-                    </button>
-                  ) : props.queue?.canRunNext ? (
-                    <button type="button" className="pipeline-button pipeline-ghost" disabled={props.pending}
-                      onClick={() => {
-                        setActionsOpen(false);
-                        props.onSetRunNext(true);
-                      }}>
-                      <Icon name="Play" /> Run next
-                    </button>
-                  ) : null}
-                </div>
-              )}
-              <label className="pipeline-field">
-                <span className="pipeline-field-label">Move to</span>
-                <span className="pipeline-select-wrap">
-                  <select aria-label={`Move ${card.title}`} className="pipeline-select" value={card.column} disabled={props.pending || !running || !started}
-                    onChange={(event) => {
-                      props.onMove(event.target.value as Column);
-                      setActionsOpen(false);
-                    }}>
-                    {COLUMNS.map((column) => <option key={column} value={column}>{COLUMN_LABELS[column]}</option>)}
-                  </select>
-                  <Icon name="ChevronDown" />
-                </span>
-              </label>
-              <button type="button" className="pipeline-button pipeline-ghost pipeline-remove" disabled={props.pending || !running}
-                onClick={() => {
-                  setActionsOpen(false);
-                  props.onRemove();
-                }}>
-                <Icon name="Trash2" /> Remove
-              </button>
-            </Popover.Content>
-          </Popover.Portal>
-        </Popover.Root>
-      </div>
-      {card.body.trim() === "" ? null : <p className="pipeline-card-note">{card.body}</p>}
-      {!started || !running || reason === null ? null : (
-        <div className="pipeline-card-status pipeline-attention"><Icon name="AlertCircle" /><span>{reason}</span></div>
-      )}
-      {started && (running || card.runState === "pause_requested") && props.questionOpen ? (
-        <div aria-label="Question open" className="pipeline-card-status pipeline-attention">
-          <Icon name="MessageQuestion" /><span>Question waiting for you</span>
-        </div>
-      ) : null}
-      {!started || card.launchError === null ? null : (
-        <div className="pipeline-card-status pipeline-card-error" data-card-control>
-          <Icon name="AlertCircle" />
-          <div>
-            <p>Launch failed: {card.launchError}</p>
-            {running && started ? (
-              <button type="button" className="pipeline-retry" disabled={props.pending} onClick={props.onRetry}>
-                <Icon name="RotateCcw" /> Retry
-              </button>
-            ) : null}
-          </div>
-        </div>
-      )}
-      {!started || card.controlError === null ? null : (
-        <div className="pipeline-card-status pipeline-card-error">
-          <Icon name="AlertCircle" /><span>{card.controlError}</span>
-        </div>
-      )}
-      {!started && running && card.column !== "done" ? (
-        <div className="pipeline-card-status pipeline-not-started" data-card-control>
-          <Icon name="Clock" />
-          <span>Not started</span>
-          <button type="button" className="pipeline-start" disabled={props.pending} onClick={props.onStart}>
-            <Icon name="Play" /> Start
+    <Dialog.Root open={detailsOpen} onOpenChange={setDetailsOpen}>
+      <article
+        aria-label={card.title}
+        aria-busy={props.pending}
+        draggable={props.layout === "board" && running && card.startRequested && !props.pending}
+        data-dragging={props.dragging}
+        onPointerDownCapture={(event) => {
+          dragAllowed.current = !(event.target as Element).closest("[data-card-control]");
+        }}
+        onDragStart={(event) => {
+          if (props.layout !== "board" || !dragAllowed.current) {
+            event.preventDefault();
+            return;
+          }
+          setActionsOpen(false);
+          props.onDragStart(event);
+        }}
+        onDragEnd={props.onDragEnd}
+        className={`pipeline-card${props.layout === "list" ? " pipeline-task-row" : ""}`}
+      >
+        <div className="pipeline-task-main">
+          <button
+            type="button"
+            className="pipeline-card-title"
+            onClick={() => owner === null ? setDetailsOpen(true) : props.onOpen(owner)}
+          >
+            {card.title}
           </button>
+          {reason === null ? null : (
+            <div
+              className="pipeline-task-reason"
+              data-tone={reason.kind === "error" ? "error" : reason.kind === "question" ? "attention" : undefined}
+            >
+              {reason.message}
+            </div>
+          )}
+          {questionOpen ? <span className="sr-only" aria-label="Question open">Question open</span> : null}
+          <StartTaskButton card={card} pending={props.pending} onStart={props.onStart} />
         </div>
-      ) : null}
-      {card.issueUrl === null && card.prUrl === null && card.attachments.length === 0 ? null : (
-        <div className="pipeline-card-links" data-card-control>
-          {card.issueUrl === null ? null : (
-            <a href={card.issueUrl} target="_blank" rel="noreferrer"><Icon name="ExternalLink" />Issue</a>
-          )}
-          {card.prUrl === null ? null : (
-            <a href={card.prUrl} target="_blank" rel="noreferrer"><Icon name="GitPullRequest" />PR</a>
-          )}
-          {card.attachments.length === 0 ? null : (
-            <span title={`${card.attachments.length} attachments`}><Icon name="Paperclip" /> {card.attachments.length}</span>
+
+        <span className="pipeline-task-stage" data-stage={card.column}>
+          <span className="pipeline-stage" data-stage={card.column} aria-hidden="true" />
+          {taskStage(card)}
+        </span>
+
+        <span
+          className={`pipeline-task-state ${stateClass(state.kind)}`}
+          data-state={state.kind}
+        >
+          {state.kind === "saving" ? <Icon name="Loading" className="pipeline-spin" /> : null}
+          {state.label}
+        </span>
+
+        <div className="pipeline-task-machine" data-card-control>
+          {card.hostId === null ? (
+            <MachineSelect
+              machines={props.machines}
+              value=""
+              onChange={props.onSetMachine}
+              disabled={props.pending}
+              label={`Machine for ${card.title}`}
+            />
+          ) : (
+            <span className="pipeline-machine" title={`Machine: ${machineName}`}>
+              <Icon name="Laptop" />
+              <span className="pipeline-machine-name">{machineName}</span>
+            </span>
           )}
         </div>
-      )}
-      <div className="pipeline-card-footer" data-card-control>
-        {card.hostId === null ? (
-          <MachineSelect machines={props.machines} value="" onChange={props.onSetMachine} disabled={props.pending} label={`Machine for ${card.title}`} />
-        ) : (
-          <span className="pipeline-machine" title={`Machine: ${machineName}`}>
-            <Icon name="Laptop" /><span className="pipeline-machine-name">{machineName}</span>
-          </span>
-        )}
-        {props.pending ? <span className="pipeline-working"><Icon name="Loading" className="pipeline-spin" /> Saving</span>
-          : card.runState === "pause_requested" ? <span className="pipeline-run-state">Pause requested</span>
-          : card.runState === "pausing" ? <span className="pipeline-run-state">Pausing</span>
-          : card.runState === "paused" ? <span className="pipeline-run-state">Paused</span>
-          : card.runState === "stopping" ? <span className="pipeline-run-state">Stopping</span>
-          : started && props.queue !== null ? <><span className="pipeline-queued" title={props.queue.reasons.join(" · ")}>Queued</span>{props.queue.next ? <span className="pipeline-next">Next</span> : null}</>
-          : started && card.reportSignal === "working" && !card.needsUser && !card.attentionUnknown && !props.questionOpen && card.threadError === null && card.launchError === null
-            ? <span className="pipeline-working">Working</span> : null}
-        {card.tier === null ? null : <span className="pipeline-tier">{card.tier}</span>}
-      </div>
-    </article>
+
+        <div className="pipeline-task-actions" data-card-control>
+          <Dialog.Trigger asChild>
+            <button
+              type="button"
+              className="pipeline-icon-button"
+              aria-label={`Details for ${card.title}`}
+              title="Task details"
+            >
+              <Icon name="ChevronRight" />
+            </button>
+          </Dialog.Trigger>
+          <Popover.Root open={actionsOpen} onOpenChange={setActionsOpen}>
+            <Popover.Trigger asChild>
+              <button
+                type="button"
+                className="pipeline-icon-button"
+                aria-label={`Actions for ${card.title}`}
+                title="Task actions"
+                disabled={props.pending}
+              >
+                <Icon name="MoreHorizontal" />
+              </button>
+            </Popover.Trigger>
+            <Popover.Portal>
+              <Popover.Content
+                {...portalScope}
+                className="pipeline-ui pipeline-popover"
+                align="end"
+                sideOffset={6}
+                aria-label={`Actions for ${card.title}`}
+              >
+                <CardActions {...props} onAction={() => setActionsOpen(false)} />
+              </Popover.Content>
+            </Popover.Portal>
+          </Popover.Root>
+        </div>
+      </article>
+      <TaskDetails {...props} />
+    </Dialog.Root>
   );
 }
