@@ -1577,7 +1577,7 @@ describe("pipeline board", () => {
       retryReview,
       listCards: vi.fn(() => ({ cards: [card, quietError, closedCard], queue: [makeMachineQueue()] })),
     });
-    await screen.findByText("GitHub sync failed: rate limited");
+    await screen.findByText("Review follow-up cancelled; retry when ready");
     expect(screen.getByRole("button", { name: "Needs you 3" })).toBeTruthy();
     const row = screen.getByRole("article", { name: "Flaky sync" });
     expect(within(row).getByText("Sync failed")).toBeTruthy();

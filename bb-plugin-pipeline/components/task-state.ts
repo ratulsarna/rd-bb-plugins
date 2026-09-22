@@ -117,7 +117,7 @@ export function taskDiagnostics(
   if (liveAttention(card)) {
     const problem = githubAttention(card);
     if (problem !== null) {
-      const failedSync = card.github !== null && card.github.error !== null;
+      const failedSync = card.github?.error === problem;
       diagnostics.push({
         kind: failedSync ? "error" : "question",
         message: failedSync ? `GitHub sync failed: ${problem}` : problem,

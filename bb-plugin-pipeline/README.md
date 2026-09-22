@@ -54,7 +54,7 @@ Alerts include the task title and reason and open its owning thread when one exi
 
 ## GitHub sync
 
-Link one GitHub PR to a task with `report --pr <url>`. Pipeline refreshes its state, draft status, checks, mergeability, and review feedback every minute. Refresh GitHub in task details or run `github-sync` for an immediate update. Failed syncs preserve the last successful snapshot and show the error. No checks means no checks; CI does not gate review handoff.
+Link one GitHub PR to a task with `report --pr <url>`. Pipeline refreshes its state, draft status, checks, mergeability, and review feedback every minute. Refresh GitHub in task details or run `github-sync` for an immediate update. Failed reads preserve the last successful snapshot and show the error; two consecutive read failures send one notification until reads recover. No checks means no checks; CI does not gate review handoff.
 
 The lead runs `bb pipeline review-wait` after opening a draft PR, then ends its turn. The command posts `reviewRequestComment` once per revision (initially `@codex review`). Set it to an empty string when external reviews run automatically. Pipeline uses Jev to distinguish new findings, explicit clean completion, progress, and uncertainty across reviewers; no reviewer-account list is needed. An uncertain result remains visible for checking or refreshing.
 

@@ -665,7 +665,7 @@ export function createPipelineService(
     }
     if (initial.reportSignal === "needs_you") return;
     const github = store.getGithub(initial.id);
-    if (github?.awaitingReview && (github.batch === null || github.batch.state === "handled")) return;
+    if (github?.awaitingReviewRevision === initial.revision && (github.batch === null || github.batch.state === "handled")) return;
     if (
       observation.kind === "thread" &&
       observation.startup &&

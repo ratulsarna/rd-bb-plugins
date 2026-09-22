@@ -57,5 +57,6 @@ export interface GithubSyncState {
   observed: Record<string, string>;
   batch: ReviewBatch | null;
   requestedSha: string | null;
-  awaitingReview: boolean;
+  awaitingReviewRevision: number | null;
+  readFailures: number;
 }

@@ -61,7 +61,7 @@ describe("GitHub review handoff", () => {
     await s.sync.waitForReview("card", "lead");
     expect(s.card()).toMatchObject({ prUrl: url, github: { url, number: 12, error: null } });
     expect(s.read).toHaveBeenCalledWith(url, expect.any(AbortSignal));
-    expect(s.store.getGithub("card")!.awaitingReview).toBe(true);
+    expect(s.store.getGithub("card")!.awaitingReviewRevision).toBe(s.card().revision);
     expect(s.post).toHaveBeenCalledTimes(1);
   });
 
@@ -101,7 +101,7 @@ describe("GitHub review handoff", () => {
     expect(s.post.mock.calls[0]).toEqual([url, "@codex review\n\n<!-- pipeline-review-request:card:abc -->", expect.any(AbortSignal)]);
     expect(s.send).not.toHaveBeenCalled();
     expect(s.card().github).toMatchObject({ review: "waiting", checks: [], headSha: "abc" });
-    expect(s.store.getGithub("card")!.awaitingReview).toBe(true);
+    expect(s.store.getGithub("card")!.awaitingReviewRevision).toBe(s.card().revision);
     s.change({ headSha: "def" }); s.settings.reviewRequestComment = "";
     await s.sync.waitForReview("card", "lead");
     expect(s.post).toHaveBeenCalledTimes(1);
@@ -219,6 +219,10 @@ describe("GitHub review handoff", () => {
     await service.onThreadIdle(s.thread, "External review pending. Nothing needed from you.");
     expect(classify).not.toHaveBeenCalled();
     expect(s.card().needsUser).toBe(false);
+    await service.onThreadActive({ ...s.thread, status: "active" });
+    await service.onThreadIdle(s.thread, "Which behavior should this use?");
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(s.card()).toMatchObject({ needsUser: true, attentionReason: "Which behavior should this use?" });
     await service.onThreadFailed({ ...s.thread, status: "error" }, "Provider unavailable");
     expect(s.card()).toMatchObject({ needsUser: true, threadError: "Provider unavailable" });
   });
@@ -318,6 +322,27 @@ describe("GitHub review handoff", () => {
     s.read.mockRejectedValueOnce(new Error("authentication expired")); await s.sync.poll();
     expect(s.card().github).toMatchObject({ checks: [{ name: "build", state: "failed" }], error: expect.stringContaining("authentication expired") });
     expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("shows transient read failures but only notifies persistent failure, without re-announcing settled review on recovery", async () => {
+    const s = setup();
+    s.classify.mockResolvedValue({ decision: "clear", probability: .99 });
+    s.change({ feedback: [feedback({ body: "No findings" })] });
+    await s.sync.poll();
+    expect(s.notify).toHaveBeenCalledTimes(1);
+    s.notify.mockClear();
+    s.read.mockRejectedValueOnce(new Error("connection reset"));
+    await s.sync.poll();
+    expect(s.card().github?.error).toContain("connection reset");
+    expect(s.notify).not.toHaveBeenCalled();
+    s.read.mockRejectedValueOnce(new Error("network timeout"));
+    await s.makeSync().poll();
+    expect(s.notify).toHaveBeenCalledTimes(1);
+    s.read.mockRejectedValueOnce(new Error("network timeout"));
+    await s.sync.poll();
+    await s.sync.poll();
+    expect(s.card().github).toMatchObject({ review: "clear", error: null });
+    expect(s.notify).toHaveBeenCalledTimes(1);
   });
 
   it("does not blindly resend after an uncertain send, and recovers a queued marker", async () => {

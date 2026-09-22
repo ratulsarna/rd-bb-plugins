@@ -19,7 +19,7 @@ function initialState(url: string): GithubSyncState {
   return {
     status: { url, number: null, state: "open", draft: true, headSha: "", checks: [],
       mergeable: "unknown", reviewDecision: null, review: "waiting", followup: null, batchId: null, syncedAt: null, error: null },
-    observed: {}, batch: null, requestedSha: null, awaitingReview: false,
+    observed: {}, batch: null, requestedSha: null, awaitingReviewRevision: null, readFailures: 0,
   };
 }
 
@@ -69,7 +69,7 @@ export function createGithubSync(input: {
     const url = card.prUrl === null ? null : normalizePullRequestUrl(card.prUrl);
     return url !== null && url !== card.prUrl ? store.update(card.id, { prUrl: url }) : card;
   }
-  function save(card: Card, state: GithubSyncState): void {
+  function save(card: Card, state: GithubSyncState, notify = true): void {
     const before = store.get(card.id);
     if (before === null || before.prUrl !== state.status.url || abort.signal.aborted) return;
     state.status.followup = state.batch?.state === "sending" ? "pending" : state.batch?.state ?? null;
@@ -78,11 +78,13 @@ export function createGithubSync(input: {
     bb.realtime.publish("cards:changed", { projectId: card.projectId });
     const after = required(card.id);
     const reason = githubAttention(after);
-    if (reason !== null && reason !== githubAttention(before)) input.notify(after, reason);
+    const previous = before.github !== null && before.github.error !== null && after.github?.error === null
+      ? githubAttention({ ...before, github: { ...before.github, error: null } }) : githubAttention(before);
+    if (notify && reason !== null && reason !== previous) input.notify(after, reason);
   }
-  function failed(card: Card, state: GithubSyncState, cause: unknown): void {
+  function failed(card: Card, state: GithubSyncState, cause: unknown, notify = true): void {
     state.status.error = `GitHub sync: ${cause instanceof Error ? cause.message : String(cause)}`.slice(0, 1000);
-    save(card, state);
+    save(card, state, notify);
   }
   async function deleteBatchQueue(batch: ReviewBatch | null): Promise<void> {
     if (batch?.threadId == null) return;
@@ -216,17 +218,31 @@ export function createGithubSync(input: {
     card = canonicalPr(card);
     const url = card.prUrl!;
     let state = store.getGithub(id) ?? initialState(url);
+    let readSucceeded = false;
     try {
       if (normalizePullRequestUrl(url) === null) throw new Error("Link a valid github.com pull request URL");
       const snapshot = await read(url, abort.signal);
+      readSucceeded = true;
       card = current(id, url)!;
       if (card === null) return required(id);
       state = store.getGithub(id) ?? initialState(url);
+      state.readFailures = 0;
       if (refresh && state.status.review === "unknown") {
         for (const item of snapshot.feedback) if (item.author !== snapshot.author) delete state.observed[item.id];
       }
       await apply(card, snapshot, state);
-    } catch (cause) { if (current(id, url) !== null) failed(required(id), store.getGithub(id) ?? state, cause); }
+    } catch (cause) {
+      if (current(id, url) !== null) {
+        state = store.getGithub(id) ?? state;
+        if (!readSucceeded) state.readFailures += 1;
+        failed(required(id), state, cause, readSucceeded);
+        if (!readSucceeded && state.readFailures === 2) {
+          const latest = required(id);
+          const reason = githubAttention(latest);
+          if (reason !== null) input.notify(latest, reason);
+        }
+      }
+    }
     return required(id);
   }
 
@@ -259,7 +275,7 @@ export function createGithubSync(input: {
         } else if (state.batch !== null && !["handled", "cancelled"].includes(state.batch.state)) {
           throw new Error(`Acknowledge the current feedback with --handled ${state.batch.id}`);
         }
-        if (alreadyHandedOff && state.awaitingReview && state.requestedSha === snapshot.headSha) return syncUnlocked(id);
+        if (alreadyHandedOff && state.awaitingReviewRevision !== null && state.requestedSha === snapshot.headSha) return syncUnlocked(id);
         const comment = (await input.getSettings()).reviewRequestComment?.trim() ?? "@codex review";
         const marker = `<!-- pipeline-review-request:${id}:${snapshot.headSha} -->`;
         if (!(handled !== undefined && state.batch?.headSha === snapshot.headSha) && comment !== "" && state.requestedSha !== snapshot.headSha && !snapshot.feedback.some((item) => item.body.includes(marker))) {
@@ -268,13 +284,13 @@ export function createGithubSync(input: {
         if (current(id, url)?.runState !== "running") throw new Error("Task changed during review handoff");
         const sameRevisionHandled = handled !== undefined && state.batch?.headSha === snapshot.headSha;
         state.requestedSha = snapshot.headSha;
-        state.awaitingReview = true;
         state.status.headSha = snapshot.headSha;
         state.status.review = sameRevisionHandled ? "clear" : "waiting";
         state.status.error = null;
-        store.update(id, { needsUser: false, attentionReason: null, attentionSource: null, attentionUnknown: false, reportSignal: null },
+        const handedOff = store.update(id, { needsUser: false, attentionReason: null, attentionSource: null, attentionUnknown: false, reportSignal: null },
           { kind: handled === undefined ? "review_waiting" : "review_handled", source: "report", threadId: card.leadThreadId, note: handled ?? snapshot.headSha });
-        save(required(id), state);
+        state.awaitingReviewRevision = handedOff.revision;
+        save(handedOff, state);
         return syncUnlocked(id);
       });
     },
