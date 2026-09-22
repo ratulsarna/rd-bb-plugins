@@ -1,4 +1,5 @@
 import { COLUMN_LABELS } from "@/lib/columns";
+import { PAUSE_DELIVERY_PENDING } from "@/lib/card";
 import type { Card } from "@/lib/store";
 
 export interface TaskQueueState {
@@ -41,6 +42,11 @@ export function taskQuestionOpen(card: Card, questionOpen: boolean): boolean {
 
 function liveAttention(card: Card): boolean {
   return card.startRequested && card.column !== "done" && card.runState === "running";
+}
+
+function controlFailure(card: Card): string | null {
+  return card.runState === "pause_requested" && card.controlError === PAUSE_DELIVERY_PENDING
+    ? null : card.controlError;
 }
 
 export function taskStage(card: Card): string {
@@ -86,8 +92,9 @@ export function taskDiagnostics(
   if (card.launchError !== null) {
     diagnostics.push({ kind: "error", message: `Launch failed: ${card.launchError}` });
   }
-  if (card.controlError !== null) {
-    diagnostics.push({ kind: "error", message: card.controlError });
+  const failure = controlFailure(card);
+  if (failure !== null) {
+    diagnostics.push({ kind: "error", message: failure });
   }
   if (card.threadError !== null) {
     diagnostics.push({ kind: "error", message: `Thread failed: ${card.threadError}` });
@@ -125,7 +132,7 @@ export function taskPrimaryReason(
 
 export function taskNeedsAttention(card: Card, questionOpen: boolean): boolean {
   if (!card.startRequested || card.column === "done") return false;
-  if (card.controlError !== null) return true;
+  if (controlFailure(card) !== null) return true;
   if (card.runState === "pause_requested") return questionOpen;
   if (card.runState !== "running") return false;
   return card.needsUser ||

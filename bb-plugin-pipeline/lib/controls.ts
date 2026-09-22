@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginThreadEventPayloads } from "@get-bb/plugin-sdk";
-import { ownerThread, requireStarted } from "./card";
+import { ownerThread, PAUSE_DELIVERY_PENDING, requireStarted } from "./card";
 import { pauseInstruction, resumeInstruction } from "./control-prompts";
 import type { Card, CardPatch, CardStore } from "./store";
 import type { PipelineService } from "./service";
@@ -98,7 +98,7 @@ export function createPipelineControls(
       if (card.runState !== "running" && !(card.runState === "pause_requested" && card.controlError !== null)) return card;
       card = update(id, {
         runState: "pause_requested", pauseRequestId: card.runState === "running" ? randomUUID() : card.pauseRequestId ?? randomUUID(),
-        controlError: "Pause instruction pending delivery",
+        controlError: PAUSE_DELIVERY_PENDING,
       }, card.runState === "running" ? "pause_requested" : "pause_retried");
       try {
         const occupied = await tasks.occupied(id);

@@ -91,6 +91,10 @@ export function PipelineBoard() {
         ? preferred
         : (nextProjects[0]?.id ?? null);
       if (selected !== current) {
+        setCards([]);
+        setMachines([]);
+        setQueue([]);
+        setActionError(null);
         includeDoneRef.current = false;
         setFilter("open");
         setStage("all");

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { COLUMNS, COLUMN_LABELS } from "../lib/columns";
+import { PAUSE_DELIVERY_PENDING } from "../lib/card";
 import type { MachineQueue } from "../lib/contract";
 import type { ExecutionDefaults } from "../lib/execution";
 import { makeCard, makeSidebarThread } from "./sdk-fake";
@@ -1456,6 +1457,7 @@ describe("pipeline board", () => {
       makeCard({ id: "pause", title: "Failed pause", runState: "pause_requested", controlError: "Could not deliver pause" }),
       makeCard({ id: "resume", title: "Failed resume", runState: "paused", controlError: "Resume failed" }),
       makeCard({ id: "quiet", title: "Paused normally", runState: "paused" }),
+      makeCard({ id: "delivery", title: "Delivering pause", runState: "pause_requested", controlError: PAUSE_DELIVERY_PENDING }),
       makeCard({ id: "saved", title: "Saved", startRequested: false, controlError: "stale" }),
       makeCard({ id: "done", title: "Done", column: "done", controlError: "stale" }),
     ] });
@@ -1463,6 +1465,25 @@ describe("pipeline board", () => {
     expect(screen.getAllByRole("article").map((row) => row.getAttribute("aria-label")).sort()).toEqual(["Failed pause", "Failed resume", "Failed stop"]);
     fireEvent.click(screen.getByRole("button", { name: "Actions for Failed stop" }));
     expect(screen.getByRole("button", { name: "Stop now" })).toBeTruthy();
+  });
+
+  it("clears the old project when automatic fallback cannot load its replacement", async () => {
+    let projects = [{ id: "proj_1", name: "Old project" }, { id: "proj_2", name: "Replacement" }];
+    const { slot } = renderBoard({
+      listProjects: vi.fn(() => ({ projects })),
+      listCards: vi.fn((input: { projectId: string }) => {
+        if (input.projectId === "proj_2") throw new Error("Replacement unavailable");
+        return { cards: [makeCard({ title: "Old task" })], queue: [makeMachineQueue({ hostName: "Old machine" })] };
+      }),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Details for Old task" }));
+    projects = [projects[1]!];
+    await slot.behavior.emitRealtime("cards:changed", {});
+    expect((await screen.findByRole("alert")).textContent).toContain("Replacement unavailable");
+    expect((screen.getByRole("combobox", { name: "Project" }) as HTMLSelectElement).value).toBe("proj_2");
+    expect(screen.queryByRole("article")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText("Old machine")).toBeNull();
   });
 
 });
