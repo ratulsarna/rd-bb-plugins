@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { COLUMNS, COLUMN_LABELS } from "../lib/columns";
+import { PAUSE_DELIVERY_PENDING } from "../lib/card";
 import type { MachineQueue } from "../lib/contract";
 import type { ExecutionDefaults } from "../lib/execution";
 import { makeCard, makeSidebarThread } from "./sdk-fake";
@@ -135,6 +136,9 @@ function renderBoard(options?: {
 }
 
 function dragCard(title = "A pipeline card") {
+  if (screen.getByRole("button", { name: "Board" }).getAttribute("aria-pressed") !== "true") {
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+  }
   const data = new Map<string, string>();
   const dataTransfer = {
     effectAllowed: "uninitialized",
@@ -156,7 +160,7 @@ async function fillNewTask(title: string) {
 }
 
 describe("pipeline board", () => {
-  it("renders columns in order, hides done, and shows the attention reason", async () => {
+  it("defaults to tasks, hides done, and shows only occupied stages in Board", async () => {
     renderBoard({
       cards: [
         makeCard({
@@ -169,8 +173,11 @@ describe("pipeline board", () => {
     });
 
     await screen.findByText("Needs a choice");
+    expect(screen.getByRole("button", { name: "Tasks" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("article", { name: "Needs a choice" }).draggable).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
     const regions = screen.getAllByRole("region").map((region) => region.getAttribute("aria-label"));
-    expect(regions).toEqual(COLUMNS.filter((column) => column !== "done").map((column) => COLUMN_LABELS[column]));
+    expect(regions).toEqual(["Backlog"]);
     expect(screen.queryByRole("region", { name: "Done" })).toBeNull();
     expect(screen.getByText("choose the deployment")).toBeTruthy();
     expect(screen.queryByText("Finished")).toBeNull();
@@ -266,13 +273,13 @@ describe("pipeline board", () => {
     expect(within(screen.getByRole("article", { name: "Pausing card" })).getByText("Pausing")).toBeTruthy();
     expect(within(screen.getByRole("article", { name: "Paused card" })).getByText("Paused")).toBeTruthy();
     expect(within(screen.getByRole("article", { name: "Stopping card" })).getByText("Stopping")).toBeTruthy();
-    expect(screen.queryByText("Queued")).toBeNull();
+    expect(screen.queryAllByRole("article").some((card) => within(card).queryByText("Queued") !== null)).toBe(false);
     expect(screen.queryByText("Next")).toBeNull();
     expect(screen.queryByText("Working")).toBeNull();
     expect(screen.queryByText("stale question")).toBeNull();
     expect(within(screen.getByRole("article", { name: "Requested" })).getByLabelText("Question open")).toBeTruthy();
     expect(within(screen.getByRole("article", { name: "Paused card" })).queryByLabelText("Question open")).toBeNull();
-    expect(screen.getByText("1 need your attention")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Needs you 1" })).toBeTruthy();
   });
 
   it("shows saving ahead of run state while a control action is pending", async () => {
@@ -332,7 +339,7 @@ describe("pipeline board", () => {
 
   it("does not offer lifecycle controls for done cards", async () => {
     renderBoard({ cards: [makeCard({ title: "Finished", column: "done" })] });
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Show done" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
     await screen.findByText("Finished");
     fireEvent.click(screen.getByRole("button", { name: "Actions for Finished" }));
 
@@ -378,7 +385,7 @@ describe("pipeline board", () => {
     });
     await screen.findByText("Project A");
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Show done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
     await waitFor(() => expect(listCards).toHaveBeenCalledTimes(2));
     fireEvent.change(screen.getByRole("combobox", { name: "Project" }), {
       target: { value: "project-b" },
@@ -788,8 +795,8 @@ describe("pipeline board", () => {
     expect(slot.inspection.navigateCalls).toEqual([]);
 
     finishMove();
-    await waitFor(() => expect(within(target).getByRole("article").draggable).toBe(true));
-    expect(within(screen.getByRole("region", { name: "Backlog" })).queryByRole("article")).toBeNull();
+    await waitFor(() => expect(within(screen.getByRole("region", { name: "To do" })).getByRole("article").draggable).toBe(true));
+    expect(screen.queryByRole("region", { name: "Backlog" })).toBeNull();
   });
 
   it("keeps a rejected drop in its source column and allows retry", async () => {
@@ -807,7 +814,7 @@ describe("pipeline board", () => {
     const source = screen.getByRole("region", { name: "Backlog" });
     expect(within(source).getByRole("article").draggable).toBe(true);
     expect(within(target).queryByRole("article")).toBeNull();
-    expect(target.getAttribute("data-drop")).toBe("false");
+    expect(screen.queryByRole("region", { name: "Planning" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Actions for A pipeline card" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Move A pipeline card" }), {
@@ -861,7 +868,7 @@ describe("pipeline board", () => {
       target: { value: "proj_2" },
     });
     await screen.findByText("proj_2");
-    const target = screen.getByRole("region", { name: "Planning" });
+    const target = screen.getByRole("region", { name: "Backlog" });
     expect(fireEvent.dragOver(target, drag)).toBe(true);
     fireEvent.drop(target, drag);
     expect(moveCard).not.toHaveBeenCalled();
@@ -870,16 +877,19 @@ describe("pipeline board", () => {
   it("prevents a drag from card actions without blocking the next title drag", async () => {
     const moveCard = vi.fn(() => makeCard({ column: "todo" }));
     renderBoard({ moveCard });
-    const title = await screen.findByText("A pipeline card");
+    await screen.findByText("A pipeline card");
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    const title = screen.getByRole("button", { name: "A pipeline card" });
+    const rejectedDrag = dragCard();
+    fireEvent.dragEnd(rejectedDrag.card, rejectedDrag);
     fireEvent.pointerDown(screen.getByRole("button", { name: "Actions for A pipeline card" }));
     const drag = dragCard();
-    const target = screen.getByRole("region", { name: "To do" });
-    fireEvent.drop(target, drag);
+    fireEvent.drop(screen.getByRole("region", { name: "Backlog" }), drag);
     expect(moveCard).not.toHaveBeenCalled();
 
     fireEvent.pointerDown(title);
     fireEvent.dragStart(drag.card, drag);
-    fireEvent.drop(target, drag);
+    fireEvent.drop(screen.getByRole("region", { name: "To do" }), drag);
     await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1", column: "todo" }));
     await waitFor(() => expect(drag.card.draggable).toBe(true));
   });
@@ -1007,8 +1017,9 @@ describe("pipeline board", () => {
       ],
     });
 
-    await screen.findByText("thread deleted");
-    expect(screen.getByText("Launch failed: lead: host unavailable")).toBeTruthy();
+    await screen.findByText("Launch failed: lead: host unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Details for A pipeline card" }));
+    expect(screen.getByText("thread deleted")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
@@ -1024,7 +1035,9 @@ describe("pipeline board", () => {
       queue: card.startRequested ? waitingQueue(["card_1"]) : [makeMachineQueue()],
     }));
     renderBoard({ listCards, startCard, moveCard });
-    const title = await screen.findByText("A pipeline card");
+    await screen.findByText("A pipeline card");
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    const title = screen.getByRole("button", { name: "A pipeline card" });
     const saved = screen.getByRole("article", { name: "A pipeline card" });
     const peer = screen.getByRole("article", { name: "Started peer" });
 
@@ -1033,7 +1046,7 @@ describe("pipeline board", () => {
     expect(within(peer).queryByText("Not started")).toBeNull();
     expect(within(peer).queryByRole("button", { name: "Start" })).toBeNull();
     expect(saved.draggable).toBe(false);
-    expect((title.closest("button") as HTMLButtonElement).disabled).toBe(true);
+    expect((title.closest("button") as HTMLButtonElement).disabled).toBe(false);
 
     const drag = dragCard();
     const target = screen.getByRole("region", { name: "To do" });
@@ -1056,7 +1069,7 @@ describe("pipeline board", () => {
     expect(start.disabled).toBe(true);
     expect(startCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
 
-    await screen.findByText("Queued");
+    await within(await screen.findByRole("article", { name: "A pipeline card" })).findByText("Queued");
     expect(screen.queryByText("Not started")).toBeNull();
     expect(screen.getByRole("article", { name: "A pipeline card" }).draggable).toBe(true);
   });
@@ -1099,7 +1112,7 @@ describe("pipeline board", () => {
     expect(within(saved).getByText("Not started")).toBeTruthy();
     expect(screen.queryByText("stale choice")).toBeNull();
     expect(screen.queryByText("Working")).toBeNull();
-    expect(screen.queryByText("Queued")).toBeNull();
+    expect(screen.queryAllByRole("article").some((card) => within(card).queryByText("Queued") !== null)).toBe(false);
     expect(within(saved).queryByLabelText("Question open")).toBeNull();
     expect(screen.queryByText(/Launch failed/)).toBeNull();
     expect(screen.queryByText(/need your attention/)).toBeNull();
@@ -1112,12 +1125,13 @@ describe("pipeline board", () => {
         makeCard({ id: "held-saved", title: "Saved paused", runState: "paused", startRequested: false }),
       ],
     });
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Show done" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
     await screen.findByText("Saved done");
 
     expect(screen.queryByText("Not started")).toBeNull();
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
-    expect(within(screen.getByRole("article", { name: "Saved paused" })).queryByRole("button", { name: "Start" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Open/ }));
+    expect(within(await screen.findByRole("article", { name: "Saved paused" })).queryByRole("button", { name: "Start" })).toBeNull();
   });
 
   it("does not show a stale working signal when an idle thread needs classification", async () => {
@@ -1146,11 +1160,11 @@ describe("pipeline board", () => {
     const listCards = vi.fn(() => ({ cards: [makeCard()], queue: [makeMachineQueue()] }))
       .mockReturnValueOnce({ cards: [makeCard()], queue: waitingQueue(["card_1"]) });
     const { slot } = renderBoard({ listCards });
-    await screen.findByText("Queued");
+    await within(await screen.findByRole("article", { name: "A pipeline card" })).findByText("Queued");
 
     await slot.behavior.emitRealtime("cards:changed", { projectId: "proj_1" });
 
-    await waitFor(() => expect(screen.queryByText("Queued")).toBeNull());
+    await waitFor(() => expect(within(screen.getByRole("article", { name: "A pipeline card" })).queryByText("Queued")).toBeNull());
   });
 
   it("cannot leak queue state from a late stale project response", async () => {
@@ -1177,7 +1191,7 @@ describe("pipeline board", () => {
     });
     await screen.findByText("Project A");
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "Show done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
     await waitFor(() => expect(listCards).toHaveBeenCalledTimes(2));
     fireEvent.change(screen.getByRole("combobox", { name: "Project" }), {
       target: { value: "project-b" },
@@ -1201,7 +1215,7 @@ describe("pipeline board", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Project B")).toBeTruthy();
-      expect(screen.queryByText("Queued")).toBeNull();
+      expect(screen.queryAllByRole("article").some((card) => within(card).queryByText("Queued") !== null)).toBe(false);
       expect(screen.queryByText("Stale A")).toBeNull();
       expect(screen.getByRole("button", { name: /Project B machine queue/ })).toBeTruthy();
       expect(screen.queryByRole("button", { name: /Stale machine queue/ })).toBeNull();
@@ -1211,7 +1225,7 @@ describe("pipeline board", () => {
   it("keeps a queued card draggable and lets saving take precedence", async () => {
     const moveCard = vi.fn(() => makeCard({ column: "todo" }));
     renderBoard({ queue: waitingQueue(["card_1"]), moveCard });
-    await screen.findByText("Queued");
+    await within(await screen.findByRole("article", { name: "A pipeline card" })).findByText("Queued");
     const drag = dragCard();
     const target = screen.getByRole("region", { name: "To do" });
     fireEvent.dragOver(target, drag);
@@ -1299,4 +1313,211 @@ describe("pipeline board", () => {
     await act(async () => finishes.shift()!());
     await waitFor(() => expect(within(first).queryByText("Next")).toBeNull());
   });
+
+  it("filters attention, queue, and stage without including saved, held, or completed work", async () => {
+    renderBoard({
+      cards: [
+        makeCard({ id: "waiting", title: "Queued review", column: "reviewing", reportSignal: "working" }),
+        makeCard({ id: "attention", title: "Choose behavior", column: "implementing", needsUser: true, attentionReason: "Pick fallback" }),
+        makeCard({ id: "paused", title: "Paused task", runState: "paused", needsUser: true }),
+        makeCard({ id: "saved", title: "Saved task", startRequested: false, needsUser: true }),
+        makeCard({ id: "done", title: "Completed task", column: "done", needsUser: true }),
+      ],
+      queue: waitingQueue(["waiting", "paused", "saved", "done"]),
+    });
+    await screen.findByRole("article", { name: "Queued review" });
+    expect(screen.getByRole("button", { name: "Needs you 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Queued 1" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Needs you 1" }));
+    expect(screen.getAllByRole("article").map((row) => row.getAttribute("aria-label"))).toEqual(["Choose behavior"]);
+    fireEvent.click(screen.getByRole("button", { name: "Queued 1" }));
+    expect(screen.getAllByRole("article").map((row) => row.getAttribute("aria-label"))).toEqual(["Queued review"]);
+    expect(within(screen.getByRole("article", { name: "Queued review" })).getByText("Machine capacity is full")).toBeTruthy();
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter by stage" }), { target: { value: "planning" } });
+    expect(screen.queryAllByRole("article")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Show open tasks" }));
+    expect(screen.getAllByRole("article")).toHaveLength(4);
+    expect((screen.getByRole("combobox", { name: "Filter by stage" }) as HTMLSelectElement).value).toBe("all");
+  });
+
+  it("keeps list order stable when realtime reports arrive in another order", async () => {
+    const older = makeCard({ id: "older", title: "Older", createdAt: 10 });
+    const newer = makeCard({ id: "newer", title: "Newer", createdAt: 20 });
+    let cards = [older, newer];
+    const { slot } = renderBoard({ listCards: vi.fn(() => ({ cards, queue: [] })) });
+    await screen.findByRole("article", { name: "Older" });
+    expect(screen.getAllByRole("article").map((row) => row.getAttribute("aria-label"))).toEqual(["Newer", "Older"]);
+    cards = [{ ...older, updatedAt: 200, column: "reviewing" }, newer];
+    await slot.behavior.emitRealtime("cards:changed", {});
+    expect(screen.getAllByRole("article").map((row) => row.getAttribute("aria-label"))).toEqual(["Newer", "Older"]);
+  });
+
+  it("keeps details current and closes them when the task disappears", async () => {
+    let cards = [makeCard({ intakeThreadId: "intake", leadThreadId: "lead", ownerRole: "lead", column: "implementing", body: "Full task context", lead: DEFAULT_EXECUTION.lead })];
+    const { slot } = renderBoard({ listCards: vi.fn(() => ({ cards, queue: [] })) });
+    await screen.findByRole("article", { name: "A pipeline card" });
+    fireEvent.click(screen.getByRole("button", { name: "A pipeline card" }));
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "lead" });
+    fireEvent.click(screen.getByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+    expect(within(detail).getByText("Full task context")).toBeTruthy();
+    expect(within(detail).getByText(/gpt-5.6-sol/)).toBeTruthy();
+    cards = [{ ...cards[0]!, column: "reviewing", needsUser: true, attentionReason: "Review this implementation" }];
+    await slot.behavior.emitRealtime("cards:changed", {});
+    await waitFor(() => expect(within(detail).getByText("Review this implementation")).toBeTruthy());
+    expect(within(detail).getByText("Reviewing", { selector: "dd" })).toBeTruthy();
+    cards = [];
+    await slot.behavior.emitRealtime("cards:changed", {});
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("opens saved task details from its title and closes them on project switch", async () => {
+    renderBoard({
+      projects: [{ id: "proj_1", name: "One" }, { id: "proj_2", name: "Two" }],
+      listCards: vi.fn((input: { projectId: string }) => ({ cards: [makeCard({ projectId: input.projectId, startRequested: false, intakeThreadId: null })], queue: [] })),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "A pipeline card" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.change(screen.getByRole("combobox", { name: "Project", hidden: true }), { target: { value: "proj_2" } });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("button", { name: /^Open/ }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("can move to a hidden empty stage through the action menu", async () => {
+    const moveCard = vi.fn(() => makeCard({ column: "qa" }));
+    renderBoard({ moveCard });
+    await screen.findByRole("article", { name: "A pipeline card" });
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    expect(screen.queryByRole("region", { name: "QA" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Actions for A pipeline card" }));
+    const move = screen.getByRole("combobox", { name: "Move A pipeline card" });
+    expect(within(move).getAllByRole("option").map((option) => option.textContent)).toEqual(COLUMNS.map((column) => COLUMN_LABELS[column]));
+    fireEvent.change(move, { target: { value: "qa" } });
+    await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1", column: "qa" }));
+  });
+
+
+  it("shows a failed detail action inside the dialog and releases its pending lock", async () => {
+    const pauseCard = vi.fn(async () => { throw new Error("Cannot pause this task"); });
+    renderBoard({ pauseCard });
+    fireEvent.click(await screen.findByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+    fireEvent.click(within(detail).getByRole("button", { name: "Pause" }));
+    expect((await within(detail).findByRole("alert")).textContent).toBe("Cannot pause this task");
+    expect((within(detail).getByRole("button", { name: "Pause" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(pauseCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
+  });
+
+
+  it.each(["open", "done"] as const)("exposes every drag destination from the %s filter", async (filter) => {
+    const card = makeCard({ column: filter === "done" ? "done" : "implementing" });
+    const moveCard = vi.fn(() => card);
+    renderBoard({ cards: [card], moveCard });
+    if (filter === "done") fireEvent.click(await screen.findByRole("button", { name: "Done" }));
+    await screen.findByRole("article", { name: card.title });
+    const drag = dragCard();
+    expect(screen.getAllByRole("region").map((region) => region.getAttribute("aria-label"))).toEqual(COLUMNS.map((column) => COLUMN_LABELS[column]));
+    const destination = filter === "done" ? "reviewing" : "done";
+    fireEvent.drop(screen.getByRole("region", { name: COLUMN_LABELS[destination] }), drag);
+    await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: card.id, column: destination }));
+  });
+
+  it.each(["Queued", "Needs you"] as const)("keeps a drag alive when realtime removes its %s match", async (filter) => {
+    let card = makeCard({ needsUser: true });
+    let queue = waitingQueue([card.id]);
+    const moveCard = vi.fn(() => card);
+    const { slot } = renderBoard({ listCards: vi.fn(() => ({ cards: [card], queue })), moveCard });
+    fireEvent.click(await screen.findByRole("button", { name: `${filter} 1` }));
+    const drag = dragCard();
+    card = { ...card, needsUser: false };
+    queue = [];
+    await slot.behavior.emitRealtime("cards:changed", {});
+    expect(screen.getByRole("button", { name: `${filter} 0` })).toBeTruthy();
+    expect(screen.getByRole("article", { name: card.title })).toBe(drag.card);
+    expect(screen.getAllByRole("region")).toHaveLength(COLUMNS.length);
+    fireEvent.drop(screen.getByRole("region", { name: "QA" }), drag);
+    await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: card.id, column: "qa" }));
+    await screen.findByText("No tasks in this view");
+    expect(screen.queryByRole("article")).toBeNull();
+  });
+
+  it("keeps an empty filter stable during a background refresh", async () => {
+    const result = { cards: [makeCard()], queue: [] };
+    let finish!: (value: typeof result) => void;
+    const refresh = new Promise<typeof result>((resolve) => { finish = resolve; });
+    const listCards = vi.fn().mockResolvedValueOnce(result).mockReturnValueOnce(refresh);
+    const { slot } = renderBoard({ listCards });
+    fireEvent.click(await screen.findByRole("button", { name: "Queued 0" }));
+    let reloading!: Promise<void>;
+    await act(async () => { reloading = slot.behavior.emitRealtime("cards:changed", {}); });
+    await waitFor(() => expect(listCards).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("No tasks in this view")).toBeTruthy();
+    await act(async () => { finish(result); await reloading; });
+    expect(screen.getByText("No tasks in this view")).toBeTruthy();
+  });
+
+
+  it("distinguishes a failed load from an empty project and retries without a reconnect", async () => {
+    const listCards = vi.fn().mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValue({ cards: [makeCard()], queue: [] });
+    renderBoard({ listCards });
+    await screen.findByText("Could not load tasks");
+    expect(screen.queryByText("No open tasks")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("article", { name: "A pipeline card" });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+
+  it("keeps a successful removal applied when the follow-up refresh fails", async () => {
+    const removeCard = vi.fn(() => ({ removed: true }));
+    const listCards = vi.fn().mockResolvedValueOnce({ cards: [makeCard()], queue: [] })
+      .mockRejectedValueOnce(new Error("Refresh unavailable"))
+      .mockResolvedValue({ cards: [], queue: [] });
+    renderBoard({ listCards, removeCard });
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for A pipeline card" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Refresh unavailable");
+    expect(screen.queryByRole("article", { name: "A pipeline card" })).toBeNull();
+    expect(removeCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await screen.findByText("No open tasks");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("includes failed task controls in Needs you while keeping healthy held tasks quiet", async () => {
+    renderBoard({ cards: [
+      makeCard({ id: "stop", title: "Failed stop", runState: "stopping", controlError: "Machine offline" }),
+      makeCard({ id: "pause", title: "Failed pause", runState: "pause_requested", controlError: "Could not deliver pause" }),
+      makeCard({ id: "resume", title: "Failed resume", runState: "paused", controlError: "Resume failed" }),
+      makeCard({ id: "quiet", title: "Paused normally", runState: "paused" }),
+      makeCard({ id: "delivery", title: "Delivering pause", runState: "pause_requested", controlError: PAUSE_DELIVERY_PENDING }),
+      makeCard({ id: "saved", title: "Saved", startRequested: false, controlError: "stale" }),
+      makeCard({ id: "done", title: "Done", column: "done", controlError: "stale" }),
+    ] });
+    fireEvent.click(await screen.findByRole("button", { name: "Needs you 3" }));
+    expect(screen.getAllByRole("article").map((row) => row.getAttribute("aria-label")).sort()).toEqual(["Failed pause", "Failed resume", "Failed stop"]);
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Failed stop" }));
+    expect(screen.getByRole("button", { name: "Stop now" })).toBeTruthy();
+  });
+
+  it("clears the old project when automatic fallback cannot load its replacement", async () => {
+    let projects = [{ id: "proj_1", name: "Old project" }, { id: "proj_2", name: "Replacement" }];
+    const { slot } = renderBoard({
+      listProjects: vi.fn(() => ({ projects })),
+      listCards: vi.fn((input: { projectId: string }) => {
+        if (input.projectId === "proj_2") throw new Error("Replacement unavailable");
+        return { cards: [makeCard({ title: "Old task" })], queue: [makeMachineQueue({ hostName: "Old machine" })] };
+      }),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Details for Old task" }));
+    projects = [projects[1]!];
+    await slot.behavior.emitRealtime("cards:changed", {});
+    expect((await screen.findByRole("alert")).textContent).toContain("Replacement unavailable");
+    expect((screen.getByRole("combobox", { name: "Project" }) as HTMLSelectElement).value).toBe("proj_2");
+    expect(screen.queryByRole("article")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText("Old machine")).toBeNull();
+  });
+
 });

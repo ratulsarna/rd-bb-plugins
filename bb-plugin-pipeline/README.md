@@ -1,10 +1,10 @@
 # bb-plugin-pipeline
 
-Pipeline gives each project a ten-column delivery board backed by BB threads. Each card requires an explicit machine choice. Starting a card launches an intake thread in the project's existing checkout on that machine. Moving the card to planning starts a lead in its own managed worktree on the same machine, carrying the filed issue and the card's attachments into the work.
+Pipeline tracks each project’s delivery tasks in a compact list or stage board backed by BB threads. Each card requires an explicit machine choice. Starting a card launches an intake thread in the project's existing checkout on that machine. Moving the card to planning starts a lead in its own managed worktree on the same machine, carrying the filed issue and the card's attachments into the work.
 
 Feature priorities are tracked in [WISHLIST.md](./WISHLIST.md).
 
-The board tracks:
+Both views track:
 
 - `backlog` → `todo` → `planning` → `plan_ready`
 - `implementing` → `reviewing` → `qa`
@@ -14,11 +14,13 @@ The board tracks:
 
 After the two implementation reviews clear, the lead walks you through the result before QA. It uses `/show-me` and code snippets, one step per turn, with up to eight steps and fewer for small changes. The walkthrough covers how the code works, deviations from the approved plan and why, and what still awaits verification. The card stays in Reviewing with **Needs you** until you approve the final step. Material changes after approval return to the affected steps.
 
-Cards show why the user is needed, open the owning thread, link the issue and PR, and expose launch retry when the target machine is unavailable. Explicit `bb pipeline report` calls are authoritative; Jev classifies an unsignalled lead idle as needs-you, not waiting, or unchecked.
+Cards show why the user is needed and open the owning thread. Task details link the issue and PR; task actions expose launch retry when the target machine is unavailable. Explicit `bb pipeline report` calls are authoritative; Jev classifies an unsignalled lead idle as needs-you, not waiting, or unchecked.
 
 Use **New task** to add a title, context, attachments, and a machine. **Intake** and **Lead** each have a provider, model, and reasoning picker. They start from Pipeline settings and remember the last task's choices across the UI and CLI. Each card saves both selections for its launches and retries.
 
-Choose **Save** to keep a task in Backlog without starting work, or **Save and start** to launch intake. Saved tasks show **Not started** and a **Start** action; they create no thread or queued message until started. Start uses the saved choices and waits for capacity when necessary. Start a task before moving it between stages or using execution controls. Drag started cards between stages, or use the card’s actions menu to move or remove it. **Show done** includes completed work.
+Choose **Save** to keep a task in Backlog without starting work, or **Save and start** to launch intake. Saved tasks show **Not started** and a **Start** action; they create no thread or queued message until started. Start uses the saved choices and waits for capacity when necessary. Start a task before moving it between stages or using execution controls. Use **Tasks** for a compact list, or **Board** for occupied stages. Filter by **Open**, **Needs you**, **Queued**, **Done**, or a specific stage. The layout choice is remembered; switching projects resets the filters.
+
+Task titles open the owning thread. The details button opens context, diagnostics, attachments, execution choices, and task actions in a side panel, or full-screen on a phone. Queued tasks show their waiting reason directly. Both layouts use a single scrolling area; Board stages stack vertically on narrow screens. Drag started cards in Board to reveal all destination stages, or use **Move to** in the actions menu.
 
 If a reload interrupts Start, Pipeline looks for the intake already created for that task and reconnects it. If it cannot find or check that thread, the card offers **Retry**; Retry checks again before launching intake.
 
