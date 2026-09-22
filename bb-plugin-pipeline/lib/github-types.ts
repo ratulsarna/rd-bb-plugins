@@ -31,7 +31,7 @@ export interface GithubSnapshot {
 }
 
 export const githubStatusSchema = z.object({
-  url: z.string(), number: z.number(), state: z.enum(["open", "closed", "merged"]),
+  url: z.string(), number: z.number().int().positive().nullable(), state: z.enum(["open", "closed", "merged"]),
   draft: z.boolean(), headSha: z.string(), checks: z.array(githubCheckSchema),
   mergeable: z.enum(["mergeable", "conflicting", "unknown"]), reviewDecision: z.string().nullable(),
   review: z.enum(["waiting", "feedback", "clear", "unknown"]),
@@ -58,5 +58,4 @@ export interface GithubSyncState {
   batch: ReviewBatch | null;
   requestedSha: string | null;
   awaitingReview: boolean;
-  headSeenAt: number;
 }

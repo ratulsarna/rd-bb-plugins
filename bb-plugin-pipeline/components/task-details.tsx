@@ -143,7 +143,7 @@ export function TaskDetails(props: PipelineCardProps) {
               {card.github === null ? <p className="pipeline-github-empty">Not synced yet</p> : (
                 <dl className="pipeline-github-fields">
                   <dt>Pull request</dt>
-                  <dd>#{card.github.number} · {taskGithubStateLabel(card)}</dd>
+                  <dd>{card.github.number === null ? "Not synced yet" : `#${card.github.number} · ${taskGithubStateLabel(card)}`}</dd>
                   <dt>Review</dt>
                   <dd>{taskGithubReviewLabel(card)}</dd>
                   <dt>Decision</dt>

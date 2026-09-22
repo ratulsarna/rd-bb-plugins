@@ -5,6 +5,7 @@ import type { GithubFeedback, GithubSnapshot, ReviewClassification } from "../li
 import { createCardStore, MIGRATIONS } from "../lib/store";
 import { createPipelineService } from "../lib/service";
 import type { PluginBbSdk } from "@get-bb/plugin-sdk";
+import { cardSchema } from "../lib/contract";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => { while (hosts.length) await hosts.pop()!.harness.lifecycle.dispose(); });
@@ -41,7 +42,7 @@ function setup() {
   const read = vi.fn(async () => structuredClone(snapshot));
   const post = vi.fn(async (_url: string, _body: string, _signal?: AbortSignal) => {});
   const notify = vi.fn();
-  const classify = vi.fn(async (): Promise<ReviewClassification> => ({ decision: "feedback", probability: .99 }));
+  const classify = vi.fn(async (_args: { feedback: GithubFeedback[] }): Promise<ReviewClassification> => ({ decision: "feedback", probability: .99 }));
   const settings = { jevApiKey: "test", jevThreshold: "0.7", reviewRequestComment: "@codex review" };
   const makeSync = () => createGithubSync({ bb: host.bb, store, read, post, classify, notify, getSettings: async () => settings });
   const sync = makeSync();
@@ -50,6 +51,49 @@ function setup() {
 }
 
 describe("GitHub review handoff", () => {
+  it("keeps invalid legacy links readable and canonicalizes valid legacy links before handoff", async () => {
+    const s = setup();
+    s.store.update("card", { prUrl: "not-a-url" });
+    await s.sync.poll();
+    expect(cardSchema.parse(s.card()).github).toMatchObject({ number: null, error: expect.stringContaining("valid github.com") });
+    expect(s.read).not.toHaveBeenCalled();
+    s.store.update("card", { prUrl: `${url}/files#discussion_r123` });
+    await s.sync.waitForReview("card", "lead");
+    expect(s.card()).toMatchObject({ prUrl: url, github: { url, number: 12, error: null } });
+    expect(s.read).toHaveBeenCalledWith(url, expect.any(AbortSignal));
+    expect(s.store.getGithub("card")!.awaitingReview).toBe(true);
+    expect(s.post).toHaveBeenCalledTimes(1);
+  });
+
+  it("observes empty approvals and revoked reviews instead of keeping an obsolete settled state", async () => {
+    const s = setup();
+    const approval = feedback({ kind: "review", state: "APPROVED", body: "" });
+    s.change({ feedback: [approval], reviewDecision: "APPROVED" });
+    s.classify.mockResolvedValueOnce({ decision: "clear", probability: .99 });
+    await s.sync.poll();
+    expect(s.classify.mock.calls[0]?.[0]).toMatchObject({ feedback: [approval] });
+    expect(s.card().github?.review).toBe("clear");
+    s.change({ feedback: [{ ...approval, state: "DISMISSED" }], reviewDecision: "REVIEW_REQUIRED" });
+    s.classify.mockResolvedValueOnce({ decision: "waiting", probability: .99 });
+    await s.sync.poll();
+    expect(s.classify).toHaveBeenCalledTimes(2);
+    expect(s.card().github).toMatchObject({ review: "waiting", reviewDecision: "REVIEW_REQUIRED" });
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("accepts an explicitly current clean comment predating discovery, then reflects a new review in progress", async () => {
+    const s = setup();
+    s.change({ feedback: [feedback({ kind: "comment", commitSha: null, body: "Review of abc complete, no findings", updatedAt: 1 })] });
+    s.classify.mockResolvedValueOnce({ decision: "clear", probability: .99 });
+    await s.sync.poll();
+    expect(s.card().github?.review).toBe("clear");
+    s.change({ feedback: [...s.snapshot().feedback, feedback({ id: "comment:progress", kind: "comment", body: "Second review started" })] });
+    s.classify.mockResolvedValueOnce({ decision: "waiting", probability: .99 });
+    await s.sync.poll();
+    expect(s.card().github?.review).toBe("waiting");
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
   it("requests once per revision, returns without waiting, and supports automatic reviews", async () => {
     const s = setup();
     await Promise.all([s.sync.waitForReview("card", "lead"), s.sync.waitForReview("card", "lead")]);

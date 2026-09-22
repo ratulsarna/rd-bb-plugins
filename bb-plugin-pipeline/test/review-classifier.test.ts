@@ -156,6 +156,14 @@ describe("review classifier", () => {
     ).resolves.toEqual({ decision: "unknown", probability: 0.9 });
   });
 
+  it("does not let a dismissed approval's retained text settle review", async () => {
+    await expect(
+      classify(vi.fn(async () => response(0.1, 0.9, 0.1)), {
+        feedback: [feedback({ state: "DISMISSED", body: "No findings" })],
+      }),
+    ).resolves.toEqual({ decision: "unknown", probability: 0.9 });
+  });
+
   it("does not fetch without feedback, a key, or a bounded payload", async () => {
     const fetch = vi.fn();
     await expect(classify(fetch, { feedback: [] })).resolves.toEqual({

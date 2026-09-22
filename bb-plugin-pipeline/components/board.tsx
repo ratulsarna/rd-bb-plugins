@@ -215,7 +215,11 @@ export function PipelineBoard() {
         if ("removed" in result && result.removed) {
           setCards((current) => current.filter((item) => item.id !== card.id));
         } else if ("id" in result) {
-          setCards((current) => current.map((item) => item.id === result.id && result.revision >= item.revision ? result : item));
+          setCards((current) => current.map((item) => {
+            if (item.id !== result.id || result.revision < item.revision) return item;
+            // GitHub can change during an action; the fresh list owns that snapshot.
+            return { ...result, github: item.prUrl === result.prUrl ? item.github : result.github };
+          }));
         }
       }
       await load();

@@ -419,7 +419,8 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       return row?.github_state == null ? null : JSON.parse(row.github_state) as GithubSyncState;
     },
     setGithub(id, url, state) {
-      return db.prepare("UPDATE cards SET github_state = ?, revision = revision + 1 WHERE id = ? AND pr_url = ?")
+      // Remote observations must not invalidate in-flight task actions.
+      return db.prepare("UPDATE cards SET github_state = ? WHERE id = ? AND pr_url = ?")
         .run(JSON.stringify(state), id, url).changes > 0;
     },
     getByThread(threadId) {

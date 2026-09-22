@@ -1676,6 +1676,27 @@ describe("pipeline board", () => {
     await waitFor(() => expect(within(row).getByText("Feedback for lead")).toBeTruthy());
   });
 
+  it("keeps a newer GitHub observation when an action returns an older snapshot at the same task revision", async () => {
+    const card = makeCard({ prUrl: "https://github.com/example/repo/pull/12", github: makeGithub({ review: "waiting" }) });
+    const updated = { ...card, github: makeGithub({ review: "clear" }) };
+    let finishAction!: (value: typeof card) => void;
+    let finishLoad!: (value: { cards: typeof card[]; queue: never[] }) => void;
+    const syncGithub = vi.fn(() => new Promise<typeof card>((resolve) => { finishAction = resolve; }));
+    const listCards = vi.fn().mockResolvedValueOnce({ cards: [card], queue: [] })
+      .mockResolvedValueOnce({ cards: [updated], queue: [] })
+      .mockImplementationOnce(() => new Promise((resolve) => { finishLoad = resolve; }));
+    const { slot } = renderBoard({ syncGithub, listCards });
+    fireEvent.click(await screen.findByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+    fireEvent.click(within(detail).getByRole("button", { name: "Refresh GitHub" }));
+    await slot.behavior.emitRealtime("cards:changed", {});
+    expect(within(detail).getByText("Review settled", { selector: "dd" })).toBeTruthy();
+    await act(async () => finishAction(card));
+    await waitFor(() => expect(listCards).toHaveBeenCalledTimes(3));
+    expect(within(detail).getByText("Review settled", { selector: "dd" })).toBeTruthy();
+    await act(async () => finishLoad({ cards: [updated], queue: [] }));
+  });
+
   it("holds the refresh lock while syncing and recovers from a failed refresh", async () => {
     let failSync!: (cause: Error) => void;
     const syncGithub = vi.fn(() => new Promise<ReturnType<typeof makeCard>>((_, reject) => {

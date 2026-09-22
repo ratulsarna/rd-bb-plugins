@@ -17,9 +17,9 @@ function fingerprint(item: GithubFeedback): string {
 
 function initialState(url: string): GithubSyncState {
   return {
-    status: { url, number: Number(url.split("/").at(-1)), state: "open", draft: true, headSha: "", checks: [],
+    status: { url, number: null, state: "open", draft: true, headSha: "", checks: [],
       mergeable: "unknown", reviewDecision: null, review: "waiting", followup: null, batchId: null, syncedAt: null, error: null },
-    observed: {}, batch: null, requestedSha: null, awaitingReview: false, headSeenAt: Date.now(),
+    observed: {}, batch: null, requestedSha: null, awaitingReview: false,
   };
 }
 
@@ -64,6 +64,10 @@ export function createGithubSync(input: {
   function current(id: string, url: string): Card | null {
     const card = store.get(id);
     return !abort.signal.aborted && card?.prUrl === url && card.column !== "done" ? card : null;
+  }
+  function canonicalPr(card: Card): Card {
+    const url = card.prUrl === null ? null : normalizePullRequestUrl(card.prUrl);
+    return url !== null && url !== card.prUrl ? store.update(card.id, { prUrl: url }) : card;
   }
   function save(card: Card, state: GithubSyncState): void {
     const before = store.get(card.id);
@@ -148,8 +152,8 @@ export function createGithubSync(input: {
   }
 
   function externalFeedback(snapshot: GithubSnapshot, state: GithubSyncState): GithubFeedback[] {
-    return snapshot.feedback.filter((item) => item.author !== snapshot.author && item.body.trim() !== "" &&
-      item.state !== "PENDING" && item.state !== "DISMISSED" &&
+    return snapshot.feedback.filter((item) => item.author !== snapshot.author &&
+      (item.body.trim() !== "" || item.kind === "review") && item.state !== "PENDING" &&
       (item.commitSha === null || item.commitSha === snapshot.headSha) &&
       !item.body.includes("<!-- pipeline-review-request:") && state.observed[item.id] !== fingerprint(item));
   }
@@ -157,7 +161,6 @@ export function createGithubSync(input: {
   async function apply(card: Card, snapshot: GithubSnapshot, state: GithubSyncState): Promise<void> {
     const headChanged = state.status.headSha !== snapshot.headSha;
     if (headChanged) {
-      state.headSeenAt = Date.now();
       state.status.review = "waiting";
       // Preserve an in-flight batch until the lead acknowledges it; its feedback still needs disposition.
       if (state.batch?.state === "handled" || state.batch?.state === "cancelled") state.batch = null;
@@ -195,16 +198,11 @@ export function createGithubSync(input: {
         context: snapshot.feedback.filter((item) => !fresh.some((candidate) => candidate.id === item.id) &&
           (item.commitSha === null || item.commitSha === snapshot.headSha)).slice(-20), log: (message) => bb.log.info(message) });
       if (current(card.id, snapshot.url) === null) return;
-      const previousState = state.status.review;
       if (result.decision === "feedback") {
         state.batch = { id: randomUUID(), headSha: snapshot.headSha, feedback: fresh,
           state: "pending", threadId: null, queueId: null };
         state.status.review = "feedback";
-      } else if (result.decision === "clear") {
-        const anchored = fresh.some((item) => item.commitSha === snapshot.headSha || item.updatedAt >= state.headSeenAt);
-        state.status.review = anchored ? "clear" : "unknown";
-      } else if (result.decision === "unknown") state.status.review = "unknown";
-      else state.status.review = previousState;
+      } else state.status.review = result.decision;
       // Unknown is retried only by explicit refresh; unchanged polls do not repeatedly spend classifier calls.
       for (const item of fresh) state.observed[item.id] = fingerprint(item);
     }
@@ -215,7 +213,8 @@ export function createGithubSync(input: {
   async function syncUnlocked(id: string, refresh = false): Promise<Card> {
     let card = required(id);
     if (card.prUrl === null || card.column === "done" || !card.startRequested) return card;
-    const url = card.prUrl;
+    card = canonicalPr(card);
+    const url = card.prUrl!;
     let state = store.getGithub(id) ?? initialState(url);
     try {
       if (normalizePullRequestUrl(url) === null) throw new Error("Link a valid github.com pull request URL");
@@ -242,7 +241,7 @@ export function createGithubSync(input: {
     },
     async waitForReview(id: string, threadId?: string, handled?: string): Promise<Card> {
       return serial(id, async () => {
-        const card = required(id);
+        const card = canonicalPr(required(id));
         if (!card.startRequested || card.runState !== "running" || card.column === "done" || card.ownerRole !== "lead" || card.leadThreadId === null) {
           throw new Error("Review handoff requires a running task with a lead");
         }
@@ -273,7 +272,6 @@ export function createGithubSync(input: {
         state.status.headSha = snapshot.headSha;
         state.status.review = sameRevisionHandled ? "clear" : "waiting";
         state.status.error = null;
-        state.headSeenAt = Date.now();
         store.update(id, { needsUser: false, attentionReason: null, attentionSource: null, attentionUnknown: false, reportSignal: null },
           { kind: handled === undefined ? "review_waiting" : "review_handled", source: "report", threadId: card.leadThreadId, note: handled ?? snapshot.headSha });
         save(required(id), state);

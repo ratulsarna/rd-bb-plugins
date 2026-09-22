@@ -192,7 +192,7 @@ function formatCard(
     card.needsUser ? `needs you: ${card.attentionReason ?? "unknown"}` : null,
     card.attentionUnknown ? "idle, unchecked" : null,
     card.launchError,
-    card.github === null ? null : `PR #${card.github.number}: ${card.github.state}; review ${card.github.review}`,
+    card.github === null ? null : card.github.number === null ? "PR not synced" : `PR #${card.github.number}: ${card.github.state}; review ${card.github.review}`,
     card.github?.error ?? null,
   ].filter((value): value is string => value !== null);
   return `${card.id}  ${card.column.padEnd(12)}  ${card.title}${flags.length === 0 ? "" : `  [${flags.join("; ")}]`}`;
