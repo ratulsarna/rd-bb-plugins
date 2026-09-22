@@ -1407,4 +1407,30 @@ describe("pipeline board", () => {
     expect(pauseCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
   });
 
+
+  it.each(["open", "done"] as const)("exposes every drag destination from the %s filter", async (filter) => {
+    const card = makeCard({ column: filter === "done" ? "done" : "implementing" });
+    const moveCard = vi.fn(() => card);
+    renderBoard({ cards: [card], moveCard });
+    if (filter === "done") fireEvent.click(await screen.findByRole("button", { name: "Done" }));
+    await screen.findByRole("article", { name: card.title });
+    const drag = dragCard();
+    expect(screen.getAllByRole("region").map((region) => region.getAttribute("aria-label"))).toEqual(COLUMNS.map((column) => COLUMN_LABELS[column]));
+    const destination = filter === "done" ? "reviewing" : "done";
+    fireEvent.drop(screen.getByRole("region", { name: COLUMN_LABELS[destination] }), drag);
+    await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: card.id, column: destination }));
+  });
+
+
+  it("distinguishes a failed load from an empty project and retries without a reconnect", async () => {
+    const listCards = vi.fn().mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValue({ cards: [makeCard()], queue: [] });
+    renderBoard({ listCards });
+    await screen.findByText("Could not load tasks");
+    expect(screen.queryByText("No open tasks")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByRole("article", { name: "A pipeline card" });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
 });

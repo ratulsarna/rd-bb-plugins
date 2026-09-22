@@ -188,7 +188,7 @@ export function PipelineBoard() {
     (card) => card.id === draggedCardId && card.projectId === projectId && card.runState === "running" && card.startRequested,
   ) : undefined;
   const stageColumns = COLUMNS.filter((column) => filter === "done" ? column === "done" : column !== "done");
-  const visibleColumns = stageColumns.filter((column) => Boolean(draggedCard) || filteredCards.some((card) => card.column === column));
+  const visibleColumns = draggedCard ? COLUMNS : stageColumns.filter((column) => filteredCards.some((card) => card.column === column));
 
   function clearDrag() {
     setDraggedCardId(null);
@@ -381,8 +381,9 @@ export function PipelineBoard() {
         {filteredCards.length === 0 ? (
           loading ? <div className="pipeline-skeleton" aria-hidden="true" /> : (
             <div className="pipeline-empty-view">
-              <p>{projectId === null ? "No projects" : filter === "open" && stage === "all" ? "No open tasks" : "No tasks in this view"}</p>
-              {filter === "open" && stage === "all" ? null : <button className="pipeline-button pipeline-ghost" type="button" onClick={() => selectFilter("open")}>Show open tasks</button>}
+              <p>{error !== null ? "Could not load tasks" : projectId === null ? "No projects" : filter === "open" && stage === "all" ? "No open tasks" : "No tasks in this view"}</p>
+              {error !== null ? <button className="pipeline-button pipeline-ghost" type="button" onClick={() => void load()}>Retry</button>
+                : filter === "open" && stage === "all" ? null : <button className="pipeline-button pipeline-ghost" type="button" onClick={() => selectFilter("open")}>Show open tasks</button>}
             </div>
           )
         ) : view === "list" ? (
