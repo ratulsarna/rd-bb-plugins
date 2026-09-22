@@ -234,12 +234,12 @@ export function createGithubSync(input: {
     } catch (cause) {
       if (current(id, url) !== null) {
         state = store.getGithub(id) ?? state;
-        if (!readSucceeded) state.readFailures += 1;
+        state.readFailures = readSucceeded ? 0 : state.readFailures + 1;
         failed(required(id), state, cause, readSucceeded);
         if (!readSucceeded && state.readFailures === 2) {
           const latest = required(id);
           const reason = githubAttention(latest);
-          if (reason !== null) input.notify(latest, reason);
+          if (reason !== null && reason === latest.github?.error) input.notify(latest, reason);
         }
       }
     }

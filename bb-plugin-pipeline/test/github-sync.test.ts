@@ -345,6 +345,46 @@ describe("GitHub review handoff", () => {
     expect(s.notify).toHaveBeenCalledTimes(1);
   });
 
+  it("ends a read-failure streak when the read succeeds even if feedback processing fails", async () => {
+    const s = setup();
+    s.read.mockRejectedValueOnce(new Error("network timeout")).mockRejectedValueOnce(new Error("network timeout"));
+    await s.sync.poll(); await s.sync.poll();
+    expect(s.notify).toHaveBeenCalledTimes(1);
+
+    s.change({ feedback: [feedback()] });
+    s.classify.mockRejectedValueOnce(new Error("classifier failed"));
+    await s.sync.poll();
+    expect(s.store.getGithub("card")!.readFailures).toBe(0);
+    expect(s.card().github?.error).toContain("classifier failed");
+    s.notify.mockClear();
+
+    const reloaded = s.makeSync();
+    s.read.mockRejectedValue(new Error("new outage"));
+    await reloaded.poll();
+    expect(s.notify).not.toHaveBeenCalled();
+    await reloaded.poll(); await reloaded.poll();
+    expect(s.notify).toHaveBeenCalledTimes(1);
+    expect(s.notify).toHaveBeenLastCalledWith(expect.anything(), "GitHub sync: new outage");
+  });
+
+  it.each(["closed", "cancelled"] as const)("does not re-announce %s attention when GitHub reads fail", async (attention) => {
+    const s = setup();
+    if (attention === "closed") {
+      s.change({ state: "closed" });
+      await s.sync.poll();
+    } else {
+      s.change({ feedback: [feedback()] });
+      await s.sync.poll();
+      s.sync.onMessage("cancelled", s.queue.shift()!);
+    }
+    expect(s.notify).toHaveBeenCalledTimes(1);
+    s.notify.mockClear();
+    s.read.mockRejectedValue(new Error("rate limited"));
+    await s.sync.poll(); await s.sync.poll(); await s.sync.poll();
+    expect(s.card().github?.error).toBe("GitHub sync: rate limited");
+    expect(s.notify).not.toHaveBeenCalled();
+  });
+
   it("does not blindly resend after an uncertain send, and recovers a queued marker", async () => {
     const s = setup(); s.change({ feedback: [feedback()] });
     s.send.mockRejectedValueOnce(new Error("connection lost"));
