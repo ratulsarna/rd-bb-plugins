@@ -180,17 +180,18 @@ export function PipelineBoard() {
   const openCards = cards.filter((card) => card.column !== "done");
   const needsAttention = openCards.filter((card) => taskNeedsAttention(card, questionOpen(card))).length;
   const queuedCount = openCards.filter(queued).length;
+  const draggedCard = view === "board" ? cards.find(
+    (card) => card.id === draggedCardId && card.projectId === projectId && card.runState === "running" && card.startRequested,
+  ) : undefined;
   const filteredCards = cards.filter((card) => {
+    if (card.id === draggedCard?.id) return true;
+    if (stage !== "all" && card.column !== stage) return false;
     if (filter === "done") return card.column === "done";
     if (card.column === "done") return false;
     if (filter === "attention") return taskNeedsAttention(card, questionOpen(card));
     if (filter === "queued") return queued(card);
     return true;
-  }).filter((card) => stage === "all" || card.column === stage)
-    .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-  const draggedCard = view === "board" ? filteredCards.find(
-    (card) => card.id === draggedCardId && card.projectId === projectId && card.runState === "running" && card.startRequested,
-  ) : undefined;
+  }).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
   const stageColumns = COLUMNS.filter((column) => filter === "done" ? column === "done" : column !== "done");
   const visibleColumns = draggedCard ? COLUMNS : stageColumns.filter((column) => filteredCards.some((card) => card.column === column));
 
@@ -390,7 +391,7 @@ export function PipelineBoard() {
       {error === null ? null : <div role="alert" className="pipeline-error"><Icon name="AlertCircle" /><span>{error}</span><button type="button" className="pipeline-button pipeline-ghost" disabled={loading} onClick={() => void load()}>Refresh</button></div>}
       <div className="pipeline-scroll" onKeyDown={(event) => { if (event.key === "Escape") clearDrag(); }}>
         {filteredCards.length === 0 ? (
-          loading ? <div className="pipeline-skeleton" aria-hidden="true" /> : (
+          loading && cards.length === 0 ? <div className="pipeline-skeleton" aria-hidden="true" /> : (
             <div className="pipeline-empty-view">
               <p>{error !== null ? "Could not load tasks" : projectId === null ? "No projects" : filter === "open" && stage === "all" ? "No open tasks" : "No tasks in this view"}</p>
               {error !== null ? <button className="pipeline-button pipeline-ghost" type="button" onClick={() => void load()}>Retry</button>

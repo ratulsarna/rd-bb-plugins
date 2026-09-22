@@ -1422,6 +1422,40 @@ describe("pipeline board", () => {
     await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: card.id, column: destination }));
   });
 
+  it.each(["Queued", "Needs you"] as const)("keeps a drag alive when realtime removes its %s match", async (filter) => {
+    let card = makeCard({ needsUser: true });
+    let queue = waitingQueue([card.id]);
+    const moveCard = vi.fn(() => card);
+    const { slot } = renderBoard({ listCards: vi.fn(() => ({ cards: [card], queue })), moveCard });
+    fireEvent.click(await screen.findByRole("button", { name: `${filter} 1` }));
+    const drag = dragCard();
+    card = { ...card, needsUser: false };
+    queue = [];
+    await slot.behavior.emitRealtime("cards:changed", {});
+    expect(screen.getByRole("button", { name: `${filter} 0` })).toBeTruthy();
+    expect(screen.getByRole("article", { name: card.title })).toBe(drag.card);
+    expect(screen.getAllByRole("region")).toHaveLength(COLUMNS.length);
+    fireEvent.drop(screen.getByRole("region", { name: "QA" }), drag);
+    await waitFor(() => expect(moveCard).toHaveBeenCalledExactlyOnceWith({ cardId: card.id, column: "qa" }));
+    await screen.findByText("No tasks in this view");
+    expect(screen.queryByRole("article")).toBeNull();
+  });
+
+  it("keeps an empty filter stable during a background refresh", async () => {
+    const result = { cards: [makeCard()], queue: [] };
+    let finish!: (value: typeof result) => void;
+    const refresh = new Promise<typeof result>((resolve) => { finish = resolve; });
+    const listCards = vi.fn().mockResolvedValueOnce(result).mockReturnValueOnce(refresh);
+    const { slot } = renderBoard({ listCards });
+    fireEvent.click(await screen.findByRole("button", { name: "Queued 0" }));
+    let reloading!: Promise<void>;
+    await act(async () => { reloading = slot.behavior.emitRealtime("cards:changed", {}); });
+    await waitFor(() => expect(listCards).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("No tasks in this view")).toBeTruthy();
+    await act(async () => { finish(result); await reloading; });
+    expect(screen.getByText("No tasks in this view")).toBeTruthy();
+  });
+
 
   it("distinguishes a failed load from an empty project and retries without a reconnect", async () => {
     const listCards = vi.fn().mockRejectedValueOnce(new Error("fetch failed"))
