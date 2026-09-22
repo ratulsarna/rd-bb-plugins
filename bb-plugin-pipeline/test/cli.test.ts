@@ -37,6 +37,7 @@ function setup() {
     store,
     sdk: {} as never,
     controls: {} as never,
+    github: {} as never,
     capacity: {
       snapshot: vi.fn(async () => queue),
       setRunNext,

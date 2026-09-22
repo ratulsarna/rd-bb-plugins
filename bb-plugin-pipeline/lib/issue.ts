@@ -1,7 +1,4 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { runGh } from "./gh";
 
 export interface IssueDetails {
   title: string;
@@ -11,11 +8,7 @@ export interface IssueDetails {
 
 export async function readIssue(url: string): Promise<IssueDetails> {
   try {
-    const { stdout } = await execFileAsync(
-      "gh",
-      ["issue", "view", url, "--json", "title,body,labels"],
-      { timeout: 15_000, maxBuffer: 1024 * 1024 },
-    );
+    const stdout = await runGh(["issue", "view", url, "--json", "title,body,labels"]);
     const value = JSON.parse(stdout) as {
       title?: unknown;
       body?: unknown;

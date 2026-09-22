@@ -3,6 +3,7 @@ import { z } from "zod";
 import { COLUMNS } from "./columns";
 import { executionSelectionSchema } from "./execution";
 import { RUN_STATES } from "./store";
+import { githubStatusSchema } from "./github-types";
 
 export const columnSchema = z.enum(COLUMNS);
 export const tierSchema = z.enum(["trivial", "small", "standard"]);
@@ -36,6 +37,7 @@ export const cardSchema = z
     tier: tierSchema.nullable(),
     issueUrl: z.string().nullable(),
     prUrl: z.string().nullable(),
+    github: githubStatusSchema.nullable(),
     intakeThreadId: z.string().nullable(),
     leadThreadId: z.string().nullable(),
     ownerRole: z.enum(["intake", "lead"]),
@@ -102,6 +104,14 @@ export const rpcContract = defineRpcContract({
   listCards: {
     input: z.object({ projectId: z.string(), includeDone: z.boolean() }).strict(),
     output: z.object({ cards: z.array(cardSchema), queue: z.array(machineQueueSchema) }).strict(),
+  },
+  syncGithub: {
+    input: z.object({ cardId: z.string() }).strict(),
+    output: cardSchema,
+  },
+  retryReview: {
+    input: z.object({ cardId: z.string() }).strict(),
+    output: cardSchema,
   },
   setRunNext: {
     input: z.object({ cardId: z.string(), enabled: z.boolean() }).strict(),

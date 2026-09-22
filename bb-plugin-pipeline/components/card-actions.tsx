@@ -7,6 +7,7 @@ export interface CardActionProps {
   card: Card;
   pending: boolean;
   queue: TaskQueueState | null;
+  occupied?: boolean;
   onStart(): void;
   onMove(column: Column): void;
   onPause(): void;
@@ -15,6 +16,8 @@ export interface CardActionProps {
   onSetRunNext(enabled: boolean): void;
   onRetry(): void;
   onRemove(): void;
+  onSyncGithub(): void;
+  onRetryReview(): void;
 }
 
 function run(action: () => void, onAction?: () => void): void {
@@ -48,7 +51,8 @@ export function CardActions(
 ) {
   const { card } = props;
   const running = card.runState === "running";
-  const lifecycleVisible = card.startRequested && card.column !== "done";
+  const doneOccupied = card.column === "done" && props.occupied === true;
+  const lifecycleVisible = (card.startRequested && card.column !== "done") || doneOccupied;
 
   return (
     <div className="pipeline-card-actions" data-card-control>
@@ -56,7 +60,14 @@ export function CardActions(
         onStart={() => run(props.onStart, props.onAction)} />
       {lifecycleVisible ? (
         <div className="pipeline-card-controls">
-          {card.runState === "running" ? (
+          {doneOccupied ? (
+            <button type="button" className="pipeline-button pipeline-ghost pipeline-stop" disabled={props.pending}
+              onClick={() => run(props.onStop, props.onAction)}>
+              <Icon name="Square" /> Stop now
+            </button>
+          ) : (
+            <>
+              {card.runState === "running" ? (
             <button type="button" className="pipeline-button pipeline-ghost" disabled={props.pending}
               onClick={() => run(props.onPause, props.onAction)}>
               <Icon name="Pause" /> Pause
@@ -97,6 +108,8 @@ export function CardActions(
               <Icon name="Play" /> Run next
             </button>
           ) : null}
+            </>
+          )}
         </div>
       ) : null}
       <label className="pipeline-field">

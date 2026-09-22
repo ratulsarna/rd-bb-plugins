@@ -13,7 +13,7 @@ The `pipeline-*` skills are forks of the nexus skills. Upstream: `/home/ratul/sc
 | `nexus-implement/templates/developer.md` | `skills/pipeline-implement/templates/developer.md` | none — byte-for-byte |
 | `nexus-implement/templates/oracle.md` | `skills/pipeline-implement/templates/oracle.md` | none — byte-for-byte |
 | `nexus-implement/templates/qa.md` | `skills/pipeline-implement/templates/qa.md` | none — byte-for-byte |
-| `nexus-close-out/SKILL.md` | `skills/pipeline-close-out/SKILL.md` | renames; walkthrough approval entry gate; board reports and `pr_ready` explanation |
+| `nexus-close-out/SKILL.md` | `skills/pipeline-close-out/SKILL.md` | renames; walkthrough approval entry gate; asynchronous external review handoff and feedback triage |
 | `nexus-debug/SKILL.md` | `skills/pipeline-debug/SKILL.md` | renames; 2 report lines added (below) |
 | `nexus-debug/templates/debugger.md` | `skills/pipeline-debug/templates/debugger.md` | none — byte-for-byte |
 
@@ -32,13 +32,13 @@ Not copied: `agents/openai.yaml` in each upstream skill directory (no counterpar
 - `pipeline-README.md`: sizing says the lead does not re-tier except for a bug, whose intake tier stays provisional until the RCA stop and is finalized by the user there.
 - `pipeline-implement/SKILL.md`: every tier has a user walkthrough of the resulting implementation before QA or close-out. It owns step-by-step `/show-me` delivery, deviation explanations, approval, resume, and rework rules. Its execution instructions permit this approval stop.
 - `pipeline-README.md`: sizing retains the implementation walkthrough for small and trivial work; `run.md` records its outline, progress, reviewed commit, and approval.
-- `pipeline-close-out/SKILL.md`: entry requires the approved implementation walkthrough and routes material subsequent changes through its rework rule.
+- `pipeline-close-out/SKILL.md`: entry requires the approved implementation walkthrough; material changes return through its rework rule. External review uses `review-wait` and asynchronous feedback batches instead of provider-specific polling.
 
 ## Additions: board report lines
 
 One line per site, in the skill the moment belongs to; the full table appears once in the README fork. Column-move lines carry `--working`; `--needs-you` lines state it.
 
-- `pipeline-README.md`: "## Board" report table with the `--working` default in the lead-in. It covers intake stops, plan and implementation walkthroughs, the post-RCA tier report, and the review-clean `pr_ready` handoff. Small and trivial tiers skip only plan walkthrough reports.
+- `pipeline-README.md`: "## Board" report table with the `--working` default in the lead-in. It covers intake stops, plan and implementation walkthroughs, the post-RCA tier report, and the external review handoff and feedback acknowledgement. Small and trivial tiers skip only plan walkthrough reports.
 - `pipeline-plan/SKILL.md`, 4 lines:
   - top of "Understand, with the user": `` `bb pipeline report --column planning --working` ``
   - end of "Understand, with the user" (questions in understand or grill): `` `bb pipeline report --needs-you "<question in one line>"` ``
@@ -53,12 +53,7 @@ One line per site, in the skill the moment belongs to; the full table appears on
   - end of gate 4: ``When findings send it back to the worker: `bb pipeline report --column implementing --working` ``
   - gate 5, each implementation walkthrough step: `` `bb pipeline report --column reviewing --needs-you "implementation walkthrough; step N of M"` ``
   - gate 6 (QA starts, then QA sends it back): `` `bb pipeline report --column qa --working` `` and ``When QA sends it back: `bb pipeline report --column implementing --working` ``
-- `pipeline-close-out/SKILL.md`, 3 lines:
-  - in step 2, after the draft-PR paragraph: `` `bb pipeline report --column pr --pr <url> --working` ``
-  - end of step 3 (review loop clean): `` `bb pipeline report --column pr_ready --needs-you "review clean; mark the PR ready and merge"` ``
-  - after that report: ``The draft PR is review-clean and waits for the user in `pr_ready`.``
-
-Copied prose differs by the renames and workflow changes listed above; report lines live at the corresponding phase boundaries.
+- `pipeline-close-out/SKILL.md`: links the draft PR with a board report, hands off review with `review-wait`, and acknowledges delivered feedback with `--handled <batch-id>`.
 
 ## New files, no upstream counterpart
 

@@ -10,6 +10,7 @@ import { Icon } from "./icon";
 import { MachineSelect } from "./machine-select";
 import { TaskDetails } from "./task-details";
 import {
+  taskGithubSummary,
   taskPresentationState,
   taskPrimaryReason,
   taskQuestionOpen,
@@ -46,6 +47,7 @@ export function PipelineCard(props: PipelineCardProps) {
   const portalScope = usePortalScopeProps();
   const state = taskPresentationState(card, props);
   const reason = taskPrimaryReason(card, props);
+  const github = taskGithubSummary(card);
   const questionOpen = taskQuestionOpen(card, props.questionOpen);
   const machineName = props.machines.find((machine) => machine.id === card.hostId)?.name ?? card.hostId;
 
@@ -85,6 +87,9 @@ export function PipelineCard(props: PipelineCardProps) {
             >
               {reason.message}
             </div>
+          )}
+          {github === null ? null : (
+            <span className="pipeline-github-chip" data-tone={github.tone}>{github.label}</span>
           )}
           {questionOpen ? <span className="sr-only" aria-label="Question open">Question open</span> : null}
           <StartTaskButton card={card} pending={props.pending} onStart={props.onStart} />

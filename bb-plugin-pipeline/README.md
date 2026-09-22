@@ -10,7 +10,7 @@ Both views track:
 - `implementing` → `reviewing` → `qa`
 - `pr` → `pr_ready` → `done`
 
-`pr_ready` means the draft PR is review-clean and waiting for the user to mark it ready and merge it.
+`pr_ready` is available for an explicit user/lead handoff. External review status is shown independently of the stage; clean or settled feedback surfaces the user’s merge decision without moving stages.
 
 After the two implementation reviews clear, the lead walks you through the result before QA. It uses `/show-me` and code snippets, one step per turn, with up to eight steps and fewer for small changes. The walkthrough covers how the code works, deviations from the approved plan and why, and what still awaits verification. The card stays in Reviewing with **Needs you** until you approve the final step. Material changes after approval return to the affected steps.
 
@@ -52,6 +52,18 @@ With Notify installed and enabled, Pipeline sends an alert when a task starts ne
 
 Alerts include the task title and reason and open its owning thread when one exists. They use Notify's desktop and phone delivery, sound preference, and foreground suppression. They do not require enabling each thread's bell. Unknown idle status and capacity waits stay quiet. A missing or failing Notify plugin is logged without blocking task work; failed requests are not replayed.
 
+## GitHub sync
+
+Link one GitHub PR to a task with `report --pr <url>`. Pipeline refreshes its state, draft status, checks, mergeability, and review feedback every minute. Refresh GitHub in task details or run `github-sync` for an immediate update. Failed syncs preserve the last successful snapshot and show the error. No checks means no checks; CI does not gate review handoff.
+
+The lead runs `bb pipeline review-wait` after opening a draft PR, then ends its turn. The command posts `reviewRequestComment` once per revision (initially `@codex review`). Set it to an empty string when external reviews run automatically. Pipeline uses Jev to distinguish new findings, explicit clean completion, progress, and uncertainty across reviewers; no reviewer-account list is needed. An uncertain result remains visible for checking or refreshing.
+
+New findings produce one feedback batch sent to the existing lead through BB’s queue. Pause, machine availability, and the two-task limit apply. The lead triages findings under the close-out skill, verifies justified fixes, and runs `review-wait --handled <batch-id>` before ending its turn. A new revision requests another review; answered findings without a code change do not. Pending feedback survives reload, and failed or cancelled delivery has a Retry review action. If a send response is lost, check the lead before retrying an unconfirmed delivery.
+
+Clean or settled review asks for your merge decision. Sync moves a task to Done when its PR merges; a PR closed without merging needs your decision. Sync preserves manual stage changes and never reopens Done tasks. Replacing the PR link invalidates old queued feedback. Done describes delivery: remaining agents still consume capacity and remain visible and stoppable.
+
+GitHub access uses the BB server’s authenticated `gh`. Jev classification uses the existing `jevApiKey` and confidence threshold; unavailable classification reports Unknown. Paused and Done tasks retain their notification suppression. Neither a review-request comment nor an author reply starts another feedback turn.
+
 ## Commands
 
 ```text
@@ -64,6 +76,9 @@ bb pipeline queue [--project <id>]
 bb pipeline run-next <card-id> [--clear]
 bb pipeline move <card-id> <column>
 bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>]
+bb pipeline github-sync <card-id>
+bb pipeline review-wait [--card <id>] [--handled <batch-id>]
+bb pipeline review-retry <card-id>
 bb pipeline retry <card-id>
 bb pipeline pause <card-id>
 bb pipeline resume <card-id>
@@ -109,6 +124,7 @@ Initial settings use Claude Code with `claude-fable-5-1`, high reasoning, and fu
 - Lead: `leadProviderId`, `leadModel`, `leadReasoningLevel`, optional `leadServiceTier`
 - `permissionMode` for both roles
 - `jevApiKey` (secret), `jevThreshold`
+- `reviewRequestComment` — review trigger text; empty for automatic reviews
 
 Lead settings initially inherit the intake settings. Creating a task saves the resolved choices for both roles. Settings changes affect future cards; existing cards retain their saved selections. Cards created before per-role selections use the current settings when launching a role.
 

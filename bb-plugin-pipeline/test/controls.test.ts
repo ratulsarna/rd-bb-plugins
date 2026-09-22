@@ -52,6 +52,16 @@ function setup() {
 }
 
 describe("graceful task controls", () => {
+  it("can stop remaining work after a merged task reaches Done", async () => {
+    const s = setup();
+    s.thread("worker", "lead");
+    s.store.update("card", { column: "done" });
+    await s.controls.stop("card");
+    expect(s.card()).toMatchObject({ column: "done", runState: "paused" });
+    expect(s.busy.size).toBe(0);
+    expect(s.harness.inspection.sdk.callsTo("threads.stop")).toHaveLength(2);
+  });
+
   it("rejects controls for a saved card without changing or launching it", async () => {
     const s = setup();
     s.store.update("card", {

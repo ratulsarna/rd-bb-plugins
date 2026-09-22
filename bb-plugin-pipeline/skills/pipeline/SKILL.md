@@ -17,6 +17,9 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 - `bb pipeline queue [--project <id>]` — running and waiting tasks by machine, including each wait reason and the selected next task.
 - `bb pipeline run-next <card-id>` — favor this waiting task when a slot opens on its project and machine.
 - `bb pipeline run-next <card-id> --clear` — clear that selection if it is still current.
+- `bb pipeline github-sync <card-id>` — refresh the linked PR, checks, and review status; retry an unknown review classification.
+- `bb pipeline review-wait [--card <id>] [--handled <batch-id>]` — hand off external review from the owning lead. It posts the configured request once per revision; an empty `reviewRequestComment` uses automatic reviews. End the turn after the command succeeds.
+- `bb pipeline review-retry <card-id>` — retry a cancelled or failed review follow-up. Check the lead first if delivery was unconfirmed.
 - `bb pipeline retry <card-id>` — retry a failed or cancelled kickoff. A cancelled kickoff uses its existing thread and waits for capacity.
 - `bb pipeline pause <card-id>` — ask the owner to pause gracefully and hold new work.
 - `bb pipeline resume <card-id>` — continue a Paused task through the normal capacity gate.
@@ -60,6 +63,12 @@ bb pipeline run-next <card-id> --clear
 Run next is a preference, not a start-order guarantee: concurrent queue claims can let another task start first. Priority waits are bounded so a blocked nominee cannot stall the queue.
 
 `bb pipeline report --needs-you <reason>` marks the task as needing user input and sends an alert through Notify when attention begins. Use `--working` when that blocker clears. Repeated attention reports do not resend the alert. Notify must be installed and enabled; its foreground and sound preferences apply. Pipeline also alerts for intake waiting, confirmed lead attention, failures, and pending questions or approvals on the owning thread. Do not send an extra `bb notify` for the same blocker.
+
+## External PR review
+
+Link one PR with `report --pr <url>`. Pipeline reads GitHub status and uses Jev to classify new review text from bots or humans. A feedback batch is delivered to the existing lead through BB's queue, respecting capacity and pause. Follow `pipeline-close-out` when handling it. Acknowledge the exact batch with `review-wait --handled <batch-id>` after triage; material fixes still require the existing walkthrough/review/QA gates.
+
+Awaiting review is an expected idle state. End the turn and pause or finish any autonomous goal instead of polling GitHub. Clean or answered review surfaces the user's merge decision. CI is displayed but is not a handoff requirement. Sync marks merged tasks Done; other GitHub changes do not move stages or reopen completed tasks. Remaining runtime work retains its capacity slot and can be stopped from task details.
 
 ## Graceful pause
 

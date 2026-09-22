@@ -141,6 +141,7 @@ export function makeCard(overrides: Partial<Card> = {}): Card {
     tier: null,
     issueUrl: null,
     prUrl: null,
+    github: null,
     intakeThreadId: "intake",
     leadThreadId: null,
     ownerRole: "intake",
