@@ -1,5 +1,6 @@
 ---
 name: pipeline-plan
+disable-model-invocation: true
 description: The lead grounds in the code, syncs with the user on the task, shapes the design with the Oracle, and walks the user through the plan before any coding. Use when an approved spec is ready to build.
 ---
 

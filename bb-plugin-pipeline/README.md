@@ -144,7 +144,11 @@ The Jev key is optional. Without it, an unsignalled lead idle is shown as `Idle 
 
 ## Workflow skills
 
-All threads receive `pipeline`, which documents board operations. Intake threads also receive `pipeline-intake`. Lead threads receive the forked `pipeline-plan`, `pipeline-implement`, `pipeline-close-out`, and `pipeline-debug` workflow skills. Their upstream revision and local edits are recorded in [VENDOR.md](./VENDOR.md).
+All threads can discover `pipeline`, `pipeline-intake`, `pipeline-plan`, `pipeline-implement`, `pipeline-close-out`, and `pipeline-debug`. Select one explicitly from BB's skill picker, or use `bb skill list` and `bb skill show <id>` to read it. Supporting files are available through `bb skill show <id> --path <relative-path>`.
+
+The skills disable automatic invocation in Claude Code and Pi, and implicit invocation in Codex. Their workflow bodies load only when requested; Codex may still include discovery metadata. Pipeline's intake and lead kickoff messages explicitly request their workflow through the BB skill commands, loading subsequent phases only as needed. This also lets them read the current installed skill when a busy workspace retains an older provider catalog.
+
+The workflow skills are forks of Nexus. Their upstream revision and local edits are recorded in [VENDOR.md](./VENDOR.md).
 
 ## Development
 

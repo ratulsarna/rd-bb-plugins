@@ -1,5 +1,6 @@
 ---
 name: pipeline-implement
+disable-model-invocation: true
 description: Build an approved plan, review the change, walk the user through the implementation, then run QA.
 ---
 

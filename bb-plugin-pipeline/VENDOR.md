@@ -17,7 +17,7 @@ The `pipeline-*` skills are forks of the nexus skills. Upstream: `/home/ratul/sc
 | `nexus-debug/SKILL.md` | `skills/pipeline-debug/SKILL.md` | renames; 2 report lines added (below) |
 | `nexus-debug/templates/debugger.md` | `skills/pipeline-debug/templates/debugger.md` | none — byte-for-byte |
 
-Not copied: `agents/openai.yaml` in each upstream skill directory (no counterpart in this plugin).
+Each skill has `disable-model-invocation: true` and an `agents/openai.yaml` with `policy.allow_implicit_invocation: false`. Invocation is explicit; the Nexus UI metadata is not copied.
 
 ## Renames (every occurrence)
 
@@ -57,7 +57,7 @@ One line per site, in the skill the moment belongs to; the full table appears on
 
 ## New files, no upstream counterpart
 
-- `skills/pipeline/SKILL.md` — the board skill every thread gets: add, list, show, move cards; upload attachments first.
+- `skills/pipeline/SKILL.md` — the board skill available to every thread: add, list, show, move cards; upload attachments first.
 - `skills/pipeline-intake/SKILL.md` — intake: read the note and attachments, ask what this is, grill, file the issue, get the tier, label, hand off to planning; steps 2, 3, 5, and 7 report each stop for the user with `--needs-you`.
 
 No symlinks anywhere under `skills/`.

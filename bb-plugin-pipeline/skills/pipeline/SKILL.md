@@ -1,5 +1,6 @@
 ---
 name: pipeline
+disable-model-invocation: true
 description: "Work the pipeline board: add, start, list, show, move, pause, and resume tasks. Specify a machine; optionally choose separate intake and lead models and reasoning. Upload attachments first."
 ---
 

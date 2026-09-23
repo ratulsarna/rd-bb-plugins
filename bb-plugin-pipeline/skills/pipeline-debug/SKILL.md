@@ -1,5 +1,6 @@
 ---
 name: pipeline-debug
+disable-model-invocation: true
 description: A worker produces an evidence-backed root cause before any fix is planned or written. Use for bugs, regressions, test failures, unexpected behavior.
 ---
 

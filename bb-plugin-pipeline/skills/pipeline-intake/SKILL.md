@@ -1,5 +1,6 @@
 ---
 name: pipeline-intake
+disable-model-invocation: true
 description: "Intake for a pipeline card: understand the request with the user, file the GitHub issue, get the tier, and hand off to planning."
 ---
 

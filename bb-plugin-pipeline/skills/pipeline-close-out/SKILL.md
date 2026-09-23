@@ -1,5 +1,6 @@
 ---
 name: pipeline-close-out
+disable-model-invocation: true
 description: Verify the implementation, open a draft PR, hand off external review, and triage returned findings.
 ---
 
