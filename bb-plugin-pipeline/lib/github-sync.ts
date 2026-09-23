@@ -204,7 +204,7 @@ export function createGithubSync(input: {
         state.batch = { id: randomUUID(), headSha: snapshot.headSha, feedback: fresh,
           state: "pending", threadId: null, queueId: null };
         state.status.review = "feedback";
-      } else state.status.review = result.decision;
+      } else if (result.decision !== "informational") state.status.review = result.decision;
       // Unknown is retried only by explicit refresh; unchanged polls do not repeatedly spend classifier calls.
       for (const item of fresh) state.observed[item.id] = fingerprint(item);
     }

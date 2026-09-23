@@ -6,6 +6,7 @@ import { createCardStore, MIGRATIONS } from "../lib/store";
 import { createPipelineService } from "../lib/service";
 import type { PluginBbSdk } from "@get-bb/plugin-sdk";
 import { cardSchema } from "../lib/contract";
+import { classifyReview } from "../lib/review-classifier";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => { while (hosts.length) await hosts.pop()!.harness.lifecycle.dispose(); });
@@ -42,7 +43,7 @@ function setup() {
   const read = vi.fn(async () => structuredClone(snapshot));
   const post = vi.fn(async (_url: string, _body: string, _signal?: AbortSignal) => {});
   const notify = vi.fn();
-  const classify = vi.fn(async (_args: { feedback: GithubFeedback[] }): Promise<ReviewClassification> => ({ decision: "feedback", probability: .99 }));
+  const classify = vi.fn(async (_args: Parameters<typeof classifyReview>[0]): Promise<ReviewClassification> => ({ decision: "feedback", probability: .99 }));
   const settings = { jevApiKey: "test", jevThreshold: "0.7", reviewRequestComment: "@codex review" };
   const makeSync = () => createGithubSync({ bb: host.bb, store, read, post, classify, notify, getSettings: async () => settings });
   const sync = makeSync();
@@ -51,6 +52,32 @@ function setup() {
 }
 
 describe("GitHub review handoff", () => {
+  it("refreshes an uncertain abbreviated-commit review into a merge decision without waking the lead", async () => {
+    const s = setup();
+    const head = "7116d57764d244f4a7bdf43a645e4a13575cfca9";
+    s.change({ headSha: head, feedback: [feedback({ kind: "comment", commitSha: null,
+      body: "Codex Review: Didn't find any major issues. Another round soon, please!\n\n**Reviewed commit:** `7116d57764`",
+    })] });
+    let clean = 0.5;
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ answers: {
+      findings: { type: "noul", noul: 0.05 },
+      clean_current_revision: { type: "noul", noul: clean },
+      waiting: { type: "noul", noul: 0.8 },
+      informational: { type: "noul", noul: 0.05 },
+    } })));
+    s.classify.mockImplementation((args) => classifyReview({ ...args, fetch }));
+    await s.sync.poll();
+    expect(s.card().github?.review).toBe("unknown");
+    clean = 0.94;
+    await s.sync.poll();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await s.sync.sync("card");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(s.card()).toMatchObject({ column: "pr", github: { review: "clear", followup: null, batchId: null, error: null } });
+    expect(s.notify).toHaveBeenLastCalledWith(expect.anything(), "Review settled; ready for your merge decision");
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
   it("keeps invalid legacy links readable and canonicalizes valid legacy links before handoff", async () => {
     const s = setup();
     s.store.update("card", { prUrl: "not-a-url" });
@@ -78,6 +105,48 @@ describe("GitHub review handoff", () => {
     await s.sync.poll();
     expect(s.classify).toHaveBeenCalledTimes(2);
     expect(s.card().github).toMatchObject({ review: "waiting", reviewDecision: "REVIEW_REQUIRED" });
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("preserves settled review across a late completion summary, but still delivers later findings", async () => {
+    const s = setup();
+    const clean = feedback({ id: "clean", kind: "review", state: "APPROVED", body: "No issues found." });
+    s.change({ feedback: [clean] });
+    s.classify.mockResolvedValueOnce({ decision: "clear", probability: .95 });
+    await s.sync.poll();
+    const summary = feedback({ id: "summary", kind: "comment", commitSha: null, body: "Code review: Completed" });
+    s.change({ feedback: [clean, summary] });
+    s.classify.mockResolvedValueOnce({ decision: "informational", probability: .95 });
+    await s.sync.poll();
+    expect(s.card().github?.review).toBe("clear");
+    expect(s.notify).toHaveBeenCalledTimes(1);
+    expect(s.send).not.toHaveBeenCalled();
+    s.change({ feedback: [clean, summary, feedback({ id: "new-finding" })] });
+    await s.sync.poll();
+    expect(s.card().github).toMatchObject({ review: "feedback", followup: "queued" });
+    expect(s.send).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a pending review quiet when a teammate posts conversational feedback", async () => {
+    const s = setup();
+    await s.sync.waitForReview("card", "lead");
+    s.change({ feedback: [feedback({ kind: "comment", commitSha: null, body: "Nice work!" })] });
+    s.classify.mockResolvedValueOnce({ decision: "informational", probability: .95 });
+    await s.sync.poll();
+    expect(s.card().github).toMatchObject({ review: "waiting", followup: null });
+    expect(s.notify).not.toHaveBeenCalled();
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("does not make an informational summary settle a new revision", async () => {
+    const s = setup();
+    s.change({ feedback: [feedback({ kind: "review", body: "No findings" })] });
+    s.classify.mockResolvedValueOnce({ decision: "clear", probability: .95 });
+    await s.sync.poll();
+    s.change({ headSha: "def", feedback: [feedback({ id: "summary", kind: "comment", commitSha: null, body: "Review: Completed" })] });
+    s.classify.mockResolvedValueOnce({ decision: "informational", probability: .95 });
+    await s.sync.poll();
+    expect(s.card().github).toMatchObject({ review: "waiting", headSha: "def" });
     expect(s.send).not.toHaveBeenCalled();
   });
 

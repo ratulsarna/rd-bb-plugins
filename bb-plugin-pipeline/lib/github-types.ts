@@ -42,7 +42,7 @@ export const githubStatusSchema = z.object({
 
 export type GithubStatus = z.infer<typeof githubStatusSchema>;
 export type ReviewDecision = "feedback" | "clear" | "waiting" | "unknown";
-export interface ReviewClassification { decision: ReviewDecision; probability: number | null }
+export interface ReviewClassification { decision: ReviewDecision | "informational"; probability: number | null }
 
 export interface ReviewBatch {
   id: string;
