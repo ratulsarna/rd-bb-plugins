@@ -12,6 +12,7 @@ import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import type { ExecutionSelection } from "@/lib/execution";
 import { ownerThread } from "@/lib/card";
 import type { Card, CardAttachment } from "@/lib/store";
+import { PipelineSettings } from "./settings";
 import { AddCard } from "./add-card";
 import { Icon } from "./icon";
 import { PipelineCard } from "./card";
@@ -51,7 +52,11 @@ async function upload(projectId: string, file: File): Promise<CardAttachment> {
   return attachment;
 }
 
-export function PipelineBoard() {
+export function PipelineBoard({ subPath = "" }: { subPath?: string }) {
+  return subPath === "settings" ? <PipelineSettings /> : <PipelineTasks />;
+}
+
+function PipelineTasks() {
   const rpc = useRpc<typeof rpcContract>();
   const context = useBbContext();
   const navigate = useBbNavigate();
@@ -350,6 +355,7 @@ export function PipelineBoard() {
           <Icon name="ChevronDown" />
         </label>
         <div className="pipeline-toolbar-actions">
+          <button type="button" className="pipeline-icon-button" aria-label="Settings" onClick={() => navigate.toPluginPanel("board", { subPath: "settings" })}><Icon name="Settings" /></button>
           <AddCard
             key={projectId}
             projectName={projectName}

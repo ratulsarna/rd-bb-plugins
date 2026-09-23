@@ -4,6 +4,7 @@ import { COLUMNS } from "./columns";
 import { executionSelectionSchema } from "./execution";
 import { RUN_STATES } from "./store";
 import { githubStatusSchema } from "./github-types";
+import { settingsViewSchema, settingsUpdateSchema, integrationStatusSchema } from "./settings";
 
 export const columnSchema = z.enum(COLUMNS);
 export const tierSchema = z.enum(["trivial", "small", "standard"]);
@@ -88,6 +89,13 @@ export const machineQueueSchema = z.object({
 export type MachineQueue = z.infer<typeof machineQueueSchema>;
 
 export const rpcContract = defineRpcContract({
+  getSettings: { input: z.null(), output: settingsViewSchema },
+  updateSettings: { input: settingsUpdateSchema, output: settingsViewSchema },
+  settingsMachines: {
+    input: z.null(),
+    output: z.object({ machines: z.array(z.object({ id: z.string(), name: z.string(), status: z.string() }).strict()) }).strict(),
+  },
+  integrationStatus: { input: z.null(), output: integrationStatusSchema },
   executionDefaults: {
     input: z.null(),
     output: z.object({

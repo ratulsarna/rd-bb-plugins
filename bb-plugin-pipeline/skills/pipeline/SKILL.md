@@ -40,7 +40,7 @@ Intake reuses that checkout's ready BB environment. If it has never been opened 
 
 For providers that support service tiers, use `--intake-service-tier <default|fast>` or `--lead-service-tier <default|fast>`.
 
-Omit these unless the user requests a change. Omitted fields use Pipeline's remembered settings, shared with the New task UI. An accepted task remembers the resolved choices for the next task. Each card saves its own choices for intake, lead, and retries; changing defaults does not change existing cards. `show` includes both saved selections.
+Omit these unless the user requests a change. Omitted fields use Pipeline's remembered settings, shared with the New task UI. An accepted task remembers the resolved choices for the next task when `rememberExecution` is enabled (the default). Each card saves its own choices for intake, lead, and retries; changing defaults does not change existing cards. `show` includes both saved selections.
 
 Discover providers and their models on the chosen machine with `bb provider list --machine <id-or-name>` and `bb provider models <provider-id> --machine <id-or-name>` before choosing new IDs or reasoning levels. Specify the matching model when switching providers.
 
@@ -85,3 +85,7 @@ Upload each file first, then pass the returned path to `bb pipeline add --attach
 ```
 bb project attachment upload <projectId> --client-file <path>
 ```
+
+## Settings
+
+Open Settings in the Pipeline header or use `bb plugin config pipeline set <key> <value>`. `taskLimit` sets concurrent tasks per project and machine (1–32, default 2); lowering it holds new starts without stopping current work. `rememberExecution=false` keeps fixed intake/lead defaults. `reviewRequestComment` is the review trigger text; an empty value uses automatic reviews. `autoReviewFollowup=false` holds findings for user triage; Send to lead or `review-retry` explicitly releases a batch. Notifications are controlled by `notificationsEnabled`, `notifyQuestions`, `notifyFailures`, and `notifyReview`; Notify owns destinations and sound.

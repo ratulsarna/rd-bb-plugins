@@ -272,3 +272,34 @@
   .pipeline-form-footer .pipeline-button { min-height: 44px; }
   .pipeline-detail-header .pipeline-icon-button { width: 44px; height: 44px; }
 }
+
+.pipeline-settings { height: 100%; overflow-y: auto; background: var(--background); container-type: inline-size; }
+.pipeline-settings form { min-height: 100%; }
+.pipeline-settings-header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 12px 22px; border-bottom: 1px solid var(--border); background: var(--background); }
+.pipeline-settings-header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.pipeline-settings-notice { margin-left: auto; color: var(--muted-foreground); font-size: 12px; }
+.pipeline-settings-body { max-width: 700px; margin: 0 auto; padding: 6px 22px 40px; }
+.pipeline-settings-body > .pipeline-error { margin: 16px 0; }
+.pipeline-settings-section { display: flex; flex-direction: column; gap: 16px; padding: 24px 0; border-bottom: 1px solid var(--border); min-width: 0; }
+.pipeline-settings-section:last-child { border: 0; }
+.pipeline-settings-section h2, .pipeline-settings-advanced summary { margin: 0; font-size: 14px; font-weight: 600; }
+.pipeline-settings-role { display: grid; grid-template-columns: 50px minmax(0, 1fr); align-items: center; gap: 14px; }
+.pipeline-settings-selection, .pipeline-settings-help { color: var(--muted-foreground); overflow-wrap: anywhere; }
+.pipeline-settings-help { margin: 0; font-size: 12px; }
+.pipeline-setting-toggle, .pipeline-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-width: 0; min-height: 34px; }
+.pipeline-setting-toggle input { flex: none; width: 18px; height: 18px; accent-color: var(--primary); }
+.pipeline-setting-row small { display: block; margin-top: 4px; color: var(--muted-foreground); font-size: 11px; }
+.pipeline-setting-row > input { flex: none; width: 80px; }
+.pipeline-settings-advanced { display: block; }
+.pipeline-settings-advanced summary { cursor: pointer; }
+.pipeline-settings-advanced > :not(summary) { margin-top: 18px; }
+.pipeline-settings-integrations { margin: 0; display: grid; grid-template-columns: 60px minmax(0, 1fr); gap: 12px 20px; }
+.pipeline-settings-integrations dd { margin: 0; color: var(--muted-foreground); overflow-wrap: anywhere; }
+@container (max-width: 500px) {
+  .pipeline-settings-header { gap: 6px; padding: 10px 12px; }
+  .pipeline-settings-body { padding: 0 16px 24px; }
+  .pipeline-settings-header .pipeline-button { min-height: 40px; padding: 7px 10px; }
+  .pipeline-setting-toggle, .pipeline-setting-row { min-height: 44px; gap: 12px; }
+  .pipeline-settings-role { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .pipeline-settings-section .pipeline-input { min-height: 44px; }
+}

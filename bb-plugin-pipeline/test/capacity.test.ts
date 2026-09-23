@@ -15,7 +15,7 @@ afterEach(async () => {
   while (hosts.length > 0) await hosts.pop()!.harness.lifecycle.dispose();
 });
 
-function setup() {
+function setup(getTaskLimit?: () => number) {
   const threads = new Map<string, ReturnType<typeof makeThreadResponse>>();
   const metadata = new Map<string, { cardId: string; hostId: string }>();
   const running: Array<{ id: string; hostId: string }> = [];
@@ -49,7 +49,7 @@ function setup() {
   const db = host.bb.storage.database();
   host.bb.storage.migrate(db, [...MIGRATIONS]);
   const store = createCardStore(db);
-  const capacity = createPipelineCapacity(host.bb, store);
+  const capacity = createPipelineCapacity(host.bb, store, getTaskLimit);
 
   function thread(id: string, options: {
     cardId?: string;
@@ -571,5 +571,55 @@ describe("Pipeline task capacity", () => {
     expect((await recovered.snapshot("project_a"))[0]?.waiting.map((card) => card.cardId)).toEqual(["a"]);
     s.queue.length = 0;
     expect(await recovered.snapshot("project_a")).toEqual([]);
+  });
+});
+
+describe("Configurable task limit", () => {
+  it("admits against the live limit and reports it in the snapshot", async () => {
+    let limit = 1;
+    const s = setup(() => limit);
+    s.thread("a", { cardId: "a", running: true });
+    s.thread("b", { cardId: "b", running: true });
+    s.thread("c", { cardId: "c" });
+    expect(await s.decide("c")).toMatchObject({ action: "wait", reason: "Pipeline: 1 tasks running" });
+    const held = await s.capacity.snapshot("project_a");
+    expect(held[0]).toMatchObject({ limit: 1 });
+    expect(held[0]?.occupied.map((task) => task.cardId)).toEqual(["a", "b"]);
+
+    limit = 3;
+    expect(await s.decide("c")).toEqual({ action: "proceed" });
+    expect((await s.capacity.snapshot("project_a"))[0]).toMatchObject({ limit: 3 });
+  });
+
+  it("lowering the limit holds new cards while occupied tasks continue on their own threads", async () => {
+    let limit = 2;
+    const s = setup(() => limit);
+    s.thread("a", { cardId: "a", running: true });
+    s.thread("lead", { cardId: "b", running: true });
+    s.thread("worker", { parent: "lead", running: true });
+    s.thread("nested", { parent: "worker" });
+    s.thread("new", { cardId: "c" });
+    limit = 1;
+    expect(await s.decide("new")).toMatchObject({ action: "wait", reason: "Pipeline: 1 tasks running" });
+    expect(await s.decide("nested")).toEqual({ action: "proceed" });
+    expect(await s.decide("lead", "machine_a", true)).toEqual({ action: "proceed" });
+  });
+
+  it("keeps persisted 2-limit rows owned and priority-eligible when the limit changes", async () => {
+    let limit = 3;
+    const s = setup(() => limit);
+    queuedTask(s, "older");
+    const { entry } = queuedTask(s, "urgent");
+    await s.capacity.setRunNext("urgent", true);
+    limit = 1;
+    expect((await s.capacity.snapshot("project_a"))[0]?.waiting.find((row) => row.cardId === "older")?.reasons)
+      .toContain("Waiting for capacity");
+    expect(await s.decide("older")).toMatchObject({ action: "wait", reason: "Pipeline: Run next has priority", sendAt: expect.any(Number) });
+    expect(await s.decide("urgent")).toEqual({ action: "proceed" });
+
+    entry.waitingOn = { kind: "plugin", pluginId: "pipeline", reason: "Pipeline: 2 tasks running (also waiting on quiet-hours: Until morning)" };
+    expect(await s.decide("older")).toEqual({ action: "proceed" });
+    expect((await s.capacity.snapshot("project_a"))[0]?.waiting.find((row) => row.cardId === "urgent")?.reasons)
+      .toContain("pipeline: Pipeline: 2 tasks running (also waiting on quiet-hours: Until morning)");
   });
 });

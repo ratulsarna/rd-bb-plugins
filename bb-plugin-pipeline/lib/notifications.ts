@@ -3,6 +3,14 @@ import { z } from "zod";
 import { ownerThread } from "./card";
 import type { Card } from "./store";
 
+export type AttentionCategory = "questions" | "failures" | "review";
+type NotificationPreferences = {
+  notificationsEnabled?: boolean;
+  notifyQuestions?: boolean;
+  notifyFailures?: boolean;
+  notifyReview?: boolean;
+};
+
 export function userAttentionReason(card: Card): string | null {
   if (!card.startRequested) return null;
   if (card.needsUser) return card.attentionReason?.trim() || "Needs your input";
@@ -11,13 +19,18 @@ export function userAttentionReason(card: Card): string | null {
   return null;
 }
 
-export function createAttentionNotifier(bb: BbPluginApi) {
+export function createAttentionNotifier(bb: BbPluginApi, getPreferences: () => NotificationPreferences = () => ({})) {
   const pending = new Set<Promise<void>>();
   const outputSchema = z.object({ delivery: z.enum(["skipped", "queued", "held"]) });
   bb.onDispose(async () => { await Promise.allSettled([...pending]); });
 
-  return (card: Card, reason: string): void => {
+  return (card: Card, reason: string, category: AttentionCategory = "questions"): void => {
     if (!card.startRequested || card.column === "done" || card.runState !== "running") return;
+    const preferences = getPreferences();
+    if (preferences.notificationsEnabled === false ||
+      (category === "questions" && preferences.notifyQuestions === false) ||
+      (category === "failures" && preferences.notifyFailures === false) ||
+      (category === "review" && preferences.notifyReview === false)) return;
     const delivery = bb.sdk.plugins.callRpc({
       pluginId: "notify",
       method: "send",

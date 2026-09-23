@@ -4,7 +4,8 @@ import { createPipelineCapacity } from "./lib/capacity";
 import { createPipelineControls } from "./lib/controls";
 import { ownerThread } from "./lib/card";
 import { rpcContract } from "./lib/contract";
-import { REASONING_LEVELS } from "./lib/execution";
+import { SETTINGS, settingsView, settingsPatch } from "./lib/settings";
+import { integrationStatus } from "./lib/integrations";
 import { readIssue } from "./lib/issue";
 import { askJev } from "./lib/jev";
 import { createGithubSync } from "./lib/github-sync";
@@ -19,80 +20,27 @@ export type { Card, CardAttachment, CardHistory } from "./lib/store";
 const CARDS_CHANGED = "cards:changed";
 
 export default async function plugin(bb: BbPluginApi) {
-  const settings = bb.settings.define({
-    providerId: {
-      type: "string",
-      label: "Intake provider",
-      default: "claude-code",
-    },
-    model: {
-      type: "string",
-      label: "Intake model",
-      default: "claude-fable-5-1",
-    },
-    reasoningLevel: {
-      type: "select",
-      label: "Intake reasoning",
-      options: [...REASONING_LEVELS],
-      default: "high",
-    },
-    serviceTier: {
-      type: "select",
-      label: "Intake service tier",
-      options: ["default", "fast"],
-    },
-    leadProviderId: { type: "string", label: "Lead provider" },
-    leadModel: { type: "string", label: "Lead model" },
-    leadReasoningLevel: {
-      type: "select",
-      label: "Lead reasoning",
-      options: [...REASONING_LEVELS],
-    },
-    leadServiceTier: {
-      type: "select",
-      label: "Lead service tier",
-      options: ["default", "fast"],
-    },
-    permissionMode: {
-      type: "select",
-      label: "Permission",
-      options: ["accept-edits", "auto", "full"],
-      default: "full",
-    },
-    reviewRequestComment: {
-      type: "string",
-      label: "Review request comment (empty for automatic reviews)",
-      default: "@codex review",
-    },
-    jevApiKey: {
-      type: "string",
-      label: "TypeSafe API key",
-      secret: true,
-    },
-    jevThreshold: {
-      type: "string",
-      label: "Jev confidence threshold (0.5..1)",
-      default: "0.7",
-    },
-  });
+  const settings = bb.settings.define(SETTINGS);
+  let currentSettings = await settings.get();
 
   const db = bb.storage.database();
   bb.storage.migrate(db, [...MIGRATIONS]);
   const store = createCardStore(db);
-  const notifyAttention = createAttentionNotifier(bb);
-  const capacity = createPipelineCapacity(bb, store);
+  const notifyAttention = createAttentionNotifier(bb, () => currentSettings);
+  const capacity = createPipelineCapacity(bb, store, () => currentSettings.taskLimit);
   const github = createGithubSync({ bb, store, getSettings: () => settings.get(), notify: notifyAttention });
   bb.experimental_hooks.on("message.dispatch", async (context) => {
-    const reviewDecision = github.decide(context);
+    const reviewDecision = await github.decide(context);
     if (reviewDecision !== null) return reviewDecision;
     const decision = await capacity.decide(context);
-    return github.decide(context) ?? decision;
+    return (await github.decide(context)) ?? decision;
   }, { experimental_enforcement: "strict" });
   const service = createPipelineService({
     store,
     sdk: bb.sdk,
     getSettings: () => settings.get(),
     async rememberExecution({ intake, lead }) {
+      if (!currentSettings.rememberExecution) return;
       await settings.experimental_set({
         providerId: intake.providerId,
         model: intake.model,
@@ -117,7 +65,32 @@ export default async function plugin(bb: BbPluginApi) {
   });
   const controls = createPipelineControls(bb, store, service);
 
+  settings.onChange((next, previous) => {
+    currentSettings = next;
+    bb.realtime.publish("settings:changed", {});
+    if (next.taskLimit !== previous.taskLimit || next.autoReviewFollowup !== previous.autoReviewFollowup) {
+      bb.realtime.publish(CARDS_CHANGED, {});
+      void bb.experimental_hooks.recheck("message.dispatch").catch((cause) => bb.log.warn(String(cause)));
+    }
+    if (next.autoReviewFollowup !== previous.autoReviewFollowup) {
+      void github.poll().catch((cause) => bb.log.warn(String(cause)));
+    }
+  });
+
   bb.rpc.register(rpcContract, {
+    async getSettings() {
+      return settingsView(await settings.get());
+    },
+    async updateSettings(input) {
+      return settingsView(await settings.experimental_set(settingsPatch(input)));
+    },
+    async settingsMachines() {
+      const hosts = await bb.sdk.hosts.list();
+      return { machines: hosts.map(({ id, name, status }) => ({ id, name, status })) };
+    },
+    async integrationStatus() {
+      return integrationStatus(bb.sdk, Boolean((await settings.get()).jevApiKey?.trim()));
+    },
     executionDefaults() {
       return service.getExecutionDefaults();
     },
@@ -177,7 +150,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (card === null || ownerThread(card) !== thread.id || userAttentionReason(card) !== null) return;
     notifyAttention(card, interaction.payload.kind === "approval"
       ? "Approval waiting for you"
-      : "Question waiting for you");
+      : "Question waiting for you", "questions");
   });
 
   for (const event of ["thread.idle", "thread.failed", "thread.archived", "thread.deleted"] as const) {
