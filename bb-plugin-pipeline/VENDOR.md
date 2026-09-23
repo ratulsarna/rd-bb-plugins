@@ -57,6 +57,7 @@ One line per site, in the phase document the moment belongs to; the full table a
 ## New files, no upstream counterpart
 
 - `skills/pipeline/SKILL.md` — the board skill available to every thread: add, list, show, move cards; upload attachments first.
+- `skills/pipeline/agents/openai.yaml` — disables implicit Codex invocation of the board skill.
 - `workflows/intake/README.md` — intake: read the note and attachments, ask what this is, grill, file the issue, get the tier, label, hand off to planning; steps 2, 3, 5, and 7 report each stop for the user with `--needs-you`.
 
 No symlinks anywhere under `skills/` or `workflows/`.

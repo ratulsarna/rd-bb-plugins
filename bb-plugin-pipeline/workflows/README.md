@@ -12,9 +12,9 @@ Pipeline starts downstream of requirements: a spec sharp enough to plan against,
 
 ## The flows
 
-Phases are documents stored on the BB server, read with `bb pipeline instructions <phase>`; `overview` is this document, and `--file <relative-path>` reads a supporting file under the phase. Kickoffs name the first phase to read; each phase's exit names the command that advances the run. After the user approves the transition, read the next phase and continue in this thread; no separate slash command is needed.
+Phases are documents stored on the BB server, read with `bb pipeline instructions <phase>`; `overview` is this document, and `--file <relative-path>` reads a supporting file under the phase. Kickoffs name the first phase to read; each phase's exit names the command that advances the run. Intake ends with the documented report that hands off to a separate lead. After the user approves a lead's phase transition, the lead reads the next phase and continues in its own thread; no separate slash command is needed.
 
-**Intake:** a new card → `bb pipeline instructions intake` → ticket filed and tiered → planning
+**Intake:** a new card → `bb pipeline instructions intake` → ticket filed and tiered → approved handoff to a separate lead
 
 **Feature:** approved spec → `bb pipeline instructions plan` → `bb pipeline instructions implement` → `bb pipeline instructions close-out`
 

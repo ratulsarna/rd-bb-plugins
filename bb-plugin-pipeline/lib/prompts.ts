@@ -1,7 +1,7 @@
 import type { Card } from "./store";
 import type { IssueDetails } from "./issue";
 
-export const WORKFLOW_ACCESS = "This task follows the Pipeline workflow. Read its instructions with `bb pipeline instructions <phase>` and its templates with `bb pipeline instructions <phase> --file <relative-path>`. Load each phase when you reach it. After the required user approval, read the next phase and continue; no separate slash command is needed. Keep every user-approval gate in those instructions.";
+export const WORKFLOW_ACCESS = "This task follows the Pipeline workflow. Read its instructions with `bb pipeline instructions <phase>` and its templates with `bb pipeline instructions <phase> --file <relative-path>`. Load each phase when you reach it and follow its exit instructions. Intake ends with the documented report that hands off to a separate lead. The lead continues between phases in its own thread after the required user approval; no separate slash command is needed. Keep every user-approval gate in those instructions.";
 
 export function intakePrompt(card: Card, projectName: string): string {
   return `You are the intake for pipeline card ${card.id} in project ${projectName}.
