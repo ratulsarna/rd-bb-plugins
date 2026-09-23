@@ -259,7 +259,7 @@ describe("idle policy", () => {
     await service.startupPass();
     expect(onAttention).toHaveBeenCalledOnce();
     expect(onAttention).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "card_1", needsUser: true }), "Approve the scope",
+      expect.objectContaining({ id: "card_1", needsUser: true }), "Approve the scope", "questions",
     );
 
     await service.onThreadActive(thread("intake", 0, { status: "active" }));
@@ -285,11 +285,13 @@ describe("idle policy", () => {
     await service.retry("card_1");
     expect(onAttention).toHaveBeenCalledOnce();
     expect(onAttention.mock.calls[0]![1]).toBe("Launch failed: intake: machine offline");
+    expect(onAttention.mock.calls[0]![2]).toBe("failures");
     offline = false;
     await service.retry("card_1");
     await service.onThreadFailed(thread("intake", 0, { status: "error" }), "provider stopped");
     await service.onThreadFailed(thread("intake", 0, { status: "error" }), "provider stopped");
     expect(onAttention).toHaveBeenCalledTimes(2);
+    expect(onAttention.mock.calls[1]![2]).toBe("failures");
   });
 
   it("moves the first intake idle to todo and asks for the user", async () => {

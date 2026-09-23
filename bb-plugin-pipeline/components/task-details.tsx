@@ -200,7 +200,7 @@ export function TaskDetails(props: PipelineCardProps) {
                     disabled={props.pending}
                     onClick={props.onRetryReview}
                   >
-                    <Icon name="RotateCcw" /> Retry review
+                    <Icon name="RotateCcw" /> {card.github?.manualReviewPending ? "Send to lead" : "Retry review"}
                   </button>
                 ) : null}
               </div>

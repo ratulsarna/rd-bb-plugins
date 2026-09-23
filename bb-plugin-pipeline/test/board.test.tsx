@@ -1545,6 +1545,19 @@ describe("pipeline board", () => {
     expect(screen.queryByText("Old machine")).toBeNull();
   });
 
+  it("surfaces manual review triage and explicitly sends the batch to the lead", async () => {
+    let card = makeCard({ id: "manual", title: "Manual review", prUrl: "https://github.com/example/repo/pull/12",
+      github: makeGithub({ review: "feedback", followup: "pending", manualReviewPending: true }) });
+    const retryReview = vi.fn(() => { card = { ...card, github: makeGithub({ review: "feedback", followup: "queued", manualReviewPending: false }) }; return card; });
+    renderBoard({ retryReview, listCards: vi.fn(() => ({ cards: [card], queue: [] })) });
+    await screen.findByRole("button", { name: "Needs you 1" });
+    fireEvent.click(screen.getByRole("button", { name: "Details for Manual review" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Send to lead" }));
+    await waitFor(() => expect(retryReview).toHaveBeenCalledExactlyOnceWith({ cardId: "manual" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close task details" }));
+    await screen.findByRole("button", { name: "Needs you 0" });
+  });
+
   it("surfaces github failures through Needs you with refresh and retry review", async () => {
     const prUrl = "https://github.com/example/repo/pull/12";
     const quietError = makeCard({

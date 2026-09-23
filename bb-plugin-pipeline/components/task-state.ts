@@ -183,6 +183,7 @@ export function taskGithubSummary(card: Card): TaskGithubSummary | null {
   if (github.state === "closed") return { label: "PR closed", tone: "error" };
   if (github.error !== null) return { label: "Sync failed", tone: "error" };
   if (github.checks.some((check) => check.state === "failed")) return { label: "Checks failing", tone: "error" };
+  if (github.manualReviewPending) return { label: "Review needs your triage", tone: "warn" };
   if (github.review === "feedback") return { label: "Feedback for lead", tone: "neutral" };
   if (github.review === "clear") {
     if (github.mergeable === "conflicting") return { label: "Conflicts", tone: "warn" };
@@ -208,6 +209,7 @@ export function taskGithubReviewLabel(card: Card): string {
   const github = card.github;
   if (github === null) return "";
   if (github.review === "waiting") return "Awaiting review";
+  if (github.manualReviewPending) return "Review needs your triage";
   if (github.review === "feedback") return "Feedback for lead";
   if (github.review === "unknown") return "Review status unknown";
   return "Review settled";
@@ -231,6 +233,7 @@ const GITHUB_FOLLOWUP_LABELS: Record<NonNullable<GithubStatus["followup"]>, stri
 
 export function taskGithubFollowup(card: Card): string | null {
   const github = card.github;
+  if (github?.manualReviewPending) return "Review findings awaiting your decision";
   return github === null || github.followup === null ? null : GITHUB_FOLLOWUP_LABELS[github.followup];
 }
 

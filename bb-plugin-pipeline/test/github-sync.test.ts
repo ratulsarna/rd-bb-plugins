@@ -7,6 +7,7 @@ import { createPipelineService } from "../lib/service";
 import type { PluginBbSdk } from "@get-bb/plugin-sdk";
 import { cardSchema } from "../lib/contract";
 import { classifyReview } from "../lib/review-classifier";
+import { taskGithubFollowup, taskGithubReviewLabel, taskGithubSummary, taskNeedsAttention } from "../components/task-state";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => { while (hosts.length) await hosts.pop()!.harness.lifecycle.dispose(); });
@@ -44,7 +45,7 @@ function setup() {
   const post = vi.fn(async (_url: string, _body: string, _signal?: AbortSignal) => {});
   const notify = vi.fn();
   const classify = vi.fn(async (_args: Parameters<typeof classifyReview>[0]): Promise<ReviewClassification> => ({ decision: "feedback", probability: .99 }));
-  const settings = { jevApiKey: "test", jevThreshold: "0.7", reviewRequestComment: "@codex review" };
+  const settings = { jevApiKey: "test", jevThreshold: "0.7", reviewRequestComment: "@codex review", autoReviewFollowup: true };
   const makeSync = () => createGithubSync({ bb: host.bb, store, read, post, classify, notify, getSettings: async () => settings });
   const sync = makeSync();
   return { host, db, store, send, queue, events, read, post, notify, classify, sync, makeSync, settings, thread,
@@ -52,6 +53,109 @@ function setup() {
 }
 
 describe("GitHub review handoff", () => {
+  it("keeps manual findings pending until Retry review explicitly sends one batch", async () => {
+    const s = setup();
+    s.settings.autoReviewFollowup = false;
+    s.change({ feedback: [feedback()] });
+    await s.sync.poll();
+    const batch = s.store.getGithub("card")!.batch!;
+    expect(s.card().github).toMatchObject({ review: "feedback", followup: "pending", batchId: batch.id, manualReviewPending: true });
+    expect(cardSchema.parse(s.card()).github?.manualReviewPending).toBe(true);
+    expect(taskNeedsAttention(s.card(), false)).toBe(true);
+    expect(taskGithubSummary(s.card())?.label).toBe("Review needs your triage");
+    expect(taskGithubReviewLabel(s.card())).toBe("Review needs your triage");
+    expect(taskGithubFollowup(s.card())).toBe("Review findings awaiting your decision");
+    expect(s.send).not.toHaveBeenCalled();
+    expect(s.notify).toHaveBeenCalledWith(s.card(), expect.stringContaining("need your triage"), "review");
+    await s.makeSync().poll();
+    expect(s.notify).toHaveBeenCalledTimes(1);
+    expect(s.send).not.toHaveBeenCalled();
+
+    await s.sync.retry("card");
+    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.card().github?.manualReviewPending).toBe(false);
+    expect(taskNeedsAttention(s.card(), false)).toBe(false);
+    expect(s.store.getGithub("card")!.batch).toMatchObject({ id: batch.id, manualDispatch: true, state: "queued" });
+    const context = makeMessageDispatchHookContext({ thread: s.thread,
+      input: { text: reviewFollowup(s.card(), batch), blocks: [] } });
+    expect(await s.makeSync().decide(context)).toBeNull();
+    s.makeSync().onMessage("queued", s.queue[0]!);
+    expect(s.store.getGithub("card")!.batch?.manualDispatch).toBe(true);
+    expect(await s.makeSync().decide(context)).toBeNull();
+    await s.makeSync().poll();
+    expect(s.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds an automatic queued follow-up after disabling delivery and releases it when reenabled", async () => {
+    const s = setup();
+    s.change({ feedback: [feedback()] });
+    await s.sync.poll();
+    const batch = s.store.getGithub("card")!.batch!;
+    expect(s.card().github?.manualReviewPending).toBe(false);
+    expect(taskNeedsAttention(s.card(), false)).toBe(false);
+    const context = makeMessageDispatchHookContext({ thread: s.thread,
+      input: { text: reviewFollowup(s.card(), batch), blocks: [] } });
+    expect(await s.sync.decide(context)).toBeNull();
+    s.settings.autoReviewFollowup = false;
+    expect(await s.makeSync().decide(context)).toMatchObject({ action: "wait", reason: expect.stringContaining("triage") });
+    await s.makeSync().poll();
+    expect(s.card().github).toMatchObject({ followup: "queued", batchId: batch.id, manualReviewPending: true });
+    expect(taskNeedsAttention(s.card(), false)).toBe(true);
+    expect(s.notify).toHaveBeenCalledWith(s.card(), expect.stringContaining("need your triage"), "review");
+    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.queue).toHaveLength(1);
+    s.settings.autoReviewFollowup = true;
+    expect(await s.makeSync().decide(context)).toBeNull();
+    await s.makeSync().poll();
+    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.card().github?.manualReviewPending).toBe(false);
+    expect(taskNeedsAttention(s.card(), false)).toBe(false);
+    s.settings.autoReviewFollowup = false;
+    await s.makeSync().poll();
+    await s.sync.retry("card");
+    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.store.getGithub("card")!.batch?.manualDispatch).toBe(true);
+    expect(s.card().github?.manualReviewPending).toBe(false);
+    expect(await s.makeSync().decide(context)).toBeNull();
+  });
+
+  it("keeps queued manual feedback held when Retry cannot verify GitHub, then cancels a closed PR", async () => {
+    const s = setup();
+    s.change({ feedback: [feedback()] });
+    await s.sync.poll();
+    s.settings.autoReviewFollowup = false;
+    await s.sync.poll();
+    const batch = s.store.getGithub("card")!.batch!;
+    const context = makeMessageDispatchHookContext({ thread: s.thread,
+      input: { text: reviewFollowup(s.card(), batch), blocks: [] } });
+    s.read.mockRejectedValueOnce(new Error("GitHub offline"));
+    await s.sync.retry("card");
+    expect(s.card().github?.error).toContain("GitHub offline");
+    expect(s.store.getGithub("card")!.batch?.manualDispatch).not.toBe(true);
+    expect(await s.sync.decide(context)).toMatchObject({ action: "wait" });
+    expect(s.send).toHaveBeenCalledTimes(1);
+    s.change({ state: "closed" });
+    await s.sync.retry("card");
+    expect(s.card().github).toMatchObject({ state: "closed", followup: "cancelled" });
+    expect(s.queue).toHaveLength(0);
+    expect(await s.sync.decide(context)).toMatchObject({ action: "reject" });
+  });
+
+  it("does not resend unconfirmed delivery after switching manual follow-ups off and on", async () => {
+    const s = setup();
+    s.change({ feedback: [feedback()] });
+    await s.sync.poll();
+    s.settings.autoReviewFollowup = false;
+    await s.sync.poll();
+    s.queue.length = 0;
+    s.settings.autoReviewFollowup = true;
+    await s.makeSync().poll();
+    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.card().github).toMatchObject({ followup: "queued", error: expect.stringContaining("unconfirmed") });
+    await s.sync.retry("card");
+    expect(s.send).toHaveBeenCalledTimes(2);
+  });
+
   it("refreshes an uncertain abbreviated-commit review into a merge decision without waking the lead", async () => {
     const s = setup();
     const head = "7116d57764d244f4a7bdf43a645e4a13575cfca9";
@@ -74,7 +178,7 @@ describe("GitHub review handoff", () => {
     await s.sync.sync("card");
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(s.card()).toMatchObject({ column: "pr", github: { review: "clear", followup: null, batchId: null, error: null } });
-    expect(s.notify).toHaveBeenLastCalledWith(expect.anything(), "Review settled; ready for your merge decision");
+    expect(s.notify).toHaveBeenLastCalledWith(expect.anything(), "Review settled; ready for your merge decision", "review");
     expect(s.send).not.toHaveBeenCalled();
   });
 
@@ -254,19 +358,22 @@ describe("GitHub review handoff", () => {
     expect(s.send).toHaveBeenCalledTimes(1);
   });
 
-  it("recovers a missed delivery event from the accepted turn instead of sending twice", async () => {
+  it.each([true, false])("recovers a missed delivery event without resending or false triage (auto=%s)", async (automatic) => {
     const s = setup(); s.change({ feedback: [feedback()] }); await s.sync.poll();
+    s.settings.autoReviewFollowup = automatic;
     const entry = s.queue.shift()!;
     s.events.push({ id: "accepted", scope: "client", threadId: "lead", seq: 10, createdAt: Date.now(),
       type: "client/turn/requested", data: { input: entry.content } } as never);
     await s.makeSync().poll();
-    expect(s.card().github).toMatchObject({ followup: "delivered", error: null });
+    expect(s.card().github).toMatchObject({ followup: "delivered", error: null, manualReviewPending: false });
     expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.notify).not.toHaveBeenCalled();
     await expect(s.sync.retry("card")).rejects.toThrow("already received");
   });
 
-  it("shows an uncertain vanished queue row without automatically duplicating it", async () => {
+  it.each([true, false])("shows uncertain delivery without duplicating it (auto=%s)", async (automatic) => {
     const s = setup(); s.change({ feedback: [feedback()] }); await s.sync.poll();
+    s.settings.autoReviewFollowup = automatic;
     s.queue.length = 0;
     await s.makeSync().poll(); await s.sync.poll();
     expect(s.card().github?.error).toContain("unconfirmed");
@@ -369,10 +476,10 @@ describe("GitHub review handoff", () => {
     const s = setup(); s.change({ feedback: [feedback()] }); await s.sync.poll();
     const text = reviewFollowup(s.card(), s.store.getGithub("card")!.batch!);
     const context = makeMessageDispatchHookContext({ thread: s.thread, input: { text, blocks: [] } });
-    expect(s.sync.decide(context)).toBeNull();
-    s.store.update("card", { column: "done" }); expect(s.sync.decide(context)?.action).toBe("reject");
+    expect(await s.sync.decide(context)).toBeNull();
+    s.store.update("card", { column: "done" }); expect((await s.sync.decide(context))?.action).toBe("reject");
     s.store.update("card", { column: "pr", prUrl: "https://github.com/example/repo/pull/13" });
-    expect(s.card().github).toBeNull(); expect(s.sync.decide(context)?.action).toBe("reject");
+    expect(s.card().github).toBeNull(); expect((await s.sync.decide(context))?.action).toBe("reject");
   });
 
   it("drops a slow snapshot after the linked PR changes", async () => {
@@ -433,7 +540,7 @@ describe("GitHub review handoff", () => {
     expect(s.notify).not.toHaveBeenCalled();
     await reloaded.poll(); await reloaded.poll();
     expect(s.notify).toHaveBeenCalledTimes(1);
-    expect(s.notify).toHaveBeenLastCalledWith(expect.anything(), "GitHub sync: new outage");
+    expect(s.notify).toHaveBeenLastCalledWith(expect.anything(), "GitHub sync: new outage", "failures");
   });
 
   it.each(["closed", "cancelled"] as const)("does not re-announce %s attention when GitHub reads fail", async (attention) => {

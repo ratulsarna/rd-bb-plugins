@@ -16,7 +16,7 @@ After the two implementation reviews clear, the lead walks you through the resul
 
 Cards show why the user is needed and open the owning thread. Task details link the issue and PR; task actions expose launch retry when the target machine is unavailable. Explicit `bb pipeline report` calls are authoritative; Jev classifies an unsignalled lead idle as needs-you, not waiting, or unchecked.
 
-Use **New task** to add a title, context, attachments, and a machine. **Intake** and **Lead** each have a provider, model, and reasoning picker. They start from Pipeline settings and remember the last task's choices across the UI and CLI. Each card saves both selections for its launches and retries.
+Use **New task** to add a title, context, attachments, and a machine. **Intake** and **Lead** each have a provider, model, and reasoning picker. They start from Pipeline settings. With **Remember last task’s choices** enabled, accepted UI and CLI tasks update those defaults. Each card saves both selections for its launches and retries.
 
 Choose **Save** to keep a task in Backlog without starting work, or **Save and start** to launch intake. Saved tasks show **Not started** and a **Start** action; they create no thread or queued message until started. Start uses the saved choices and waits for capacity when necessary. Start a task before moving it between stages or using execution controls. Use **Tasks** for a compact list, or **Board** for occupied stages. Filter by **Open**, **Needs you**, **Queued**, **Done**, or a specific stage. The layout choice is remembered; switching projects resets the filters.
 
@@ -24,11 +24,11 @@ Task titles open the owning thread. The details button opens context, diagnostic
 
 If a reload interrupts Start, Pipeline looks for the intake already created for that task and reconnects it. If it cannot find or check that thread, the card offers **Retry**; Retry checks again before launching intake.
 
-At most two Pipeline tasks run per project and machine. Intake, lead, and child threads share the card's slot. A task keeps its slot while it is starting, running, stopping, has tracked background work, or is continuing an active autonomous goal. Once that work stops, queued tasks can run. Replies, retries, and a move to planning wait for capacity when the task no longer holds a slot. Ordinary BB threads do not consume Pipeline slots.
+Pipeline defaults to two concurrent tasks per project and machine. Change **Concurrent tasks** in Settings; lowering it lets existing work finish while holding further starts. Intake, lead, and child threads share the card's slot. A task keeps its slot while it is starting, running, stopping, has tracked background work, or is continuing an active autonomous goal. Once that work stops, queued tasks can run. Replies, retries, and a move to planning wait for capacity when the task no longer holds a slot. Ordinary BB threads do not consume Pipeline slots.
 
 The board and `bb pipeline queue` show which tasks occupy those slots and why other work is waiting. `list` and `show` JSON output include `queued`, `waitingReasons`, and `runNext`; `queue --json` returns the per-machine occupants, waiting tasks, and selected card. BB owns the durable message queue and resumes waiting messages when their conditions clear. Send now respects the Pipeline limit. An edit-and-resend or manual compaction at capacity is refused before changing the conversation; retry it when capacity is available.
 
-`bb pipeline run-next <card-id>` asks Pipeline to favor a waiting task when capacity opens. The choice is saved per project and machine, survives a reload, and does not interrupt existing work. Choosing another task for the same project and machine replaces it; add `--clear` to remove the choice. The choice clears when that task starts. If it remains blocked for another reason, it does not prevent other eligible work from running. The two-task limit still applies.
+`bb pipeline run-next <card-id>` asks Pipeline to favor a waiting task when capacity opens. The choice is saved per project and machine, survives a reload, and does not interrupt existing work. Choosing another task for the same project and machine replaces it; add `--clear` to remove the choice. The choice clears when that task starts. If it remains blocked for another reason, it does not prevent other eligible work from running. The configured task limit still applies.
 
 Run next is a preference: concurrent BB queue claims can let another task start first. Other tasks yield for at most five seconds per priority wait, then become eligible on BB's next queue check so an unreported blocker cannot stall the queue.
 
@@ -42,7 +42,7 @@ Choose **Pause** from a task's actions menu, or run `bb pipeline pause <card-id>
 
 The card shows **Pause requested** until the owner acknowledges, then **Pausing** until its threads, tracked background work, and active goals have stopped. Only then does it show **Paused**. A task whose kickoff has not started can pause immediately. An offline machine or a pending question can delay delivery; **Retry pause** retries a failed or cancelled instruction.
 
-**Resume** continues the owning thread from its handoff and releases preserved queued messages, subject to the two-task limit. A task paused before its queued kickoff runs resumes that kickoff; a deleted owner is relaunched. Archived owners must be restored in BB first. Moving, removing, or retrying a held card requires resuming it.
+**Resume** continues the owning thread from its handoff and releases preserved queued messages, subject to the configured task limit. A task paused before its queued kickoff runs resumes that kickoff; a deleted owner is relaunched. Archived owners must be restored in BB first. Moving, removing, or retrying a held card requires resuming it.
 
 **Stop now** (`bb pipeline stop <card-id>`) is the immediate fallback. It requests a stop for the task's intake, lead, and occupied descendants, and waits for confirmed shutdown before showing Paused. It preserves queued messages and files. An unavailable machine can leave the card **Stopping**; retry Stop now when it reconnects. BB can stop provider sessions and their tracked work, but cannot guarantee shutdown of arbitrary detached processes.
 
@@ -60,7 +60,7 @@ The lead runs `bb pipeline review-wait` after opening a draft PR, then ends its 
 
 Clean conclusions must refer to the current commit through GitHub review metadata or a standalone `Reviewed commit:` / `Reviewed revision:` label containing its full or abbreviated hash (at least seven characters). Jev interprets the verdict separately from this check. Findings take priority over a clean summary; progress updates in the same batch do not override an explicit clean conclusion. Informational updates and conversational comments preserve the review state; new findings, review activity, withdrawals, and commits still update it.
 
-New findings produce one feedback batch sent to the existing lead through BB’s queue. Pause, machine availability, and the two-task limit apply. The lead triages findings under the close-out skill, verifies justified fixes, and runs `review-wait --handled <batch-id>` before ending its turn. A new revision requests another review; answered findings without a code change do not. Pending feedback survives reload, and failed or cancelled delivery has a Retry review action. If a send response is lost, check the lead before retrying an unconfirmed delivery.
+New findings produce one feedback batch sent to the existing lead through BB’s queue. With automatic follow-ups disabled in Settings, findings wait for your triage; **Send to lead** explicitly permits that batch. Turning automatic follow-ups off also holds queued automatic feedback, without interrupting an already running lead. Pause, machine availability, and the configured task limit apply. The lead triages findings under the close-out skill, verifies justified fixes, and runs `review-wait --handled <batch-id>` before ending its turn. A new revision requests another review; answered findings without a code change do not. Pending feedback survives reload, and failed or cancelled delivery has a Retry review action. If a send response is lost, check the lead before retrying an unconfirmed delivery.
 
 Clean or settled review asks for your merge decision. Sync moves a task to Done when its PR merges; a PR closed without merging needs your decision. Sync preserves manual stage changes and never reopens Done tasks. Replacing the PR link invalidates old queued feedback. Done describes delivery: remaining agents still consume capacity and remain visible and stoppable.
 
@@ -107,7 +107,7 @@ bb pipeline add --title "Improve startup" --machine <id-or-name> \
   --lead-provider codex --lead-model gpt-5.6-sol --lead-reasoning high
 ```
 
-All role options are optional. Omitted fields use the remembered Pipeline settings; explicit choices become the settings for subsequent tasks. Specify the matching model when switching providers. Providers that support service tiers also accept `--intake-service-tier <default|fast>` and `--lead-service-tier <default|fast>`. Use `bb provider list --machine <id-or-name>` and `bb provider models <provider-id> --machine <id-or-name>` to discover providers, model IDs, and supported reasoning. `bb pipeline show` includes the card's saved selections.
+All role options are optional. Omitted fields use Pipeline settings; explicit choices become defaults for subsequent tasks when remembering is enabled. Specify the matching model when switching providers. Providers that support service tiers also accept `--intake-service-tier <default|fast>` and `--lead-service-tier <default|fast>`. Use `bb provider list --machine <id-or-name>` and `bb provider models <provider-id> --machine <id-or-name>` to discover providers, model IDs, and supported reasoning. `bb pipeline show` includes the card's saved selections.
 
 Choose a machine in New task or pass its ID or unambiguous name with `--machine`. Run `bb machine list` to find IDs and names. The project must have a checkout on the chosen machine. The choice stays with the card for intake, lead work, and retries.
 
@@ -120,13 +120,21 @@ Their running work continues to count toward the limit after the card is removed
 
 ## Configuration
 
-Initial settings use Claude Code with `claude-fable-5-1`, high reasoning, and full permission for both roles. Change them in the plugin settings or with `bb plugin config pipeline set`:
+Open **Settings** from the Pipeline header to configure execution defaults, capacity, external reviews, notifications, and advanced options. Model pickers use the selected **Model catalog** machine for discovery; defaults apply globally, and each task still requires its own machine.
+
+Settings saves update only edited fields. Leave the TypeSafe key blank to retain it, enter a replacement, or explicitly clear it. Integration status checks GitHub authentication on the BB server and Notify availability; Jev’s status says whether a key is configured, not whether a request has succeeded.
+
+Initial settings use Claude Code with `claude-fable-5-1`, high reasoning, and full permission for both roles. The same settings are available through `bb plugin config pipeline set`:
 
 - Intake: `providerId`, `model`, `reasoningLevel`, optional `serviceTier`
 - Lead: `leadProviderId`, `leadModel`, `leadReasoningLevel`, optional `leadServiceTier`
+- `rememberExecution` — remember new tasks’ choices, enabled by default; disable for fixed execution defaults
+- `taskLimit` — concurrent tasks per project and machine, 1–32; default 2
 - `permissionMode` for both roles
 - `jevApiKey` (secret), `jevThreshold`
 - `reviewRequestComment` — review trigger text; empty for automatic reviews
+- `autoReviewFollowup` — send findings to the lead automatically, enabled by default
+- `notificationsEnabled`, `notifyQuestions`, `notifyFailures`, `notifyReview` — Pipeline alert preferences, all enabled by default; delivery and sound stay in Notify
 
 Lead settings initially inherit the intake settings. Creating a task saves the resolved choices for both roles. Settings changes affect future cards; existing cards retain their saved selections. Cards created before per-role selections use the current settings when launching a role.
 

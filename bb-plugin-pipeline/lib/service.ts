@@ -5,7 +5,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import type { Column } from "./columns";
 import type { IssueDetails } from "./issue";
-import type { JevResult } from "./jev";
+import { parseThreshold, type JevResult } from "./jev";
 import {
   executionDefaults,
   executionSelectionSchema,
@@ -29,7 +29,7 @@ import type {
   HistoryInput,
 } from "./store";
 import { ownerThread, requireStarted, roleThread } from "./card";
-import { userAttentionReason } from "./notifications";
+import { userAttentionReason, type AttentionCategory } from "./notifications";
 import { normalizePullRequestUrl } from "./github";
 import {
   findPipelineThreadByMetadata,
@@ -98,7 +98,7 @@ export interface PipelineServiceDependencies {
   }): Promise<JevResult>;
   log(message: string): void;
   publish(projectId: string): void;
-  onAttention(card: Card, reason: string): void;
+  onAttention(card: Card, reason: string, category?: AttentionCategory): void;
   onPrChanged?(card: Card): void;
   id?: () => string;
 }
@@ -135,11 +135,6 @@ function sameAttention(
     card.attentionSource === target.attentionSource &&
     card.attentionUnknown === target.attentionUnknown
   );
-}
-
-function parseThreshold(value: string): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0.5 && parsed <= 1 ? parsed : 0.7;
 }
 
 function launchSettings(
@@ -225,7 +220,7 @@ export function createPipelineService(
     const card = changed(store.update(cardId, patch, history));
     const reason = userAttentionReason(card);
     if (reason !== null && userAttentionReason(previous) === null) {
-      dependencies.onAttention(card, reason);
+      dependencies.onAttention(card, reason, card.launchError !== null || card.threadError !== null ? "failures" : "questions");
     }
     return card;
   };

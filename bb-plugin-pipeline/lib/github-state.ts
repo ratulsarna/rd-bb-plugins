@@ -6,6 +6,7 @@ export function githubAttention(card: Card): string | null {
   if (status.state === "closed") return "PR closed without merging";
   if (status.followup === "cancelled") return "Review follow-up cancelled; retry when ready";
   if (status.error !== null) return status.error;
+  if (status.manualReviewPending) return "Review findings need your triage; use Send to lead when ready";
   if (status.review === "unknown") return "Review outcome needs checking";
   if (status.review === "clear") return "Review settled; ready for your merge decision";
   return null;

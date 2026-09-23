@@ -15,10 +15,15 @@ type Host = NonNullable<MessageDispatchHookContext["host"]>;
 type QueueEntry = PluginThreadEventPayloads["message.queued"]["entry"];
 type QueuedTask = { entry: QueueEntry; thread: Thread; cardId: string; hostId: string | null; interaction: boolean };
 
-const TASK_LIMIT = 2;
-const CAPACITY_REASON = `Pipeline: ${TASK_LIMIT} tasks running`;
+const DEFAULT_TASK_LIMIT = 2;
+// Recognize saved limits without claiming waits aggregated with another plugin.
+const CAPACITY_REASON_PATTERN = /^Pipeline: \d+ tasks running$/;
 const NEXT_REASON = "Pipeline: Run next has priority";
 const PRIORITY_YIELD_MS = 5_000;
+
+function capacityReason(limit: number): string {
+  return `Pipeline: ${limit} tasks running`;
+}
 const PAUSE_WAIT: MessageDispatchHookDecision = {
   action: "wait",
   reason: "Pipeline: task is paused or pausing",
@@ -30,7 +35,8 @@ function hostBlocker(host: Host | undefined): string | null {
   return null;
 }
 
-export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
+// Server settings validate the live limit as an integer from 1 to 32.
+export function createPipelineCapacity(bb: BbPluginApi, store: CardStore, getTaskLimit: () => number = () => DEFAULT_TASK_LIMIT) {
   const { sdk } = bb;
   const { resolver, occupancy } = createTaskThreads(bb, store);
   const selecting = new Set<{ card: Card; changed: boolean }>();
@@ -40,8 +46,8 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
   }
 
   function ownsCapacityWait(entry: QueueEntry): boolean {
-    return entry.waitingOn?.kind === "plugin" && entry.waitingOn.pluginId === bb.pluginId &&
-      [CAPACITY_REASON, NEXT_REASON].includes(entry.waitingOn.reason);
+    if (entry.waitingOn?.kind !== "plugin" || entry.waitingOn.pluginId !== bb.pluginId) return false;
+    return entry.waitingOn.reason === NEXT_REASON || CAPACITY_REASON_PATTERN.test(entry.waitingOn.reason);
   }
 
   async function queuedTasks(projectId: string, cardId?: string): Promise<QueuedTask[]> {
@@ -97,7 +103,7 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
     }
     if (wait?.kind === "plugin") {
       result.add(ownsCapacityWait(row.entry)
-        ? wait.reason === CAPACITY_REASON ? "Waiting for capacity" : "Waiting behind Run next"
+        ? CAPACITY_REASON_PATTERN.test(wait.reason) ? "Waiting for capacity" : "Waiting behind Run next"
         : `${wait.pluginId}: ${wait.reason}`);
     } else if (wait !== null) {
       const labels = { time: "Scheduled", "thread-busy": "Thread busy", stopping: "Thread stopping", "turn-starting": "Thread starting", provisioning: "Preparing workspace", "host-offline": "Machine offline", interaction: "Waiting for your answer" };
@@ -110,10 +116,11 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
   async function snapshot(projectId: string): Promise<MachineQueue[]> {
     const [hosts, occupied, queued] = await Promise.all([sdk.hosts.list(), occupancy(), queuedTasks(projectId)]);
     const machines = new Map<string, MachineQueue>();
+    const limit = getTaskLimit();
     function machine(hostId: string): MachineQueue {
       let value = machines.get(hostId);
       if (value === undefined) {
-        value = { hostId, hostName: hosts.find((host) => host.id === hostId)?.name ?? hostId, limit: TASK_LIMIT, occupied: [], waiting: [], nextCardId: store.getRunNext(projectId, hostId) };
+        value = { hostId, hostName: hosts.find((host) => host.id === hostId)?.name ?? hostId, limit, occupied: [], waiting: [], nextCardId: store.getRunNext(projectId, hostId) };
         machines.set(hostId, value);
       }
       return value;
@@ -286,8 +293,9 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore) {
         }
         occupied.add(other.cardId);
       }
-      if (occupied.size >= TASK_LIMIT) {
-        return { action: "wait", reason: CAPACITY_REASON };
+      const limit = getTaskLimit();
+      if (occupied.size >= limit) {
+        return { action: "wait", reason: capacityReason(limit) };
       }
       const priorYield = context.queuedMessages.filter((entry) => ownsCapacityWait(entry) &&
         entry.waitingOn?.kind === "plugin" && entry.waitingOn.reason === NEXT_REASON && entry.sendAt !== null);

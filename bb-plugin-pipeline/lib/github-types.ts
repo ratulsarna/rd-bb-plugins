@@ -37,6 +37,7 @@ export const githubStatusSchema = z.object({
   mergeable: z.enum(["mergeable", "conflicting", "unknown"]), reviewDecision: z.string().nullable(),
   review: z.enum(["waiting", "feedback", "clear", "unknown"]),
   followup: z.enum(["pending", "queued", "delivered", "handled", "cancelled"]).nullable(),
+  manualReviewPending: z.boolean().optional(),
   batchId: z.string().nullable(), syncedAt: z.number().nullable(), error: z.string().nullable(),
 }).strict();
 
@@ -45,6 +46,7 @@ export type ReviewDecision = "feedback" | "clear" | "waiting" | "unknown";
 export interface ReviewClassification { decision: ReviewDecision | "informational"; probability: number | null }
 
 export interface ReviewBatch {
+  manualDispatch?: boolean;
   id: string;
   headSha: string;
   feedback: GithubFeedback[];
