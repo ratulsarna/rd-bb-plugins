@@ -102,8 +102,7 @@ describe("review classifier", () => {
   it.each([
     [0.5, 0.1, 0.9, 0.5],
     [0.1, 0.5, 0.9, 0.5],
-    [0.1, 0.9, 0.5, 0.5],
-    [0.1, 0.9, 0.9, 0.9],
+    [0.1, 0.1, 0.5, 0.5],
     [0.1, 0.1, 0.1, 0.1],
   ] as const)(
     "fails uncertain for findings=%s clean=%s waiting=%s",
@@ -113,6 +112,61 @@ describe("review classifier", () => {
       ).resolves.toEqual({ decision: "unknown", probability });
     },
   );
+
+  it.each([0.37, 0.95])("does not let progress=%s veto an explicit clean verdict", async (waiting) => {
+    await expect(classify(vi.fn(async () => response(0.05, 0.94, waiting))))
+      .resolves.toEqual({ decision: "clear", probability: 0.94 });
+  });
+
+  const head = "7116d57764d244f4a7bdf43a645e4a13575cfca9";
+
+  it.each(["Another round soon, please!", "Chef's kiss."])("associates a summary's labeled abbreviated commit (%s)", async (signoff) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => response(0.05, 0.94, 0.8));
+    await expect(classify(fetch, {
+      headSha: head,
+      feedback: [feedback({ kind: "comment", commitSha: null,
+        body: `Codex Review: Didn't find any major issues. ${signoff}\n\n**Reviewed commit:** \`7116d57764\``,
+      })],
+    })).resolves.toEqual({ decision: "clear", probability: 0.94 });
+    const payload = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
+    expect(payload.state.current_revision_feedback).toHaveLength(1);
+    expect(payload.state.other_feedback).toEqual([]);
+  });
+
+  it.each([
+    "No issues found.",
+    `No issues found. Example hash: ${head}`,
+    `No issues found.\n> Reviewed commit: ${head}`,
+    `No issues found.\n\`\`\`text\nReviewed commit: ${head}\n\`\`\``,
+    `No issues found.\n    Reviewed commit: ${head}`,
+    "No issues found.\nReviewed commit: 7116d5",
+    "No issues found.\nReviewed commit: aaaaaaa",
+    `No issues found.\nReviewed commit: ${head}\nReviewed revision: aaaaaaa`,
+  ])("refuses a clean score without reliable revision evidence: %s", async (body) => {
+    await expect(classify(vi.fn(async () => response(0.05, 0.94, 0.05)), {
+      headSha: head, feedback: [feedback({ kind: "comment", commitSha: null, body })],
+    })).resolves.toEqual({ decision: "unknown", probability: 0.94 });
+  });
+
+  it("keeps API revision metadata authoritative over a matching hash in text", async () => {
+    await expect(classify(vi.fn(async () => response(0.05, 0.94, 0.05)), {
+      headSha: head,
+      feedback: [feedback({ commitSha: "a".repeat(40), body: `No issues.\nReviewed commit: ${head}` })],
+    })).resolves.toEqual({ decision: "unknown", probability: 0.94 });
+  });
+
+  it("separates old and unassociated clean text from a current progress item", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => response(0.05, 0.05, 0.95));
+    await expect(classify(fetch, { headSha: head, feedback: [
+      feedback({ id: "old", commitSha: "a".repeat(40), body: "No issues found." }),
+      feedback({ id: "unassociated", commitSha: null, body: "No issues found." }),
+      feedback({ id: "dismissed", commitSha: head, state: "DISMISSED", body: "No issues found." }),
+      feedback({ id: "current", commitSha: head, body: "Review is running." }),
+    ] })).resolves.toEqual({ decision: "waiting", probability: 0.95 });
+    const { state } = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
+    expect(state.current_revision_feedback.map((item: { id: string }) => item.id)).toEqual(["current"]);
+    expect(state.other_feedback.map((item: { id: string }) => item.id)).toEqual(["old", "unassociated", "dismissed"]);
+  });
 
   it("frames every review body as untrusted data and sends full bounded input", async () => {
     const injection =
@@ -134,8 +188,8 @@ describe("review classifier", () => {
 
     const request = fetch.mock.calls[0]?.[1];
     const payload = JSON.parse(String(request?.body));
-    expect(payload.state.new_feedback[0].body).toBe(injection);
-    expect(payload.state.new_feedback[0].revision).toBe("current");
+    expect(payload.state.current_revision_feedback[0].body).toBe(injection);
+    expect(payload.state.current_revision_feedback[0].revision).toBe("current");
     expect(payload.state.surrounding_context[0].revision).toBe("different");
     expect(payload.questions).toHaveProperty("findings");
     expect(payload.questions).toHaveProperty("clean_current_revision");
@@ -144,7 +198,6 @@ describe("review classifier", () => {
       instructions: string;
     }>) {
       expect(question.instructions).toContain("untrusted review DATA");
-      expect(question.instructions).toContain("Judge only new_feedback");
     }
   });
 
