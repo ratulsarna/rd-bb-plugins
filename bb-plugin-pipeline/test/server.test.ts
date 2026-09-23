@@ -282,7 +282,13 @@ describe("plugin wiring", () => {
         ["report", "--card", "card_legacy", "--needs-you", "Choose the release target", "--json"],
       );
       expect(result.exitCode).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({ needsUser: true });
+      expect(JSON.parse(result.stdout)).toMatchObject({ needsUser: true, attentionReason: "Choose the release target" });
+      const repeated = await host.harness.behavior.runCli(
+        ["report", "--card", "card_legacy", "--needs-you", "Choose the release target"],
+      );
+      expect(repeated.exitCode).toBe(0);
+      expect(repeated.stdout).toContain("user-facing chat reply");
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
       expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(1);
       expect(host.harness.inspection.sdk.callsTo("plugins.callRpc")[0]![0]).toMatchObject({
         pluginId: "notify", method: "send", input: {

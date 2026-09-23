@@ -15,6 +15,7 @@ import { ownerThread } from "./card";
 import type { MachineQueue } from "./contract";
 import type { Card, CardAttachment, CardStore } from "./store";
 import { readWorkflow } from "./workflow";
+import { USER_HANDOFF } from "./prompts";
 
 const USAGE = `Usage:
   bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]
@@ -41,6 +42,8 @@ Add execution options (optional; omitted fields use remembered Pipeline settings
   --intake-provider <id> --intake-model <id> --intake-reasoning <level>
   --lead-provider <id> --lead-model <id> --lead-reasoning <level>
   --intake-service-tier <default|fast> --lead-service-tier <default|fast>
+
+Reporting updates card state only. Ask questions and request approval in the task's chat; --needs-you takes a short waiting reason.
 
 Columns: ${COLUMNS.join(", ")}`;
 
@@ -434,7 +437,9 @@ export function createPipelineCli(input: {
               prUrl: option(args, "pr"),
               tier: tier as "trivial" | "small" | "standard" | undefined,
             });
-            return success(args, card, formatCard(card));
+            return success(args, card, option(args, "needs-you") === undefined
+              ? formatCard(card)
+              : `${formatCard(card)}\n${USER_HANDOFF}`);
           }
           case "github-sync":
           case "review-retry": {
