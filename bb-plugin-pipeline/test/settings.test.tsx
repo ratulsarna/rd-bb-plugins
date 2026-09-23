@@ -128,6 +128,27 @@ describe("Pipeline settings page", () => {
     await waitFor(() => expect(s.update).toHaveBeenCalledExactlyOnceWith({ values: { rememberExecution: false, taskLimit: 32, reviewRequestComment: "@reviewer review" } }));
   });
 
+  it("keeps an unsaved review comment across mode switches until explicitly discarded", async () => {
+    const s = await setup();
+    const request = screen.getByRole("combobox", { name: "Request review" });
+    const comment = () => screen.getByRole("textbox", { name: "Review request comment" });
+    fireEvent.change(comment(), { target: { value: "please review v2" } });
+    fireEvent.change(request, { target: { value: "automatic" } });
+    expect(screen.queryByRole("textbox", { name: "Review request comment" })).toBeNull();
+    fireEvent.change(request, { target: { value: "comment" } });
+    expect(comment()).toHaveProperty("value", "please review v2");
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(s.update).toHaveBeenCalledExactlyOnceWith({ values: { reviewRequestComment: "please review v2" } }));
+    await waitFor(() => expect(saveButton().disabled).toBe(true));
+    fireEvent.change(comment(), { target: { value: "discard this draft" } });
+    fireEvent.change(request, { target: { value: "automatic" } });
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    fireEvent.change(request, { target: { value: "automatic" } });
+    fireEvent.change(request, { target: { value: "comment" } });
+    expect(comment()).toHaveProperty("value", "please review v2");
+    expect(saveButton().disabled).toBe(true);
+  });
+
   it("uses the plugin settings link and Back to tasks without mounting a duplicate form", async () => {
     const slot = renderSlot(app.settingsSections[0]!, {}, {}); mounted.push(slot);
     expect(screen.queryByRole("form")).toBeNull();

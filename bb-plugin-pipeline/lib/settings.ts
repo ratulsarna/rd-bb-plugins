@@ -49,7 +49,6 @@ export const SETTINGS = {
     type: "string",
     label: "Review request comment (empty for automatic reviews)",
     default: "@codex review",
-    experimental_schema: z.string().max(4_000),
   },
   jevApiKey: {
     type: "string",
@@ -77,7 +76,7 @@ export const pipelineSettingsSchema = z.object({
   rememberExecution: z.boolean(),
   taskLimit: z.number().int().min(1).max(32),
   permissionMode: z.enum(["accept-edits", "auto", "full"]),
-  reviewRequestComment: z.string().max(4_000),
+  reviewRequestComment: z.string(),
   autoReviewFollowup: z.boolean(),
   notificationsEnabled: z.boolean(),
   notifyQuestions: z.boolean(),

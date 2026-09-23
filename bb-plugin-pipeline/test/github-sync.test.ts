@@ -358,19 +358,22 @@ describe("GitHub review handoff", () => {
     expect(s.send).toHaveBeenCalledTimes(1);
   });
 
-  it("recovers a missed delivery event from the accepted turn instead of sending twice", async () => {
+  it.each([true, false])("recovers a missed delivery event without resending or false triage (auto=%s)", async (automatic) => {
     const s = setup(); s.change({ feedback: [feedback()] }); await s.sync.poll();
+    s.settings.autoReviewFollowup = automatic;
     const entry = s.queue.shift()!;
     s.events.push({ id: "accepted", scope: "client", threadId: "lead", seq: 10, createdAt: Date.now(),
       type: "client/turn/requested", data: { input: entry.content } } as never);
     await s.makeSync().poll();
-    expect(s.card().github).toMatchObject({ followup: "delivered", error: null });
+    expect(s.card().github).toMatchObject({ followup: "delivered", error: null, manualReviewPending: false });
     expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.notify).not.toHaveBeenCalled();
     await expect(s.sync.retry("card")).rejects.toThrow("already received");
   });
 
-  it("shows an uncertain vanished queue row without automatically duplicating it", async () => {
+  it.each([true, false])("shows uncertain delivery without duplicating it (auto=%s)", async (automatic) => {
     const s = setup(); s.change({ feedback: [feedback()] }); await s.sync.poll();
+    s.settings.autoReviewFollowup = automatic;
     s.queue.length = 0;
     await s.makeSync().poll(); await s.sync.poll();
     expect(s.card().github?.error).toContain("unconfirmed");

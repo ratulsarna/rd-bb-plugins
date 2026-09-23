@@ -22,6 +22,7 @@ export function PipelineSettings() {
   const [key, setKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
   const [reviewMode, setReviewMode] = useState<"automatic" | "comment" | null>(null);
+  const commentDraft = useRef<string | null>(null);
   const [machines, setMachines] = useState<Machine[]>([]);
   const [hostId, setHostId] = useState("");
   const [machineError, setMachineError] = useState<string | null>(null);
@@ -91,6 +92,7 @@ export function PipelineSettings() {
   }
 
   function discard() {
+    commentDraft.current = null;
     setEdits({}); setKey(""); setClearKey(false); setReviewMode(null); setNotice(""); setError(null);
   }
 
@@ -106,6 +108,7 @@ export function PipelineSettings() {
         ...(clearKey ? { jevApiKey: null } : key.trim() === "" ? {} : { jevApiKey: key.trim() }),
       });
       if (!alive.current) return;
+      commentDraft.current = null;
       setSaved(result); setEdits({}); setKey(""); setClearKey(false); setReviewMode(null); setNotice("Saved");
       saving.current = false;
       void refresh();
@@ -157,10 +160,11 @@ export function PipelineSettings() {
             <h2 id="pipeline-reviews-heading">External reviews</h2>
             <label className="pipeline-field"><span className="pipeline-field-label">Request review</span><select className="pipeline-input" value={mode} disabled={pending} onChange={(event) => {
               const next = event.target.value as "automatic" | "comment";
+              if (next === "automatic") commentDraft.current = values.reviewRequestComment;
               setReviewMode(next);
-              edit("reviewRequestComment", next === "automatic" ? "" : saved?.values.reviewRequestComment || "@codex review");
+              edit("reviewRequestComment", next === "automatic" ? "" : commentDraft.current ?? (saved?.values.reviewRequestComment || "@codex review"));
             }}><option value="automatic">Automatic on GitHub</option><option value="comment">Post a comment</option></select></label>
-            {mode === "comment" ? <label className="pipeline-field"><span className="pipeline-field-label">Review request comment</span><textarea className="pipeline-input" maxLength={4000} rows={2} value={values.reviewRequestComment} disabled={pending} onChange={(event) => edit("reviewRequestComment", event.target.value)} /></label> : null}
+            {mode === "comment" ? <label className="pipeline-field"><span className="pipeline-field-label">Review request comment</span><textarea className="pipeline-input" rows={2} value={values.reviewRequestComment} disabled={pending} onChange={(event) => edit("reviewRequestComment", event.target.value)} /></label> : null}
             {toggle("autoReviewFollowup", "Send findings to the lead automatically")}
           </section>
           <section className="pipeline-settings-section" aria-labelledby="pipeline-notifications-heading">

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeHostResponse } from "@get-bb/plugin-sdk/testing";
-import type { PluginBbSdk } from "@get-bb/plugin-sdk";
+import type { PluginBbSdk, PluginSettingsHandle } from "@get-bb/plugin-sdk";
 import plugin from "../server";
-import { settingsViewSchema } from "../lib/settings";
+import { SETTINGS, settingsViewSchema } from "../lib/settings";
 import { integrationStatus } from "../lib/integrations";
 import { createCardStore } from "../lib/store";
 import { testCatalogProviders, testProviderModels } from "./sdk-fake";
@@ -21,10 +21,12 @@ async function setup(stored: Record<string, string> = {}) {
     },
   });
   hosts.push(host);
+  const define = vi.spyOn(host.bb.settings, "define");
   await plugin(host.bb);
+  const settings = define.mock.results[0]!.value as PluginSettingsHandle<typeof SETTINGS>;
   const read = async () => settingsViewSchema.parse(await host.harness.behavior.callRpc("getSettings", null));
   const write = (input: unknown) => host.harness.behavior.callRpc("updateSettings", input);
-  return { ...host, read, write };
+  return { ...host, read, write, settings };
 }
 
 describe("Pipeline settings boundary", () => {
@@ -59,6 +61,39 @@ describe("Pipeline settings boundary", () => {
     expect((await s.read()).values.jevThreshold).toBe(.7);
     await s.write({ values: { jevThreshold: .8 } });
     expect((await s.read()).values.jevThreshold).toBe(.8);
+  });
+
+  it("keeps a long stored review template readable and intact across unrelated saves", async () => {
+    const comment = "review instruction ".repeat(300);
+    const s = await setup({ reviewRequestComment: comment });
+    expect((await s.read()).values.reviewRequestComment).toBe(comment);
+    await s.write({ values: { taskLimit: 3 } });
+    expect((await s.read()).values).toMatchObject({ taskLimit: 3, reviewRequestComment: comment });
+    await s.write({ values: { reviewRequestComment: "@reviewer review" } });
+    expect((await s.read()).values.reviewRequestComment).toBe("@reviewer review");
+  });
+
+  it("preserves both role edits when a second save arrives during the first settings read", async () => {
+    const s = await setup();
+    const intake = { providerId: "codex", model: "gpt-6-sol", reasoningLevel: "high" };
+    const lead = { providerId: "claude-code", model: "claude-opus-5-5[1m]", reasoningLevel: "high" };
+    let entered!: () => void;
+    let release!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const get = s.settings.get.bind(s.settings);
+    vi.spyOn(s.settings, "get").mockImplementationOnce(async () => {
+      const value = await get();
+      entered();
+      await pending;
+      return value;
+    });
+    const first = s.write({ values: { intake } });
+    await reading;
+    const second = s.write({ values: { lead } });
+    setImmediate(release);
+    await Promise.all([first, second]);
+    expect((await s.read()).values).toMatchObject({ intake, lead });
   });
 
   it("rejects invalid updates atomically across RPC and the shared settings writer", async () => {

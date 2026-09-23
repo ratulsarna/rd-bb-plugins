@@ -22,6 +22,13 @@ const CARDS_CHANGED = "cards:changed";
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define(SETTINGS);
   let currentSettings = await settings.get();
+  let settingsWrite = Promise.resolve();
+  function serializeSettings<T>(work: () => Promise<T>): Promise<T> {
+    const next = settingsWrite.then(work);
+    settingsWrite = next.then(() => undefined, () => undefined);
+    return next;
+  }
+  bb.onDispose(() => settingsWrite);
 
   const db = bb.storage.database();
   bb.storage.migrate(db, [...MIGRATIONS]);
@@ -39,17 +46,19 @@ export default async function plugin(bb: BbPluginApi) {
     store,
     sdk: bb.sdk,
     getSettings: () => settings.get(),
-    async rememberExecution({ intake, lead }) {
-      if (!currentSettings.rememberExecution) return;
-      await settings.experimental_set({
-        providerId: intake.providerId,
-        model: intake.model,
-        reasoningLevel: intake.reasoningLevel,
-        serviceTier: intake.serviceTier ?? null,
-        leadProviderId: lead.providerId,
-        leadModel: lead.model,
-        leadReasoningLevel: lead.reasoningLevel,
-        leadServiceTier: lead.serviceTier ?? null,
+    rememberExecution({ intake, lead }) {
+      return serializeSettings(async () => {
+        if (!currentSettings.rememberExecution) return;
+        await settings.experimental_set({
+          providerId: intake.providerId,
+          model: intake.model,
+          reasoningLevel: intake.reasoningLevel,
+          serviceTier: intake.serviceTier ?? null,
+          leadProviderId: lead.providerId,
+          leadModel: lead.model,
+          leadReasoningLevel: lead.reasoningLevel,
+          leadServiceTier: lead.serviceTier ?? null,
+        });
       });
     },
     readIssue,
@@ -81,8 +90,8 @@ export default async function plugin(bb: BbPluginApi) {
     async getSettings() {
       return settingsView(await settings.get());
     },
-    async updateSettings(input) {
-      return settingsView(await settings.experimental_set(settingsPatch(input, await settings.get())));
+    updateSettings(input) {
+      return serializeSettings(async () => settingsView(await settings.experimental_set(settingsPatch(input, await settings.get()))));
     },
     async settingsMachines() {
       const hosts = await bb.sdk.hosts.list();

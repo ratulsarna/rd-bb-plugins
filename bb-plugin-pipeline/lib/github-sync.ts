@@ -195,7 +195,12 @@ export function createGithubSync(input: {
       state.status.review = "feedback";
       if (!state.batch.manualDispatch && (await input.getSettings()).autoReviewFollowup === false &&
         ["pending", "queued"].includes(state.batch.state)) {
-        state.status.manualReviewPending = true;
+        // A queued batch may already have arrived while dispatch events were unavailable.
+        if (state.batch.state === "queued") {
+          await deliver(required(card.id), state);
+          state = store.getGithub(card.id) ?? state;
+        }
+        state.status.manualReviewPending = state.batch !== null && ["pending", "queued"].includes(state.batch.state);
         save(card, state);
         return;
       }
