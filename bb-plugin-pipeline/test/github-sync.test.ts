@@ -119,6 +119,28 @@ describe("GitHub review handoff", () => {
     expect(await s.makeSync().decide(context)).toBeNull();
   });
 
+  it("keeps queued manual feedback held when Retry cannot verify GitHub, then cancels a closed PR", async () => {
+    const s = setup();
+    s.change({ feedback: [feedback()] });
+    await s.sync.poll();
+    s.settings.autoReviewFollowup = false;
+    await s.sync.poll();
+    const batch = s.store.getGithub("card")!.batch!;
+    const context = makeMessageDispatchHookContext({ thread: s.thread,
+      input: { text: reviewFollowup(s.card(), batch), blocks: [] } });
+    s.read.mockRejectedValueOnce(new Error("GitHub offline"));
+    await s.sync.retry("card");
+    expect(s.card().github?.error).toContain("GitHub offline");
+    expect(s.store.getGithub("card")!.batch?.manualDispatch).not.toBe(true);
+    expect(await s.sync.decide(context)).toMatchObject({ action: "wait" });
+    expect(s.send).toHaveBeenCalledTimes(1);
+    s.change({ state: "closed" });
+    await s.sync.retry("card");
+    expect(s.card().github).toMatchObject({ state: "closed", followup: "cancelled" });
+    expect(s.queue).toHaveLength(0);
+    expect(await s.sync.decide(context)).toMatchObject({ action: "reject" });
+  });
+
   it("does not resend unconfirmed delivery after switching manual follow-ups off and on", async () => {
     const s = setup();
     s.change({ feedback: [feedback()] });

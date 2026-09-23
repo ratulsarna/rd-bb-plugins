@@ -1,5 +1,6 @@
 import type { PluginSettingDescriptors, PluginSettingsValues } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { parseThreshold } from "./jev";
 import { executionDefaults, executionSelectionSchema, REASONING_LEVELS } from "./execution";
 
 export const SETTINGS = {
@@ -113,14 +114,18 @@ export function settingsView(settings: StoredSettings): z.infer<typeof settingsV
       notifyQuestions: settings.notifyQuestions,
       notifyFailures: settings.notifyFailures,
       notifyReview: settings.notifyReview,
-      jevThreshold: Number(settings.jevThreshold),
+      jevThreshold: parseThreshold(settings.jevThreshold),
     }),
     jevApiKeyConfigured: Boolean(settings.jevApiKey?.trim()),
   };
 }
 
-export function settingsPatch(input: z.infer<typeof settingsUpdateSchema>) {
-  const { intake, lead, jevThreshold, ...values } = input.values;
+export function settingsPatch(input: z.infer<typeof settingsUpdateSchema>, current: StoredSettings) {
+  const { intake, lead: requestedLead, jevThreshold, ...values } = input.values;
+  // Pin an inherited Lead before an independent Intake edit changes its inputs.
+  const lead = requestedLead ?? (intake !== undefined &&
+    (!current.leadProviderId?.trim() || !current.leadModel?.trim() || current.leadReasoningLevel === undefined)
+    ? executionDefaults(current).lead : undefined);
   return {
     ...values,
     ...(intake === undefined ? {} : {

@@ -82,7 +82,7 @@ export default async function plugin(bb: BbPluginApi) {
       return settingsView(await settings.get());
     },
     async updateSettings(input) {
-      return settingsView(await settings.experimental_set(settingsPatch(input)));
+      return settingsView(await settings.experimental_set(settingsPatch(input, await settings.get())));
     },
     async settingsMachines() {
       const hosts = await bb.sdk.hosts.list();

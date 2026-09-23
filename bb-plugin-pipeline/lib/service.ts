@@ -5,7 +5,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import type { Column } from "./columns";
 import type { IssueDetails } from "./issue";
-import type { JevResult } from "./jev";
+import { parseThreshold, type JevResult } from "./jev";
 import {
   executionDefaults,
   executionSelectionSchema,
@@ -135,11 +135,6 @@ function sameAttention(
     card.attentionSource === target.attentionSource &&
     card.attentionUnknown === target.attentionUnknown
   );
-}
-
-function parseThreshold(value: string): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0.5 && parsed <= 1 ? parsed : 0.7;
 }
 
 function launchSettings(

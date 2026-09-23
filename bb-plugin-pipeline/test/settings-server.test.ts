@@ -9,9 +9,9 @@ import { testCatalogProviders, testProviderModels } from "./sdk-fake";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => { while (hosts.length) await hosts.pop()!.harness.lifecycle.dispose(); });
-async function setup() {
+async function setup(stored: Record<string, string> = {}) {
   const host = createFakePluginHost({
-    pluginId: "pipeline", settings: { jevApiKey: "test-secret", serviceTier: "fast" },
+    pluginId: "pipeline", settings: { jevApiKey: "test-secret", serviceTier: "fast", ...stored },
     agentSkillIds: ["pipeline", "pipeline-intake", "pipeline-plan", "pipeline-implement", "pipeline-close-out", "pipeline-debug"],
     sdk: {
       hosts: { list: async () => [makeHostResponse({ id: "machine", status: "connected" })] },
@@ -42,6 +42,23 @@ describe("Pipeline settings boundary", () => {
     expect((await s.read()).values.intake.serviceTier).toBeUndefined();
     await s.write({ values: {}, jevApiKey: null });
     expect((await s.read()).jevApiKeyConfigured).toBe(false);
+  });
+
+  it("preserves the displayed inherited Lead when only Intake is edited", async () => {
+    const s = await setup();
+    const before = await s.read();
+    const intake = { providerId: "codex", model: "gpt-6-sol", reasoningLevel: "high" };
+    await s.write({ values: { intake } });
+    expect((await s.read()).values).toMatchObject({ intake, lead: before.values.lead });
+    await s.write({ values: { intake: { ...intake, model: "another-model" } } });
+    expect((await s.read()).values.lead).toEqual(before.values.lead);
+  });
+
+  it("shows the runtime threshold fallback for an old invalid value and allows correcting it", async () => {
+    const s = await setup({ jevThreshold: "not a number" });
+    expect((await s.read()).values.jevThreshold).toBe(.7);
+    await s.write({ values: { jevThreshold: .8 } });
+    expect((await s.read()).values.jevThreshold).toBe(.8);
   });
 
   it("rejects invalid updates atomically across RPC and the shared settings writer", async () => {

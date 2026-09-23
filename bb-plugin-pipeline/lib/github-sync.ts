@@ -4,6 +4,7 @@ import { ownerThread } from "./card";
 import { githubAttention } from "./github-state";
 import { normalizePullRequestUrl, postReviewRequest, readPullRequest } from "./github";
 import type { GithubFeedback, GithubSnapshot, GithubSyncState, ReviewBatch, ReviewClassification } from "./github-types";
+import { parseThreshold } from "./jev";
 import { classifyReview } from "./review-classifier";
 import type { AttentionCategory } from "./notifications";
 import type { Card, CardStore } from "./store";
@@ -206,8 +207,7 @@ export function createGithubSync(input: {
     const fresh = externalFeedback(snapshot, state);
     if (fresh.length > 0) {
       const settings = await input.getSettings();
-      const threshold = Number(settings.jevThreshold);
-      const result = await classify({ apiKey: settings.jevApiKey, threshold: Number.isFinite(threshold) && threshold >= 0.5 && threshold <= 1 ? threshold : 0.7,
+      const result = await classify({ apiKey: settings.jevApiKey, threshold: parseThreshold(settings.jevThreshold),
         headSha: snapshot.headSha, feedback: fresh,
         context: snapshot.feedback.filter((item) => !fresh.some((candidate) => candidate.id === item.id) &&
           (item.commitSha === null || item.commitSha === snapshot.headSha)).slice(-20), log: (message) => bb.log.info(message) });
@@ -225,7 +225,7 @@ export function createGithubSync(input: {
     await deliver(required(card.id), state);
   }
 
-  async function syncUnlocked(id: string, refresh = false): Promise<Card> {
+  async function syncUnlocked(id: string, options: { refresh?: boolean; retryBatchId?: string } = {}): Promise<Card> {
     let card = required(id);
     if (card.prUrl === null || card.column === "done" || !card.startRequested) return card;
     card = canonicalPr(card);
@@ -240,8 +240,14 @@ export function createGithubSync(input: {
       if (card === null) return required(id);
       state = store.getGithub(id) ?? initialState(url);
       state.readFailures = 0;
-      if (refresh && state.status.review === "unknown") {
+      if (options.refresh && state.status.review === "unknown") {
         for (const item of snapshot.feedback) if (item.author !== snapshot.author) delete state.observed[item.id];
+      }
+      if (options.retryBatchId !== undefined && state.batch?.id === options.retryBatchId &&
+        state.batch.state !== "handled" && !(state.batch.state === "delivered" && state.status.error === null)) {
+        state.batch.state = "pending";
+        state.batch.manualDispatch = true;
+        state.status.error = null;
       }
       await apply(card, snapshot, state);
     } catch (cause) {
@@ -260,7 +266,7 @@ export function createGithubSync(input: {
   }
 
   return {
-    sync(id: string) { return serial(id, () => syncUnlocked(id, true)); },
+    sync(id: string) { return serial(id, () => syncUnlocked(id, { refresh: true })); },
     async poll() {
       for (const card of store.listGithubCards()) {
         if (abort.signal.aborted) break;
@@ -314,9 +320,7 @@ export function createGithubSync(input: {
         const state = store.getGithub(id);
         if (card.column === "done" || !card.startRequested || state?.batch == null || state.batch.state === "handled") throw new Error("No review follow-up to retry");
         if (state.batch.state === "delivered" && state.status.error === null) throw new Error("The lead already received this feedback");
-        state.batch.state = "pending"; state.batch.manualDispatch = true; state.status.error = null;
-        save(card, state);
-        const result = await syncUnlocked(id);
+        const result = await syncUnlocked(id, { retryBatchId: state.batch.id });
         await bb.experimental_hooks.recheck("message.dispatch");
         return result;
       });

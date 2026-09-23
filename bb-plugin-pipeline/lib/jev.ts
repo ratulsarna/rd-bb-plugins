@@ -1,3 +1,8 @@
+export function parseThreshold(value: string): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0.5 && parsed <= 1 ? parsed : 0.7;
+}
+
 export type JevDecision = "needs" | "no" | "unknown";
 
 export interface JevResult {
