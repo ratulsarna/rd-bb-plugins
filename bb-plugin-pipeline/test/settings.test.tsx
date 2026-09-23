@@ -11,7 +11,7 @@ const defaults: PipelineSettingsValues = {
   intake: { providerId: "claude-code", model: "claude-opus-5-5[1m]", reasoningLevel: "high" },
   lead: { providerId: "codex", model: "gpt-6-sol", reasoningLevel: "high" },
   rememberExecution: true, taskLimit: 2, permissionMode: "full", reviewRequestComment: "@codex review",
-  autoReviewFollowup: true, notificationsEnabled: true, notifyQuestions: true, notifyFailures: true, notifyReview: true, jevThreshold: .7,
+  autoReviewFollowup: true, notificationsEnabled: true, notifyQuestions: true, notifyFailures: true, notifyReview: true, jevThreshold: .725,
 };
 type View = { values: PipelineSettingsValues; jevApiKeyConfigured: boolean };
 type Update = { values: Partial<PipelineSettingsValues>; jevApiKey?: string | null };
