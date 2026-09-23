@@ -155,6 +155,15 @@ describe("review classifier", () => {
     })).resolves.toEqual({ decision: "unknown", probability: 0.94 });
   });
 
+  it("checks both the display hash and target of a linked review revision", async () => {
+    const body = (target: string) => `No findings.\nReviewed commit: [7116d57764](https://github.com/example/repo/commit/${target})`;
+    const fetch = vi.fn(async () => response(0.05, 0.94, 0.05));
+    await expect(classify(fetch, { headSha: head, feedback: [feedback({ commitSha: null, body: body(head) })] }))
+      .resolves.toEqual({ decision: "clear", probability: 0.94 });
+    await expect(classify(fetch, { headSha: head, feedback: [feedback({ commitSha: null, body: body("a".repeat(40)) })] }))
+      .resolves.toEqual({ decision: "unknown", probability: 0.94 });
+  });
+
   it("separates old and unassociated clean text from a current progress item", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => response(0.05, 0.05, 0.95));
     await expect(classify(fetch, { headSha: head, feedback: [

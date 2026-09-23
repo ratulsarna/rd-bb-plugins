@@ -66,8 +66,12 @@ function reviewedRevision(item: GithubFeedback, headSha: string): "current" | "d
     }
     if (fence !== null) continue;
     // Only a standalone review-revision label is evidence; arbitrary hash mentions are not.
-    const match = line.match(/^ {0,3}(?:\*\*)?Reviewed (?:commit|revision)(?:\*\*)?:?(?:\*\*)?\s+`?([0-9a-f]{7,40})`?\.?\s*$/i);
-    if (match) references.push(match[1]!.toLowerCase());
+    const label = line.match(/^ {0,3}(?:\*\*)?Reviewed (?:commit|revision)(?:\*\*)?:?(?:\*\*)?\s+(.+?)\.?\s*$/i);
+    if (!label) continue;
+    const plain = label[1]!.match(/^`?([0-9a-f]{7,40})`?$/i);
+    const link = label[1]!.match(/^\[`?([0-9a-f]{7,40})`?\]\(https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/commit\/([0-9a-f]{7,40})\)$/i);
+    if (plain) references.push(plain[1]!.toLowerCase());
+    else if (link) references.push(link[1]!.toLowerCase(), link[2]!.toLowerCase());
   }
   if (references.length === 0) return "unassociated";
   return references.every((sha) => headSha.toLowerCase().startsWith(sha)) ? "current" : "different";
