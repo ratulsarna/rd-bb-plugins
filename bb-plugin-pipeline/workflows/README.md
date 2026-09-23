@@ -71,16 +71,18 @@ Working files live at `~/.ai/artifacts/<project>/YYYY-MM-DD-<topic>/`, out of th
 
 ## Board
 
-The card lives on the pipeline board. Report every column change and every stop for the user with `bb pipeline report` before the turn ends; the lines carry `--working` unless they state `--needs-you`:
+The card tracks workflow state only. Questions, explanations, options, walkthroughs, and approval requests belong in the owning thread's user-facing chat. Before ending a turn awaiting the user, give them the question or current walkthrough step and the decision needed in that reply. The user answers in the thread.
+
+`bb pipeline report` updates state; it does not send that reply or create an approval interaction. Use `--needs-you` for a short waiting reason, such as "scope decision" or "walkthrough step 2 of 4", rather than the discussion itself. Report every column change and every stop for the user before the turn ends; the lines carry `--working` unless they state `--needs-you`:
 
 | Phase | Moment | Report |
 |---|---|---|
-| intake | initial question | `--needs-you "<question in one line>"` |
-| intake | each grill question | `--needs-you "<question in one line>"` |
-| intake | tier question | `--needs-you "<question in one line>"` |
-| intake | ready-to-plan question or no | `--needs-you "<question in one line>"` |
+| intake | initial question | `--needs-you "task clarification"` |
+| intake | each grill question | `--needs-you "<short waiting reason>"` |
+| intake | tier question | `--needs-you "tier selection"` |
+| intake | ready-to-plan question or no | `--needs-you "approval to begin planning"` |
 | plan | start of understand | `--column planning` |
-| plan | any question to the user in understand or grill | `--needs-you "<question in one line>"` |
+| plan | any question to the user in understand or grill | `--needs-you "<short waiting reason>"` |
 | plan | Shape done, plan.md settled, before the first walkthrough step | `--column plan_ready --needs-you "plan ready; walkthrough step 1 of M"` |
 | plan | each later walkthrough step | `--needs-you "walkthrough step N of M"` (column stays plan_ready) |
 | debug | RCA done, before any fix | `--needs-you "root cause found; tier the fix"` (column stays planning) |

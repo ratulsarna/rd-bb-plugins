@@ -20,7 +20,7 @@ The follow-up identifies a feedback batch, the PR, the observed commit, and revi
 - For a small fix, the owning worker or lead applies it; QA re-verifies behavior changes, then fresh verification runs before pushing. New behavior or a new architectural seam returns through the review, walkthrough, and QA rules in `bb pipeline instructions implement` before close-out.
 - Report `bb pipeline report --column pr --working` when beginning rework. After pushing verified fixes, run `bb pipeline review-wait --handled <batch-id>`. It acknowledges this batch and requests review for the new revision.
 - If no code change is justified, record the reasoning and reply to the review as appropriate, then run the same command with the batch ID. An unchanged revision with answered findings does not request another review.
-- Report the outcome, finish or pause autonomous goals, and end the turn. Pipeline surfaces clean or settled review for the user's merge decision; another feedback batch starts another triage turn. If a decision or credential is required, report `--needs-you` with the specific blocker.
+- Report the outcome in chat, finish or pause autonomous goals, and end the turn. Pipeline surfaces clean or settled review for the user's merge decision; another feedback batch starts another triage turn. If a decision or credential is required, explain what the user needs to do in that chat reply and report `--needs-you` with a short waiting reason.
 
 GitHub sync shows CI results independently of review. It records confirmed merge as Done. Marking a PR ready and merging remain the user's decision.
 

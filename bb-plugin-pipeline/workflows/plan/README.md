@@ -10,7 +10,7 @@ Create `run.md` per `bb pipeline instructions overview` first. Then learn how th
 
 Tell the user what you understand the task to be, checked against what your research found, and what research could not settle: a technical call that needs human judgment, a business rule that is unclear, or a design preference that changes how it gets built. Open questions go to `/grill-me` (Codex: `$grill-me`). If the user corrects you, verify the correction yourself before moving on. Fold every answer back into the ticket. No plan until the user says the picture is right.
 
-`bb pipeline report --needs-you "<question in one line>"`
+`bb pipeline report --needs-you "<short waiting reason>"`
 
 ## Shape
 
@@ -40,7 +40,7 @@ Real blast radius (migrations, auth, data-loss surfaces, anything hard to roll b
 
 `bb pipeline report --column plan_ready --needs-you "plan ready; walkthrough step 1 of M"`
 
-Tell the user the plan is ready, and nothing more. Then walk them through it one step at a time, up to five or six steps: what we are solving and how, what path we are taking, with visuals and code snippets where they help. Use `/show-me` for each step. One step per turn; never all the steps at once. An objection at any step goes back to Shape, with the Oracle still up.
+Start with step 1 in the same chat reply that announces the plan is ready. Walk the user through it one step at a time, up to five or six steps: what we are solving and how, what path we are taking, with visuals and code snippets where they help. Use `/show-me` for each step. Present one step per chat turn and wait for the user's reply there; never all the steps at once. The card records only the stage and waiting reason. An objection at any step goes back to Shape, with the Oracle still up.
 
 `bb pipeline report --needs-you "walkthrough step N of M"`
 

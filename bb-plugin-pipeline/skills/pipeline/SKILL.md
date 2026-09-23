@@ -65,7 +65,7 @@ bb pipeline run-next <card-id> --clear
 
 Run next is a preference, not a start-order guarantee: concurrent queue claims can let another task start first. Priority waits are bounded so a blocked nominee cannot stall the queue.
 
-`bb pipeline report --needs-you <reason>` marks the task as needing user input and sends an alert through Notify when attention begins. Use `--working` when that blocker clears. Repeated attention reports do not resend the alert. Notify must be installed and enabled; its foreground and sound preferences apply. Pipeline also alerts for intake waiting, confirmed lead attention, failures, and pending questions or approvals on the owning thread. Do not send an extra `bb notify` for the same blocker.
+The card tracks state only. Put questions, explanations, options, walkthroughs, and approval requests in the owning thread's user-facing chat, where the user replies. `bb pipeline report --needs-you <reason>` records a short waiting reason and sends an alert through Notify when attention begins; it does not post a chat message or collect an answer. Use `--working` when that blocker clears. Repeated attention reports do not resend the alert. Notify must be installed and enabled; its foreground and sound preferences apply. Pipeline also alerts for intake waiting, confirmed lead attention, failures, and pending questions or approvals on the owning thread. Do not send an extra `bb notify` for the same blocker.
 
 ## External PR review
 

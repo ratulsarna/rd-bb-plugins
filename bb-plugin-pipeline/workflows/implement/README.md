@@ -48,7 +48,7 @@ One cycle over the landed change, where reviewers and QA see the whole picture:
 
    Prepare from the actual reviewed diff, the approved plan (or agreed short design), and the implementation ledger. Plan at most eight steps, usually five to eight and fewer for small changes. Explain the resulting behavior, important code paths and responsibilities, and every meaningful deviation from the plan: what changed, why, and its consequences. Distinguish verified behavior from what still awaits QA.
 
-   Start with step 1 in the same message that announces the implementation is ready to walk through. Use `/show-me` at each step: focused code snippets, diagrams, or other visuals where they aid understanding. Present one step per turn, then wait for the user to ask to continue. Answer questions within the current step; never dump the remaining steps or advance on silence.
+   Start with step 1 in the same user-facing chat reply that announces the implementation is ready to walk through. Use `/show-me` at each step: focused code snippets, diagrams, or other visuals where they aid understanding. Present one step per chat turn, then wait for the user's reply in the thread. The card records only the stage and waiting reason. Answer questions within the current step; never dump the remaining steps or advance on silence.
 
    `bb pipeline report --column reviewing --needs-you "implementation walkthrough; step N of M"`
 
