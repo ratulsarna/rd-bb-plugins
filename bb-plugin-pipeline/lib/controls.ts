@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginThreadEventPayloads } from "@get-bb/plugin-sdk";
 import { ownerThread, PAUSE_DELIVERY_PENDING, requireStarted } from "./card";
-import { pauseInstruction, resumeInstruction } from "./control-prompts";
+import { isResumeInstruction, pauseInstruction, resumeInstruction } from "./control-prompts";
 import type { Card, CardPatch, CardStore } from "./store";
 import type { PipelineService } from "./service";
 import { createTaskThreads, isThreadNotFound, type TaskThread } from "./task-threads";
@@ -222,7 +222,8 @@ export function createPipelineControls(
           const thread = await currentOwner(card);
           const queue = await bb.sdk.threads.queue.list();
           const delivered = (await tasks.occupied(card.id)).length > 0 || queue.some((entry) =>
-            entry.threadId === thread?.id && (thread.status === "pending" || containsInstruction(entry, resumeInstruction(card))));
+            entry.threadId === thread?.id && (thread.status === "pending" ||
+              (entry.content.length === 1 && entry.content[0]?.type === "text" && isResumeInstruction(card, entry.content[0].text))));
           const current = required(card.id);
           if (current.runState !== "running" || current.pauseRequestId !== card.pauseRequestId) continue;
           update(card.id, delivered || current.column === "done"

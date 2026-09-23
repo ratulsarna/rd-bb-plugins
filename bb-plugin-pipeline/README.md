@@ -60,7 +60,7 @@ The lead runs `bb pipeline review-wait` after opening a draft PR, then ends its 
 
 Clean conclusions must refer to the current commit through GitHub review metadata or a standalone `Reviewed commit:` / `Reviewed revision:` label containing its full or abbreviated hash (at least seven characters). Jev interprets the verdict separately from this check. Findings take priority over a clean summary; progress updates in the same batch do not override an explicit clean conclusion. Informational updates and conversational comments preserve the review state; new findings, review activity, withdrawals, and commits still update it.
 
-New findings produce one feedback batch sent to the existing lead through BB’s queue. With automatic follow-ups disabled in Settings, findings wait for your triage; **Send to lead** explicitly permits that batch. Turning automatic follow-ups off also holds queued automatic feedback, without interrupting an already running lead. Pause, machine availability, and the configured task limit apply. The lead triages findings under the close-out skill, verifies justified fixes, and runs `review-wait --handled <batch-id>` before ending its turn. A new revision requests another review; answered findings without a code change do not. Pending feedback survives reload, and failed or cancelled delivery has a Retry review action. If a send response is lost, check the lead before retrying an unconfirmed delivery.
+New findings produce one feedback batch sent to the existing lead through BB’s queue. With automatic follow-ups disabled in Settings, findings wait for your triage; **Send to lead** explicitly permits that batch. Turning automatic follow-ups off also holds queued automatic feedback, without interrupting an already running lead. Pause, machine availability, and the configured task limit apply. The lead triages findings under the close-out workflow, verifies justified fixes, and runs `review-wait --handled <batch-id>` before ending its turn. A new revision requests another review; answered findings without a code change do not. Pending feedback survives reload, and failed or cancelled delivery has a Retry review action. If a send response is lost, check the lead before retrying an unconfirmed delivery.
 
 Clean or settled review asks for your merge decision. Sync moves a task to Done when its PR merges; a PR closed without merging needs your decision. Sync preserves manual stage changes and never reopens Done tasks. Replacing the PR link invalidates old queued feedback. Done describes delivery: remaining agents still consume capacity and remain visible and stoppable.
 
@@ -142,9 +142,19 @@ The BB server needs `gh` installed and authenticated because Pipeline reads the 
 
 The Jev key is optional. Without it, an unsignalled lead idle is shown as `Idle · awaiting status` rather than guessed.
 
-## Workflow skills
+## Workflow documents
 
-All threads receive `pipeline`, which documents board operations. Intake threads also receive `pipeline-intake`. Lead threads receive the forked `pipeline-plan`, `pipeline-implement`, `pipeline-close-out`, and `pipeline-debug` workflow skills. Their upstream revision and local edits are recorded in [VENDOR.md](./VENDOR.md).
+The Pipeline workflow lives in plugin-owned documents under `workflows/`, stored on the BB server and read with:
+
+```text
+bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]
+```
+
+With no phase, `instructions` reads the overview (`workflows/README.md`): roles, sizing, and the phase map. Each phase reads its `workflows/<phase>/README.md`, and `--file <relative-path>` reads a supporting file under that phase, such as a worker template dispatched during implementation. Documents are only read through this command, never from the task's host checkout. The intake kickoff reads `intake`; the lead reads `overview` and then the phase its kind and tier call for; after an approved plan it reads `implement`; a review follow-up reads `close-out`. After the user approves a transition, the thread reads the next phase and continues — no separate slash command is needed.
+
+Board operations stay in the general `pipeline` skill, invoked explicitly when a thread works the board.
+
+The workflow documents are forks of Nexus. Their upstream revision and local edits are recorded in [VENDOR.md](./VENDOR.md).
 
 ## Development
 

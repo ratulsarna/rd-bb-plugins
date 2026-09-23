@@ -210,29 +210,6 @@ export default async function plugin(bb: BbPluginApi) {
     service.onThreadGone(thread),
   );
 
-  bb.agents.configure((context) => {
-    const role =
-      context.origin.pluginId === bb.pluginId
-        ? context.pluginMetadata.role
-        : undefined;
-    if (role === "lead") {
-      return {
-        tools: [],
-        skills: [
-          "pipeline",
-          "pipeline-plan",
-          "pipeline-implement",
-          "pipeline-close-out",
-          "pipeline-debug",
-        ],
-      };
-    }
-    if (role === "intake") {
-      return { tools: [], skills: ["pipeline", "pipeline-intake"] };
-    }
-    return { tools: [], skills: ["pipeline"] };
-  });
-
   bb.background.schedule("github-sync", "* * * * *", () => github.poll());
   bb.background.service("startup-pass", {
     async start(signal) {

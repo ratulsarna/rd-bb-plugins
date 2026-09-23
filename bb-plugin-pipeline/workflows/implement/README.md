@@ -1,15 +1,10 @@
----
-name: pipeline-implement
-description: Build an approved plan, review the change, walk the user through the implementation, then run QA.
----
-
 # Pipeline: Implement
 
 ## Dispatch
 
 `bb pipeline report --column implementing --working`
 
-A worker whose job has a template in `templates/` starts from it: read the file at dispatch time and fill only its `<<blanks>>`. A statement about what the code does today ("X already does Y") carries the file:line you opened at dispatch. If you have not opened it, hand it to the worker as something to check, not as a fact.
+A worker whose job has a template under `templates/` starts from it: read the file with `bb pipeline instructions implement --file templates/<name>.md` at dispatch time and fill only its `<<blanks>>`; the developer worker's template is `bb pipeline instructions implement --file templates/developer.md`. A statement about what the code does today ("X already does Y") carries the file:line you opened at dispatch. If you have not opened it, hand it to the worker as something to check, not as a fact.
 
 - Work happens on a work branch off the base branch in `run.md`.
 - Never run parallel workers over the same files.
@@ -38,7 +33,7 @@ One cycle over the landed change, where reviewers and QA see the whole picture:
 2. **Triage by severity.** Reconcile findings by evidence. The loop continues only on P1 or P2 correctness findings. P3 and polish are batched, judged together on whether each fix is worth its cost in code, and the ones worth taking ride along with required fixes in at most one round; a P3 alone never buys a round. A finding is set aside only when evidence shows it invalid, recorded in the ledger; a recurring finding without new evidence is resolved by that record, not by a new round.
 3. **Step back** when any of these fire: round 3 of this loop is about to start; the same finding across two rounds contests the approach; a reviewer cites how sibling code handles the same concern; the size line is out of range.
 
-   Between the agents: stop fixing. The lead rethinks, which choice the findings trace back to, whether the approach is wrong, and what shape the problem needs, and writes that down as a short note with the round history. A fresh Oracle session from `templates/oracle.md` gets the note, the plan, the diff, and the history, and one question: is this diagnosis right, and is that the shape the problem needs. Act on the answer. The rethought change is reviewed again; the round count carries on. One rethink per loop.
+   Between the agents: stop fixing. The lead rethinks, which choice the findings trace back to, whether the approach is wrong, and what shape the problem needs, and writes that down as a short note with the round history. A fresh Oracle session from `bb pipeline instructions implement --file templates/oracle.md` gets the note, the plan, the diff, and the history, and one question: is this diagnosis right, and is that the shape the problem needs. Act on the answer. The rethought change is reviewed again; the round count carries on. One rethink per loop.
 
    Told to the user, work goes on: after the rethink, what the rounds found, what the fresh Oracle said, and what changed.
 
@@ -60,9 +55,9 @@ One cycle over the landed change, where reviewers and QA see the whole picture:
    Keep the step outline, current step, reviewed commit, and approval status in `run.md`; after a context reset, resume from that record. Only an explicit go after the final step releases this gate for QA, or close-out for trivial work already verified inline. Earlier permission to implement or to advance one step does not approve the remainder.
 
    Requested changes return to the owning worker and the review gates above. Once clear, revisit the affected walkthrough steps and obtain approval for the updated result. Later QA or PR-review fixes that materially change behavior, design, scope, or an explained deviation also reopen the affected steps before proceeding to close-out; unchanged steps need not repeat.
-6. **QA worker** from `templates/qa.md`, after the user approves the implementation walkthrough. Give it the flows as the plan named them, not implementation reasoning. It designs its own steps within that and exercises real behavior, with whatever real-system tools are reachable. Findings are blocking: the owning worker fixes, the same QA session re-runs, and QA never changes code. A pass with any criterion not reached is partial, not clear: the unreached criteria run again after the blocker is fixed, or the user waives them, recorded in `run.md`.
+6. **QA worker** from `bb pipeline instructions implement --file templates/qa.md`, after the user approves the implementation walkthrough. Give it the flows as the plan named them, not implementation reasoning. It designs its own steps within that and exercises real behavior, with whatever real-system tools are reachable. Findings are blocking: the owning worker fixes, the same QA session re-runs, and QA never changes code. A pass with any criterion not reached is partial, not clear: the unreached criteria run again after the blocker is fixed, or the user waives them, recorded in `run.md`.
    `bb pipeline report --column qa --working`
    When QA sends it back: `bb pipeline report --column implementing --working`
 7. **Acceptance.** The lead maps the verified behavior back to the ticket; code review and walkthrough approval do not substitute for this judgment.
 
-**Exit:** all gates clear → `pipeline-close-out`.
+**Exit:** all gates clear → `bb pipeline instructions close-out`.

@@ -269,11 +269,14 @@ describe("graceful task controls", () => {
     expect(s.card()).toMatchObject({ runState: "running", pauseRequestId: null, controlError: null });
     expect(s.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
 
-    s.store.update("card", { runState: "running", pauseRequestId: "reply-lost" });
-    s.queue.push(makeQueueEntry({ threadId: "lead", content: [{ type: "text", text: resumeInstruction(s.card()), mentions: [] }] }));
-    await recovered.startup();
-    expect(s.card()).toMatchObject({ runState: "running", pauseRequestId: null, controlError: null });
-    expect(s.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+    const legacyResume = "Resume Pipeline task card from its pause handoff in this conversation. Inspect the existing workspace and worker state, then continue the interrupted task from where it stopped. Coordinate existing workers and preserve work already completed. If you still need a user decision, report that instead of guessing.";
+    for (const text of [legacyResume, resumeInstruction(s.card())]) {
+      s.store.update("card", { runState: "running", pauseRequestId: "reply-lost" });
+      s.queue.splice(0, s.queue.length, makeQueueEntry({ threadId: "lead", content: [{ type: "text", text, mentions: [] }] }));
+      await recovered.startup();
+      expect(s.card()).toMatchObject({ runState: "running", pauseRequestId: null, controlError: null });
+      expect(s.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+    }
 
     s.queue.splice(0);
     s.busy.add("lead");

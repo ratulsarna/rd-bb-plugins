@@ -11,14 +11,7 @@ import plugin from "../server";
 import { createCardStore, type Card } from "../lib/store";
 import { makeCheckoutEnvironment, testCatalogProviders, testProviderModels } from "./sdk-fake";
 
-const skillIds = [
-  "pipeline",
-  "pipeline-intake",
-  "pipeline-plan",
-  "pipeline-implement",
-  "pipeline-close-out",
-  "pipeline-debug",
-];
+const skillIds = ["pipeline"];
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
@@ -715,27 +708,18 @@ describe("plugin wiring", () => {
     expect(shown.card.hostId).toBe("host_wt5difpwsy");
   });
 
-  it("selects role-specific skills with an explicit empty tool set", async () => {
+  it("exposes only the board skill without injected instructions for ordinary, intake, and lead threads", async () => {
     const { host } = await setup();
-    const base = makePluginAgentConfigurationContext({
-      origin: { kind: null, pluginId: "pipeline" },
-    });
-
-    await expect(
-      host.harness.behavior.resolveAgentConfiguration({
-        ...base,
-        pluginMetadata: { role: "intake" },
-      }),
-    ).resolves.toMatchObject({ tools: [], skills: ["pipeline", "pipeline-intake"] });
-    await expect(
-      host.harness.behavior.resolveAgentConfiguration({
-        ...base,
-        pluginMetadata: { role: "lead" },
-      }),
-    ).resolves.toMatchObject({
-      tools: [],
-      skills: ["pipeline", "pipeline-plan", "pipeline-implement", "pipeline-close-out", "pipeline-debug"],
-    });
+    for (const role of [undefined, "intake", "lead"]) {
+      await expect(
+        host.harness.behavior.resolveAgentConfiguration(
+          makePluginAgentConfigurationContext({
+            origin: { kind: null, pluginId: role === undefined ? null : "pipeline" },
+            pluginMetadata: role === undefined ? {} : { role },
+          }),
+        ),
+      ).resolves.toEqual({ tools: [], skills: skillIds, instructions: null });
+    }
   });
 
   it("shows card history when owner interactions are unavailable", async () => {

@@ -14,8 +14,10 @@ import type { GithubSync } from "./github-sync";
 import { ownerThread } from "./card";
 import type { MachineQueue } from "./contract";
 import type { Card, CardAttachment, CardStore } from "./store";
+import { readWorkflow } from "./workflow";
 
 const USAGE = `Usage:
+  bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]
   bb pipeline add --title <text> --machine <id-or-name> [--no-start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>] [--json]
   bb pipeline start <card-id> [--json]
   bb pipeline list [--project <id>] [--all] [--json]
@@ -62,6 +64,7 @@ const VALUE_OPTIONS = new Set([
   "tier",
   "paused",
   "handled",
+  "file",
 ]);
 const BOOLEAN_OPTIONS = new Set(["json", "all", "working", "clear", "no-start"]);
 const MACHINE_COMMANDS = new Set(["add", "set-machine"]);
@@ -236,6 +239,7 @@ export function createPipelineCli(input: {
     name: "pipeline",
     summary: "Manage pipeline cards and report delivery progress",
     commands: [
+      { name: "instructions", summary: "Read Pipeline workflow instructions or a phase template", usage: "bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]" },
       { name: "add", summary: "Add a card", usage: "bb pipeline add --title <text> --machine <id-or-name> [options]" },
       { name: "start", summary: "Start intake for a saved task", usage: "bb pipeline start <card-id> [--json]" },
       { name: "list", summary: "List cards", usage: "bb pipeline list [--project <id>] [--all] [--json]" },
@@ -282,9 +286,17 @@ export function createPipelineCli(input: {
       if (args.options.has("paused") && args.command !== "report") return failure("--paused is only accepted by report", USAGE);
       if (args.options.has("clear") && args.command !== "run-next") return failure("--clear is only accepted by run-next", USAGE);
       if (args.options.has("no-start") && args.command !== "add") return failure("--no-start is only accepted by add", USAGE);
+      if (args.options.has("file") && args.command !== "instructions") return failure("--file is only accepted by instructions", USAGE);
 
       try {
         switch (args.command) {
+          case "instructions": {
+            if (args.positionals.length > 1 || [...args.options.keys()].some((name) => name !== "file" && name !== "json")) {
+              return failure("instructions accepts one optional phase, --file, and --json", USAGE);
+            }
+            const document = await readWorkflow(args.positionals[0], option(args, "file"));
+            return success(args, document, document.content);
+          }
           case "add": {
             const title = option(args, "title");
             if (title === undefined || args.positionals.length > 0) {

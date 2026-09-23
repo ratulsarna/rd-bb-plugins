@@ -12,7 +12,7 @@ afterEach(async () => { while (hosts.length) await hosts.pop()!.harness.lifecycl
 async function setup(stored: Record<string, string> = {}) {
   const host = createFakePluginHost({
     pluginId: "pipeline", settings: { jevApiKey: "test-secret", serviceTier: "fast", ...stored },
-    agentSkillIds: ["pipeline", "pipeline-intake", "pipeline-plan", "pipeline-implement", "pipeline-close-out", "pipeline-debug"],
+    agentSkillIds: ["pipeline"],
     sdk: {
       hosts: { list: async () => [makeHostResponse({ id: "machine", status: "connected" })] },
       projects: { get: async () => ({ id: "project", sources: [{ type: "local_path", hostId: "machine", path: "/repo" }] }) as never },

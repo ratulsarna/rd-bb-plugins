@@ -1,5 +1,6 @@
 ---
 name: pipeline
+disable-model-invocation: true
 description: "Work the pipeline board: add, start, list, show, move, pause, and resume tasks. Specify a machine; optionally choose separate intake and lead models and reasoning. Upload attachments first."
 ---
 
@@ -8,6 +9,8 @@ description: "Work the pipeline board: add, start, list, show, move, pause, and 
 Every task is a card on the pipeline board: a title, a note, a machine, attachments, and a column. The columns, in order: `backlog`, `todo`, `planning`, `plan_ready`, `implementing`, `reviewing`, `qa`, `pr`, `pr_ready`, `done`. Adding a card launches intake unless `--no-start` is supplied. A saved task creates no thread or queued message until explicitly started.
 
 ## Commands
+
+- `bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>]` — read the workflow document or phase template when working on a Pipeline task.
 
 - `bb pipeline add --title <t> --machine <id-or-name> [--no-start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project.
 - `bb pipeline start <card-id>` — start intake for a saved task using its stored machine, models, notes, and attachments. Repeated Start requests do not launch again; use Retry after a failed start.
@@ -66,7 +69,7 @@ Run next is a preference, not a start-order guarantee: concurrent queue claims c
 
 ## External PR review
 
-Link one PR with `report --pr <url>`. Pipeline reads GitHub status and uses Jev to classify new review text from bots or humans. A feedback batch is delivered to the existing lead through BB's queue, respecting capacity and pause. Follow `pipeline-close-out` when handling it. Acknowledge the exact batch with `review-wait --handled <batch-id>` after triage; material fixes still require the existing walkthrough/review/QA gates.
+Link one PR with `report --pr <url>`. Pipeline reads GitHub status and uses Jev to classify new review text from bots or humans. A feedback batch is delivered to the existing lead through BB's queue, respecting capacity and pause. Read `bb pipeline instructions close-out` and follow its feedback process when handling it. Acknowledge the exact batch with `review-wait --handled <batch-id>` after triage; material fixes still require the existing walkthrough/review/QA gates.
 
 Awaiting review is an expected idle state. End the turn and pause or finish any autonomous goal instead of polling GitHub. Clean or answered review surfaces the user's merge decision. CI is displayed but is not a handoff requirement. Sync marks merged tasks Done; other GitHub changes do not move stages or reopen completed tasks. Remaining runtime work retains its capacity slot and can be stopped from task details.
 
