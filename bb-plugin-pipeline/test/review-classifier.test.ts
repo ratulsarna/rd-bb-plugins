@@ -21,6 +21,7 @@ function response(
   findings: number,
   cleanCurrentRevision: number,
   waiting: number,
+  informational = 0.05,
 ) {
   return new Response(
     JSON.stringify({
@@ -32,6 +33,7 @@ function response(
           noul: cleanCurrentRevision,
         },
         waiting: { type: "noul", noul: waiting },
+        informational: { type: "noul", noul: informational },
       },
     }),
     { status: 200, headers: { "content-type": "application/json" } },
@@ -116,6 +118,18 @@ describe("review classifier", () => {
   it.each([0.37, 0.95])("does not let progress=%s veto an explicit clean verdict", async (waiting) => {
     await expect(classify(vi.fn(async () => response(0.05, 0.94, waiting))))
       .resolves.toEqual({ decision: "clear", probability: 0.94 });
+  });
+
+  it("distinguishes an informational completion from a new verdict, without masking findings or withdrawal", async () => {
+    await expect(classify(vi.fn(async () => response(0.05, 0.05, 0.8, 0.95))))
+      .resolves.toEqual({ decision: "informational", probability: 0.95 });
+    await expect(classify(vi.fn(async () => response(0.95, 0.05, 0.8, 0.95))))
+      .resolves.toEqual({ decision: "feedback", probability: 0.95 });
+    await expect(classify(vi.fn(async () => response(0.5, 0.05, 0.8, 0.95))))
+      .resolves.toEqual({ decision: "unknown", probability: 0.5 });
+    await expect(classify(vi.fn(async () => response(0.05, 0.05, 0.95, 0.95)), {
+      feedback: [feedback({ state: "DISMISSED" })],
+    })).resolves.toEqual({ decision: "waiting", probability: 0.95 });
   });
 
   const head = "7116d57764d244f4a7bdf43a645e4a13575cfca9";

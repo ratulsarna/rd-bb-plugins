@@ -63,6 +63,7 @@ describe("GitHub review handoff", () => {
       findings: { type: "noul", noul: 0.05 },
       clean_current_revision: { type: "noul", noul: clean },
       waiting: { type: "noul", noul: 0.8 },
+      informational: { type: "noul", noul: 0.05 },
     } })));
     s.classify.mockImplementation((args) => classifyReview({ ...args, fetch }));
     await s.sync.poll();
@@ -104,6 +105,48 @@ describe("GitHub review handoff", () => {
     await s.sync.poll();
     expect(s.classify).toHaveBeenCalledTimes(2);
     expect(s.card().github).toMatchObject({ review: "waiting", reviewDecision: "REVIEW_REQUIRED" });
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("preserves settled review across a late completion summary, but still delivers later findings", async () => {
+    const s = setup();
+    const clean = feedback({ id: "clean", kind: "review", state: "APPROVED", body: "No issues found." });
+    s.change({ feedback: [clean] });
+    s.classify.mockResolvedValueOnce({ decision: "clear", probability: .95 });
+    await s.sync.poll();
+    const summary = feedback({ id: "summary", kind: "comment", commitSha: null, body: "Code review: Completed" });
+    s.change({ feedback: [clean, summary] });
+    s.classify.mockResolvedValueOnce({ decision: "informational", probability: .95 });
+    await s.sync.poll();
+    expect(s.card().github?.review).toBe("clear");
+    expect(s.notify).toHaveBeenCalledTimes(1);
+    expect(s.send).not.toHaveBeenCalled();
+    s.change({ feedback: [clean, summary, feedback({ id: "new-finding" })] });
+    await s.sync.poll();
+    expect(s.card().github).toMatchObject({ review: "feedback", followup: "queued" });
+    expect(s.send).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a pending review quiet when a teammate posts conversational feedback", async () => {
+    const s = setup();
+    await s.sync.waitForReview("card", "lead");
+    s.change({ feedback: [feedback({ kind: "comment", commitSha: null, body: "Nice work!" })] });
+    s.classify.mockResolvedValueOnce({ decision: "informational", probability: .95 });
+    await s.sync.poll();
+    expect(s.card().github).toMatchObject({ review: "waiting", followup: null });
+    expect(s.notify).not.toHaveBeenCalled();
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("does not make an informational summary settle a new revision", async () => {
+    const s = setup();
+    s.change({ feedback: [feedback({ kind: "review", body: "No findings" })] });
+    s.classify.mockResolvedValueOnce({ decision: "clear", probability: .95 });
+    await s.sync.poll();
+    s.change({ headSha: "def", feedback: [feedback({ id: "summary", kind: "comment", commitSha: null, body: "Review: Completed" })] });
+    s.classify.mockResolvedValueOnce({ decision: "informational", probability: .95 });
+    await s.sync.poll();
+    expect(s.card().github).toMatchObject({ review: "waiting", headSha: "def" });
     expect(s.send).not.toHaveBeenCalled();
   });
 
