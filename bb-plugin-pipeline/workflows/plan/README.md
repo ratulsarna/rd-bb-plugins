@@ -1,14 +1,8 @@
----
-name: pipeline-plan
-disable-model-invocation: true
-description: The lead grounds in the code, syncs with the user on the task, shapes the design with the Oracle, and walks the user through the plan before any coding. Use when an approved spec is ready to build.
----
-
 # Pipeline: Plan
 
 ## Ground
 
-Create `run.md` per `references/pipeline-README.md` first. Then learn how the relevant behavior works today, where responsibility lives, and which existing patterns fit. Spawn as many workers in parallel as the task needs, wide or deep, each returning evidence with file:line. A worker's summary is a pointer; the lead reads what it points at before planning on it.
+Create `run.md` per `bb pipeline instructions overview` first. Then learn how the relevant behavior works today, where responsibility lives, and which existing patterns fit. Spawn as many workers in parallel as the task needs, wide or deep, each returning evidence with file:line. A worker's summary is a pointer; the lead reads what it points at before planning on it.
 
 ## Understand, with the user
 
@@ -20,7 +14,7 @@ Tell the user what you understand the task to be, checked against what your rese
 
 ## Shape
 
-Lay out the real ways to build it; your first idea is one of them, not the default. Open the Oracle session with the brief in `templates/oracle.md`; it stays up for the whole run, and from there it is a conversation. Then a blind Oracle round: the ticket and the agreed picture, nothing of yours, and the question: how would you build this. From there, work it out as a duo: put your ways next to its approach, challenge each other's assumptions, and hash out the best-designed solution together. Every claim either side makes ends in evidence from the repo or a change of mind; a reply without a read list is not a round. The lead has the final say. If the design work shows that what you and the user agreed the task to be was wrong, go back to the user before going on.
+Lay out the real ways to build it; your first idea is one of them, not the default. Open the Oracle session with the brief in `bb pipeline instructions plan --file templates/oracle.md`; it stays up for the whole run, and from there it is a conversation. Then a blind Oracle round: the ticket and the agreed picture, nothing of yours, and the question: how would you build this. From there, work it out as a duo: put your ways next to its approach, challenge each other's assumptions, and hash out the best-designed solution together. Every claim either side makes ends in evidence from the repo or a change of mind; a reply without a read list is not a round. The lead has the final say. If the design work shows that what you and the user agreed the task to be was wrong, go back to the user before going on.
 
 The lead writes `plan.md` as the design settles; the Oracle reads and challenges each draft. Shape ends when the Oracle has no objection left to the written plan that is not answered with evidence, taken into the plan, or ruled on by the lead.
 
@@ -36,7 +30,7 @@ The plan contract. Written for the worker who builds from it; go as deep as the 
 - acceptance-criteria mapping back to the spec;
 - risk notes; rollback where relevant.
 
-Every item resolved; "TBD" or "handle later" is a gap the worker fills by guessing. Plans describe the change, never the process: gates, review, and delivery live in these skills, and a worker given process in a plan follows the plan.
+Every item resolved; "TBD" or "handle later" is a gap the worker fills by guessing. Plans describe the change, never the process: gates, review, and delivery live in the workflow documents, and a worker given process in a plan follows the plan.
 
 Artifact: `plan.md` at `~/.ai/artifacts/<project>/YYYY-MM-DD-<topic>/`.
 
@@ -50,4 +44,4 @@ Tell the user the plan is ready, and nothing more. Then walk them through it one
 
 `bb pipeline report --needs-you "walkthrough step N of M"`
 
-**Exit:** the user gives the go after the last step → `pipeline-implement`.
+**Exit:** the user gives the go after the last step → read `bb pipeline instructions implement` and continue in this thread; no separate slash command is needed.

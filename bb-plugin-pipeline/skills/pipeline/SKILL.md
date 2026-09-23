@@ -10,6 +10,8 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 
 ## Commands
 
+- `bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>]` — read the workflow document or phase template when working on a Pipeline task.
+
 - `bb pipeline add --title <t> --machine <id-or-name> [--no-start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project.
 - `bb pipeline start <card-id>` — start intake for a saved task using its stored machine, models, notes, and attachments. Repeated Start requests do not launch again; use Retry after a failed start.
 - `bb pipeline set-machine <card-id> --machine <id-or-name>` — assign a machine to a card that has none. An assigned machine cannot be changed.
@@ -67,7 +69,7 @@ Run next is a preference, not a start-order guarantee: concurrent queue claims c
 
 ## External PR review
 
-Link one PR with `report --pr <url>`. Pipeline reads GitHub status and uses Jev to classify new review text from bots or humans. A feedback batch is delivered to the existing lead through BB's queue, respecting capacity and pause. Follow `pipeline-close-out` when handling it. Acknowledge the exact batch with `review-wait --handled <batch-id>` after triage; material fixes still require the existing walkthrough/review/QA gates.
+Link one PR with `report --pr <url>`. Pipeline reads GitHub status and uses Jev to classify new review text from bots or humans. A feedback batch is delivered to the existing lead through BB's queue, respecting capacity and pause. Read `bb pipeline instructions close-out` and follow its feedback process when handling it. Acknowledge the exact batch with `review-wait --handled <batch-id>` after triage; material fixes still require the existing walkthrough/review/QA gates.
 
 Awaiting review is an expected idle state. End the turn and pause or finish any autonomous goal instead of polling GitHub. Clean or answered review surfaces the user's merge decision. CI is displayed but is not a handoff requirement. Sync marks merged tasks Done; other GitHub changes do not move stages or reopen completed tasks. Remaining runtime work retains its capacity slot and can be stopped from task details.
 

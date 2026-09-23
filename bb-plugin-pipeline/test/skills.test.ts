@@ -9,6 +9,7 @@ describe("skill frontmatter", () => {
     const skillFiles = readdirSync(skillsDirectory, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => join(skillsDirectory, entry.name, "SKILL.md"));
+    expect(skillFiles.map((file) => basename(join(file, "..")))).toEqual(["pipeline"]);
 
     for (const skillFile of skillFiles) {
       const contents = readFileSync(skillFile, "utf8");

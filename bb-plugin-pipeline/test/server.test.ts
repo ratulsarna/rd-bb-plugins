@@ -11,14 +11,7 @@ import plugin from "../server";
 import { createCardStore, type Card } from "../lib/store";
 import { makeCheckoutEnvironment, testCatalogProviders, testProviderModels } from "./sdk-fake";
 
-const skillIds = [
-  "pipeline",
-  "pipeline-intake",
-  "pipeline-plan",
-  "pipeline-implement",
-  "pipeline-close-out",
-  "pipeline-debug",
-];
+const skillIds = ["pipeline"];
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
@@ -715,7 +708,7 @@ describe("plugin wiring", () => {
     expect(shown.card.hostId).toBe("host_wt5difpwsy");
   });
 
-  it("exposes the same skills without injected instructions for ordinary, intake, and lead threads", async () => {
+  it("exposes only the board skill without injected instructions for ordinary, intake, and lead threads", async () => {
     const { host } = await setup();
     for (const role of [undefined, "intake", "lead"]) {
       await expect(
