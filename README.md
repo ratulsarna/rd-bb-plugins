@@ -10,7 +10,6 @@ Personal plugins for [bb](https://github.com/ymichael/bb).
 - [`bb-plugin-claude-accounts`](./bb-plugin-claude-accounts): switch Claude Code accounts on selected machines from any BB browser.
 - [`bb-plugin-favorites`](./bb-plugin-favorites) — save machine / harness / model setups and open New Thread already set to them.
 - [`bb-plugin-notify`](./bb-plugin-notify) — get BB thread notifications on macOS and iPhone Home Screen PWAs.
-- [`bb-plugin-sam-scribe`](./bb-plugin-sam-scribe) — run Sam's scribe when a Sam thread goes quiet, so the daily journal keeps up.
 - [`bb-plugin-pipeline`](./bb-plugin-pipeline) — run intake, planning, implementation, review, QA, and PR work from one project board.
 
 ## Development
