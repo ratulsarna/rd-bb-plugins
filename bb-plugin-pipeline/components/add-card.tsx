@@ -210,11 +210,11 @@ export function AddCard(props: {
                 <Dialog.Close asChild>
                   <button type="button" className="pipeline-button pipeline-ghost" disabled={pending}>Cancel</button>
                 </Dialog.Close>
-                <button type="submit" data-intent="save" className="pipeline-button" disabled={submitBlocked}>
+                <button type="submit" data-intent="save" className="pipeline-button pipeline-primary" disabled={submitBlocked}>
                   <Icon name={pendingIntent === "save" && pending ? "Loading" : "Plus"} className={pendingIntent === "save" && pending ? "pipeline-spin" : ""} />
                   Save
                 </button>
-                <button type="submit" data-intent="start" className="pipeline-button pipeline-primary" disabled={submitBlocked}>
+                <button type="submit" data-intent="start" className="pipeline-button" disabled={submitBlocked}>
                   <Icon name={pendingIntent === "start" && pending ? "Loading" : "Play"} className={pendingIntent === "start" && pending ? "pipeline-spin" : ""} />
                   Save and start
                 </button>

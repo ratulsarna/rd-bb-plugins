@@ -172,6 +172,7 @@ describe("card execution", () => {
       expect(card.intake).toEqual(intake);
       expect(card.lead).toEqual(lead);
       expect(card.startRequested).toBe(true);
+      expect(card.column).toBe("todo");
       expect(createCardStore(db).get(card.id)).toMatchObject({ intake, lead });
     } finally {
       db.close();
@@ -195,6 +196,7 @@ describe("card execution", () => {
       });
 
       expect(saved.startRequested).toBe(false);
+      expect(saved.column).toBe("backlog");
       expect(createCardStore(db).get(saved.id)?.startRequested).toBe(false);
       store.update(saved.id, { startRequested: true });
       expect(createCardStore(db).get(saved.id)?.startRequested).toBe(true);

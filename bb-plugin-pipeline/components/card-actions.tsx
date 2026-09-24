@@ -125,7 +125,7 @@ export function CardActions(
               props.onAction?.();
             }}
           >
-            {COLUMNS.map((column) => (
+            {COLUMNS.filter((column) => column !== "backlog" || !card.startRequested).map((column) => (
               <option key={column} value={column}>{COLUMN_LABELS[column]}</option>
             ))}
           </select>

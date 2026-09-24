@@ -28,7 +28,7 @@ import type {
   CardStore,
   HistoryInput,
 } from "./store";
-import { ownerThread, requireStarted, roleThread } from "./card";
+import { ownerThread, rejectBacklog, requireStarted, roleThread } from "./card";
 import { userAttentionReason, type AttentionCategory } from "./notifications";
 import { normalizePullRequestUrl } from "./github";
 import {
@@ -373,6 +373,7 @@ export function createPipelineService(
   ): Promise<Card> => {
     const before = required(cardId);
     requireStarted(before, "moving it");
+    rejectBacklog(column);
     requireRunning(before, "moving it");
     if (column === "planning" && normalizeIssueUrl(before.issueUrl) === null) {
       throw new Error(MISSING_ISSUE_ERROR);
@@ -604,25 +605,8 @@ export function createPipelineService(
     }
     if (thread.activeBackgroundAgentCount > 0) return;
     if (role === "intake") {
-      const nextColumn = initial.column === "backlog" ? "todo" : initial.column;
-      if (initial.reportSignal === "needs_you") {
-        if (nextColumn !== initial.column) {
-          update(
-            initial.id,
-            { column: nextColumn },
-            {
-              kind: "moved",
-              fromColumn: initial.column,
-              toColumn: nextColumn,
-              source: "system",
-              threadId,
-            },
-          );
-        }
-        return;
-      }
+      if (initial.reportSignal === "needs_you") return;
       if (
-        initial.column === nextColumn &&
         sameAttention(initial, {
           needsUser: true,
           attentionReason: "intake is waiting for you",
@@ -635,26 +619,17 @@ export function createPipelineService(
       update(
         initial.id,
         {
-          column: nextColumn,
           needsUser: true,
           attentionReason: "intake is waiting for you",
           attentionSource: "system",
           attentionUnknown: false,
         },
-        initial.column === "backlog"
-          ? {
-              kind: "moved",
-              fromColumn: "backlog",
-              toColumn: "todo",
-              source: "system",
-              threadId,
-            }
-          : {
-              kind: "attention",
-              source: "system",
-              threadId,
-              note: "intake is waiting for you",
-            },
+        {
+          kind: "attention",
+          source: "system",
+          threadId,
+          note: "intake is waiting for you",
+        },
       );
       return;
     }
@@ -832,6 +807,7 @@ export function createPipelineService(
       card.id,
       {
         startRequested: true,
+        column: "todo",
         needsUser: false,
         attentionReason: null,
         attentionSource: null,
@@ -843,6 +819,8 @@ export function createPipelineService(
       {
         kind: "start_requested",
         source,
+        fromColumn: card.column,
+        toColumn: "todo",
       },
     );
     return doLaunch(card.id, "intake");
@@ -879,7 +857,7 @@ export function createPipelineService(
           hostId: machine.id,
           intake: selected.intake,
           lead: selected.lead,
-          startRequested: input.start !== false,
+          startRequested: input.start === true,
           title,
           body: input.body ?? "",
           attachments: input.attachments ?? [],
@@ -1064,6 +1042,7 @@ export function createPipelineService(
           `card ${card.id} is now led by ${ownerThread(card) ?? "no thread"}`,
         );
       }
+      if (input.column !== undefined) rejectBacklog(input.column);
       if (
         (!card.startRequested || card.runState !== "running") &&
         input.column !== undefined &&

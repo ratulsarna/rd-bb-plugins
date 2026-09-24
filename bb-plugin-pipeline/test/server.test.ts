@@ -182,24 +182,27 @@ describe("plugin wiring", () => {
     expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
   });
 
-  it("keeps CLI add automatic unless --no-start is supplied, and rejects misplaced save flags", async () => {
+  it("saves CLI add by default, starts with --start, and rejects unknown flags", async () => {
     const { host, db } = await setup();
     const args = ["add", "--title", "Later", "--machine", "Work laptop", "--json"];
-    const saved = await host.harness.behavior.runCli([...args, "--no-start"], { projectId: "proj_1" });
+    const saved = await host.harness.behavior.runCli(args, { projectId: "proj_1" });
     expect(saved.exitCode).toBe(0);
     const card = JSON.parse(saved.stdout) as Card;
-    expect(card.startRequested).toBe(false);
+    expect(card).toMatchObject({ column: "backlog", startRequested: false, intakeThreadId: null });
     expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
-    for (const argv of [["start", card.id, "--no-start"], ["start"], ["start", card.id, "extra"]]) {
+    const unsupported = await host.harness.behavior.runCli([...args, "--no-start"], { projectId: "proj_1" });
+    expect(unsupported.exitCode).toBe(1);
+    expect(unsupported.stderr).toContain("unknown option --no-start");
+    for (const argv of [["start", card.id, "--start"], ["start"], ["start", card.id, "extra"]]) {
       expect((await host.harness.behavior.runCli(argv)).exitCode).toBe(1);
     }
     await expect(host.harness.behavior.callRpc("addCard", {
       projectId: "proj_1", hostId: "host_wt5difpwsy", title: "Invalid", body: "", attachments: [], start: "false",
     })).rejects.toThrow();
     expect(db.prepare("SELECT count(*) AS n FROM cards").get()).toEqual({ n: 1 });
-    const added = await host.harness.behavior.runCli(args, { projectId: "proj_1" });
+    const added = await host.harness.behavior.runCli([...args, "--start"], { projectId: "proj_1" });
     expect(added.exitCode).toBe(0);
-    expect(JSON.parse(added.stdout)).toMatchObject({ startRequested: true, intakeThreadId: "intake" });
+    expect(JSON.parse(added.stdout)).toMatchObject({ column: "todo", startRequested: true, intakeThreadId: "intake" });
     expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
   });
 
@@ -247,7 +250,7 @@ describe("plugin wiring", () => {
     const { host } = await setup();
     const card = await host.harness.behavior.callRpc("addCard", {
       projectId: "proj_1", hostId: "host_wt5difpwsy", title: "Recover me", body: "Keep this context",
-      attachments: [{ path: "uploads/example.png", filename: "example.png", isImage: true }],
+      attachments: [{ path: "uploads/example.png", filename: "example.png", isImage: true }], start: true,
     }) as Card;
     host.harness.inspection.sdk.stub("threads.listRunning", async () => []);
     host.harness.inspection.sdk.stub("threads.get", async () => makeThreadResponse({ id: "intake", status: "pending", queuedMessageCount: 0 }));
@@ -516,7 +519,7 @@ describe("plugin wiring", () => {
   it("surfaces a cancelled kickoff and clears that attention when the same pending thread queues again", async () => {
     const { host } = await setup();
     const added = await host.harness.behavior.runCli(
-      ["add", "--title", "Cancelled task", "--machine", "Work laptop", "--json"],
+      ["add", "--title", "Cancelled task", "--machine", "Work laptop", "--start", "--json"],
       { projectId: "proj_1" },
     );
     const card = JSON.parse(added.stdout) as { id: string };
@@ -537,7 +540,7 @@ describe("plugin wiring", () => {
   it("reports queued child work through RPC and CLI and clears it when the message is cancelled", async () => {
     const { host } = await setup();
     const added = await host.harness.behavior.runCli(
-      ["add", "--title", "Queued task", "--machine", "Work laptop", "--json"],
+      ["add", "--title", "Queued task", "--machine", "Work laptop", "--start", "--json"],
       { projectId: "proj_1" },
     );
     const card = JSON.parse(added.stdout) as { id: string };
@@ -582,7 +585,7 @@ describe("plugin wiring", () => {
     const { host } = await setup();
 
     const result = await host.harness.behavior.runCli(
-      ["add", "--title", "Ship it", "--machine", "Work laptop", "--json"],
+      ["add", "--title", "Ship it", "--machine", "Work laptop", "--start", "--json"],
       { projectId: "proj_1" },
     );
     const cards = (await host.harness.behavior.callRpc("listCards", {
@@ -735,7 +738,7 @@ describe("plugin wiring", () => {
       },
     });
     const added = await host.harness.behavior.runCli(
-      ["add", "--title", "Deleted owner", "--machine", "host_wt5difpwsy", "--json"],
+      ["add", "--title", "Deleted owner", "--machine", "host_wt5difpwsy", "--start", "--json"],
       { projectId: "proj_1" },
     );
     const card = JSON.parse(added.stdout) as { id: string };

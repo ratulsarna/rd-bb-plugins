@@ -294,18 +294,19 @@ describe("idle policy", () => {
     expect(onAttention.mock.calls[1]![2]).toBe("failures");
   });
 
-  it("moves the first intake idle to todo and asks for the user", async () => {
+  it("keeps the intake column on idle and asks for the user", async () => {
     const { store, service } = setup();
     seed(store);
-    store.update("card_1", { intakeThreadId: "intake" });
+    store.update("card_1", { intakeThreadId: "intake", column: "reviewing" });
 
     await service.onThreadIdle(thread("intake"), "What is this about?");
 
     expect(store.get("card_1")).toMatchObject({
-      column: "todo",
+      column: "reviewing",
       needsUser: true,
       attentionReason: "intake is waiting for you",
     });
+    expect(store.history("card_1").at(-1)).toMatchObject({ kind: "attention", note: "intake is waiting for you" });
   });
 
   it("ignores intake idle after the lead owns the card", async () => {
@@ -476,6 +477,15 @@ describe("idle policy", () => {
 });
 
 describe("owner rules", () => {
+  it("rejects moving or reporting a started card into Backlog", async () => {
+    const { store, service } = setup();
+    const card = seed(store);
+    const before = store.get(card.id);
+
+    await expect(service.move(card.id, "backlog", "ui")).rejects.toThrow("Backlog only holds tasks that have not started");
+    await expect(service.report({ cardId: card.id, column: "backlog" })).rejects.toThrow("Backlog only holds tasks that have not started");
+    expect(store.get(card.id)).toEqual(before);
+  });
   it("records intake failure after lead handoff without changing attention", async () => {
     const { store, service } = setup();
     seed(store);
@@ -1163,7 +1173,7 @@ describe("held cards", () => {
 
     expect(reported).toMatchObject({
       runState: "pausing",
-      column: "backlog",
+      column: "todo",
       ownerRole: "intake",
       intakeThreadId: "intake",
       issueUrl: "https://github.com/o/r/issues/2",
@@ -1522,12 +1532,12 @@ describe("report and active state", () => {
 
     await service.report({
       threadId: "intake",
-      column: "todo",
+      column: "reviewing",
       needsYou: "Choose a target",
     });
 
     expect(store.history("card_1").slice(-2)).toMatchObject([
-      { kind: "moved", threadId: "intake", toColumn: "todo" },
+      { kind: "moved", threadId: "intake", toColumn: "reviewing" },
       { kind: "attention", threadId: "intake", note: "Choose a target" },
     ]);
   });
@@ -1636,6 +1646,7 @@ describe("execution selection", () => {
         hostId: "host_mac",
         lead: { providerId: "pi", model: "zai/missing" },
         title: "Ship it",
+        start: true,
         source: "ui",
       }),
     ).rejects.toThrow(
@@ -1661,6 +1672,7 @@ describe("execution selection", () => {
         hostId: "host_mac",
         intake: { reasoningLevel: "low" },
         title: "Ship it",
+        start: true,
         source: "cli",
       }),
     ).rejects.toThrow(
@@ -1679,6 +1691,7 @@ describe("execution selection", () => {
       projectId: "proj_1",
       hostId: "host_mac",
       title: "Ship it",
+      start: true,
       source: "cli",
     });
 
@@ -1706,6 +1719,7 @@ describe("execution selection", () => {
         hostId: "host_mac",
         intake: { providerId: "missing", model: "missing-model" },
         title: "Ship it",
+        start: true,
         source: "cli",
       }),
     ).rejects.toThrow(
@@ -1733,6 +1747,7 @@ describe("execution selection", () => {
         projectId: "proj_1",
         hostId: "host_mac",
         title: "Ship it",
+        start: true,
         source: "cli",
       }),
     ).rejects.toThrow(
@@ -1753,6 +1768,7 @@ describe("execution selection", () => {
         hostId: "host_mac",
         intake: { serviceTier: "fast" },
         title: "Ship it",
+        start: true,
         source: "ui",
       }),
     ).rejects.toThrow(
@@ -1776,6 +1792,7 @@ describe("execution selection", () => {
         projectId: "proj_1",
         hostId: "host_mac",
         title: "Ship it",
+        start: true,
         source: "cli",
       }),
     ).rejects.toThrow(
@@ -1808,6 +1825,7 @@ describe("execution selection", () => {
       intake: { providerId: "offline-provider", model: "offline-model" },
       lead: { providerId: "offline-provider", model: "offline-model" },
       title: "Ship it later",
+      start: true,
       source: "cli",
     });
 
@@ -1856,6 +1874,7 @@ describe("execution selection", () => {
       intake: { serviceTier: "fast" },
       lead: { model: "zai/glm-5.3-air", reasoningLevel: "max" },
       title: "Ship it",
+      start: true,
       source: "ui",
     });
     const captured = {
@@ -1936,6 +1955,7 @@ describe("execution selection", () => {
         reasoningLevel: "high",
       },
       title: "Ship it",
+      start: true,
       source: "cli",
     });
 
@@ -2003,6 +2023,7 @@ describe("execution selection", () => {
         hostId: "host_mac",
         [role]: selection,
         title: "Ship it",
+        start: true,
         source: "cli",
       } as Parameters<typeof service.createCard>[0]),
     ).rejects.toThrow();
@@ -2023,6 +2044,7 @@ describe("execution selection", () => {
       projectId: "proj_1",
       hostId: "host_mac",
       title: "Ship it",
+      start: true,
       source: "ui",
     });
 
@@ -2048,6 +2070,7 @@ describe("execution selection", () => {
       projectId: "proj_1",
       hostId: "host_mac",
       title: "Ship it",
+      start: true,
       source: "ui",
     });
     await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
@@ -2070,6 +2093,28 @@ describe("saved cards", () => {
     },
   ];
 
+  it("places an explicitly started card in To do before spawning intake", async () => {
+    let storeAtSpawn: ReturnType<typeof setup>["store"];
+    const { service, store, spawn } = setup({
+      spawn: async () => {
+        expect(storeAtSpawn.get("card_new")).toMatchObject({ column: "todo", startRequested: true });
+        return thread("intake");
+      },
+    });
+    storeAtSpawn = store;
+
+    const card = await service.createCard({
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Ship now",
+      start: true,
+      source: "ui",
+    });
+
+    expect(card).toMatchObject({ column: "todo", startRequested: true, intakeThreadId: "intake" });
+    expect(spawn).toHaveBeenCalledOnce();
+  });
+
   it("persists through a reopened store and startup without spawning", async () => {
     const { db, service, store, spawn, rememberExecution } = setup();
 
@@ -2077,11 +2122,11 @@ describe("saved cards", () => {
       projectId: "proj_1",
       hostId: "host_mac",
       title: "Ship later",
-      start: false,
       source: "ui",
     });
 
     expect(saved).toMatchObject({
+      column: "backlog",
       startRequested: false,
       intakeThreadId: null,
       launchError: null,
@@ -2470,9 +2515,13 @@ describe("saved cards", () => {
 
     await service.start(saved.id, "ui");
     expect(store.get(saved.id)).toMatchObject({
+      column: "todo",
       startRequested: true,
       intakeThreadId: null,
       launchError: "intake: machine offline",
+    });
+    expect(store.history(saved.id).find((entry) => entry.kind === "start_requested")).toMatchObject({
+      fromColumn: "backlog", toColumn: "todo",
     });
     await service.start(saved.id, "cli");
     expect(spawn).toHaveBeenCalledOnce();
@@ -2660,6 +2709,7 @@ describe("machine selection", () => {
           projectId: "proj_1",
           hostId,
           title: "Ship it",
+          start: true,
           source: "cli",
         }),
       ).rejects.toThrow("choose a machine for this card");
@@ -2677,6 +2727,7 @@ describe("machine selection", () => {
         projectId: "proj_1",
         hostId: "host_missing",
         title: "Ship it",
+        start: true,
         source: "cli",
       }),
     ).rejects.toThrow('unknown machine "host_missing"');
@@ -2693,6 +2744,7 @@ describe("machine selection", () => {
         projectId: "proj_1",
         hostId: "host_linux",
         title: "Ship it",
+        start: true,
         source: "cli",
       }),
     ).rejects.toThrow('unknown machine "host_linux"');
@@ -2715,6 +2767,7 @@ describe("machine selection", () => {
         projectId: "proj_1",
         hostId: "Box",
         title: "Ship it",
+        start: true,
         source: "cli",
       }),
     ).rejects.toThrow('machine "Box" is ambiguous');
@@ -2730,6 +2783,7 @@ describe("machine selection", () => {
       projectId: "proj_1",
       hostId: "host_linux",
       title: "Ship it",
+      start: true,
       source: "cli",
     });
 
@@ -2765,6 +2819,7 @@ describe("machine selection", () => {
       projectId: "proj_1",
       hostId: "host_linux",
       title: "Ship it",
+      start: true,
       source: "cli",
     });
 
