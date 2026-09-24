@@ -37,6 +37,7 @@ export function StartTaskButton(props: Pick<CardActionProps, "card" | "pending" 
   return (
     <button
       type="button"
+      data-card-control
       className="pipeline-button pipeline-start"
       disabled={props.pending}
       onClick={props.onStart}

@@ -395,6 +395,13 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         at,
       );
       addHistory(input.id, { kind: "created", source: input.source });
+      if (input.startRequested === true) {
+        addHistory(input.id, {
+          kind: "start_requested",
+          source: input.source,
+          toColumn: "todo",
+        });
+      }
       return read(input.id)!;
     }),
     setHost: db.transaction((id: string, hostId: string): Card => {

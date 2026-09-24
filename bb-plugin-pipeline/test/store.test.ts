@@ -210,7 +210,7 @@ describe("card execution", () => {
     for (const migration of MIGRATIONS) db.exec(migration);
     try {
       const store = createCardStore(db);
-      const add = (id: string, startRequested = true) =>
+      const add = (id: string, startRequested?: boolean) =>
         store.create({
           id,
           projectId: "proj_1",
@@ -227,6 +227,7 @@ describe("card execution", () => {
         { startRequested: true },
         { kind: "start_requested", source: "ui" },
       );
+      add("created", true);
       add("implicit");
       add("saved", false);
       add("failed", false);
@@ -250,8 +251,11 @@ describe("card execution", () => {
 
       expect(store.listIncompleteStarts().map((card) => card.id)).toEqual([
         "explicit",
+        "created",
       ]);
       expect(store.getIncompleteStart("explicit")?.id).toBe("explicit");
+      expect(store.getIncompleteStart("created")?.id).toBe("created");
+      expect(store.history("created").at(-1)).toMatchObject({ kind: "start_requested", source: "ui", toColumn: "todo" });
       expect(store.getIncompleteStart("implicit")).toBeNull();
     } finally {
       db.close();

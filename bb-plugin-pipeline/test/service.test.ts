@@ -2141,6 +2141,32 @@ describe("saved cards", () => {
     expect(rememberExecution).toHaveBeenCalledOnce();
   });
 
+  it("recovers an explicitly started create interrupted before thread linking", async () => {
+    const listThreads = vi.fn(async () => [] as ThreadListResult);
+    const { service, store, spawn } = setup({ listThreads });
+    const card = store.create({
+      id: "started-create",
+      projectId: "proj_1",
+      hostId: "host_mac",
+      title: "Interrupted launch",
+      body: "",
+      attachments: [],
+      startRequested: true,
+      source: "cli",
+    });
+
+    expect(store.getIncompleteStart(card.id)).toMatchObject({ column: "todo", startRequested: true });
+    await service.startupPass();
+
+    expect(listThreads).toHaveBeenCalled();
+    expect(store.get(card.id)).toMatchObject({
+      column: "todo",
+      intakeThreadId: null,
+      launchError: "intake: start interrupted before its thread was linked",
+    });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it("turns an interrupted start with no remote thread into a retryable launch", async () => {
     const listThreads = vi.fn(async () => [] as ThreadListResult);
     const { service, store, spawn } = setup({ listThreads });

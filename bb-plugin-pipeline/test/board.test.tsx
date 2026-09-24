@@ -1117,6 +1117,21 @@ describe("pipeline board", () => {
     expect(startCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
   });
 
+  it("keeps the card-face Start button clickable during a moving press", async () => {
+    const startCard = vi.fn(() => makeCard({ column: "todo" }));
+    renderBoard({ cards: [makeCard({ startRequested: false, intakeThreadId: null })], startCard });
+    await screen.findByRole("article", { name: "A pipeline card" });
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    const saved = screen.getByRole("article", { name: "A pipeline card" });
+    const start = within(saved).getByRole("button", { name: "Start" });
+
+    fireEvent.pointerDown(start);
+    expect(fireEvent.dragStart(saved)).toBe(false);
+    fireEvent.click(start);
+
+    expect(startCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
+  });
+
   it("suppresses stale attention, question, working, and queue signals on a saved task", async () => {
     renderBoard({
       pending: true,
