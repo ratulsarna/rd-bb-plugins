@@ -19,7 +19,7 @@ import { USER_HANDOFF } from "./prompts";
 
 const USAGE = `Usage:
   bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]
-  bb pipeline add --title <text> --machine <id-or-name> [--no-start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>] [--json]
+  bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>] [--json]
   bb pipeline start <card-id> [--json]
   bb pipeline list [--project <id>] [--all] [--json]
   bb pipeline show <card-id> [--json]
@@ -69,7 +69,7 @@ const VALUE_OPTIONS = new Set([
   "handled",
   "file",
 ]);
-const BOOLEAN_OPTIONS = new Set(["json", "all", "working", "clear", "no-start"]);
+const BOOLEAN_OPTIONS = new Set(["json", "all", "working", "clear", "start"]);
 const MACHINE_COMMANDS = new Set(["add", "set-machine"]);
 
 interface ParsedArgs {
@@ -288,7 +288,7 @@ export function createPipelineCli(input: {
       if (args.options.has("handled") && args.command !== "review-wait") return failure("--handled is only accepted by review-wait", USAGE);
       if (args.options.has("paused") && args.command !== "report") return failure("--paused is only accepted by report", USAGE);
       if (args.options.has("clear") && args.command !== "run-next") return failure("--clear is only accepted by run-next", USAGE);
-      if (args.options.has("no-start") && args.command !== "add") return failure("--no-start is only accepted by add", USAGE);
+      if (args.options.has("start") && args.command !== "add") return failure("--start is only accepted by add", USAGE);
       if (args.options.has("file") && args.command !== "instructions") return failure("--file is only accepted by instructions", USAGE);
 
       try {
@@ -318,7 +318,7 @@ export function createPipelineCli(input: {
               body: option(args, "body") ?? "",
               attachments: (args.options.get("attachment") ?? []).map(attachment),
               source: "cli",
-              start: !args.options.has("no-start"),
+              start: args.options.has("start"),
             });
             return success(args, card, `Added ${formatCard(card)}`);
           }

@@ -375,24 +375,33 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
   return {
     create: db.transaction((input) => {
       const at = now();
+      const started = input.startRequested !== false;
       db.prepare(
         `INSERT INTO cards
           (id, project_id, host_id, intake_execution, lead_execution, start_requested, title, body, attachments, "column", created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'backlog', ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         input.id,
         input.projectId,
         input.hostId,
         input.intake === undefined ? null : JSON.stringify(input.intake),
         input.lead === undefined ? null : JSON.stringify(input.lead),
-        input.startRequested === false ? 0 : 1,
+        started ? 1 : 0,
         input.title,
         input.body,
         JSON.stringify(input.attachments),
+        started ? "todo" : "backlog",
         at,
         at,
       );
       addHistory(input.id, { kind: "created", source: input.source });
+      if (input.startRequested === true) {
+        addHistory(input.id, {
+          kind: "start_requested",
+          source: input.source,
+          toColumn: "todo",
+        });
+      }
       return read(input.id)!;
     }),
     setHost: db.transaction((id: string, hostId: string): Card => {

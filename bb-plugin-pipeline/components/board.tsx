@@ -190,7 +190,7 @@ function PipelineTasks() {
   const needsAttention = openCards.filter((card) => taskNeedsAttention(card, questionOpen(card))).length;
   const queuedCount = openCards.filter(queued).length;
   const draggedCard = view === "board" ? cards.find(
-    (card) => card.id === draggedCardId && card.projectId === projectId && card.runState === "running" && card.startRequested,
+    (card) => card.id === draggedCardId && card.projectId === projectId && card.runState === "running" && !pendingCards.has(card.id),
   ) : undefined;
   const filteredCards = cards.filter((card) => {
     if (card.id === draggedCard?.id) return true;
@@ -202,7 +202,9 @@ function PipelineTasks() {
     return true;
   }).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
   const stageColumns = COLUMNS.filter((column) => filter === "done" ? column === "done" : column !== "done");
-  const visibleColumns = draggedCard ? COLUMNS : stageColumns.filter((column) => filteredCards.some((card) => card.column === column));
+  const visibleColumns = draggedCard
+    ? COLUMNS.filter((column) => draggedCard.startRequested ? column !== "backlog" : column === "backlog" || column === "todo")
+    : stageColumns.filter((column) => filteredCards.some((card) => card.column === column));
 
   function clearDrag() {
     setDraggedCardId(null);
@@ -291,7 +293,7 @@ function PipelineTasks() {
         pending={pendingCards.has(card.id)}
         queue={queuedCards.get(card.id) ?? null}
         onDragStart={(event) => {
-          if (view !== "board" || card.runState !== "running" || !card.startRequested || pendingCards.has(card.id)) {
+          if (view !== "board" || card.runState !== "running" || pendingCards.has(card.id)) {
             event.preventDefault();
             return;
           }
@@ -429,7 +431,7 @@ function PipelineTasks() {
                 <section key={column} aria-label={COLUMN_LABELS[column]} className="pipeline-column"
                   data-drop={Boolean(draggedCard && dropColumn === column)}
                   onDragOver={(event) => {
-                    if (!draggedCard || draggedCard.column === column || pendingCards.has(draggedCard.id) || !event.dataTransfer.types.includes(CARD_DRAG_TYPE)) return;
+                    if (!draggedCard || !visibleColumns.includes(column) || draggedCard.column === column || pendingCards.has(draggedCard.id) || !event.dataTransfer.types.includes(CARD_DRAG_TYPE)) return;
                     event.preventDefault();
                     event.dataTransfer.dropEffect = "move";
                     setDropColumn(column);
@@ -438,9 +440,14 @@ function PipelineTasks() {
                     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropColumn((current) => current === column ? null : current);
                   }}
                   onDrop={(event) => {
-                    if (!draggedCard || event.dataTransfer.getData(CARD_DRAG_TYPE) !== draggedCard.id) return;
+                    if (!draggedCard || !visibleColumns.includes(column) || event.dataTransfer.getData(CARD_DRAG_TYPE) !== draggedCard.id) return;
                     event.preventDefault();
-                    move(draggedCard, column);
+                    if (draggedCard.column === column) {
+                      clearDrag();
+                      return;
+                    }
+                    if (draggedCard.startRequested) move(draggedCard, column);
+                    else void updateCard(draggedCard, () => rpc.call("startCard", { cardId: draggedCard.id }));
                     clearDrag();
                   }}>
                   <div className="pipeline-column-header"><span className="pipeline-stage" data-stage={column} aria-hidden="true" /><h2>{COLUMN_LABELS[column]}</h2><span className="pipeline-column-count">{columnCards.length}</span></div>

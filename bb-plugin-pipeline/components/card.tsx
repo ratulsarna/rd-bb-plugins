@@ -56,7 +56,7 @@ export function PipelineCard(props: PipelineCardProps) {
       <article
         aria-label={card.title}
         aria-busy={props.pending}
-        draggable={props.layout === "board" && running && card.startRequested && !props.pending}
+        draggable={props.layout === "board" && running && !props.pending}
         data-dragging={props.dragging}
         onPointerDownCapture={(event) => {
           dragAllowed.current = !(event.target as Element).closest("[data-card-control]");

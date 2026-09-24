@@ -6,13 +6,13 @@ description: "Work the pipeline board: add, start, list, show, move, pause, and 
 
 # Pipeline: Board
 
-Every task is a card on the pipeline board: a title, a note, a machine, attachments, and a column. The columns, in order: `backlog`, `todo`, `planning`, `plan_ready`, `implementing`, `reviewing`, `qa`, `pr`, `pr_ready`, `done`. Adding a card launches intake unless `--no-start` is supplied. A saved task creates no thread or queued message until explicitly started.
+Every task is a card on the pipeline board: a title, a note, a machine, attachments, and a column. The columns, in order: `backlog`, `todo`, `planning`, `plan_ready`, `implementing`, `reviewing`, `qa`, `pr`, `pr_ready`, `done`. Adding a card saves it in Backlog. Pass `--start` to place it in To do and launch intake. A saved task creates no thread or queued message until explicitly started.
 
 ## Commands
 
 - `bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>]` — read the workflow document or phase template when working on a Pipeline task.
 
-- `bb pipeline add --title <t> --machine <id-or-name> [--no-start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project.
+- `bb pipeline add --title <t> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project.
 - `bb pipeline start <card-id>` — start intake for a saved task using its stored machine, models, notes, and attachments. Repeated Start requests do not launch again; use Retry after a failed start.
 - `bb pipeline set-machine <card-id> --machine <id-or-name>` — assign a machine to a card that has none. An assigned machine cannot be changed.
 - `bb pipeline list [--project <id>] [--all]` — the board's cards; `done` is hidden unless `--all`.
@@ -29,7 +29,7 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 - `bb pipeline stop <card-id>` — hard-stop the task and occupied descendants; use when graceful pause cannot finish.
 - `bb pipeline move <card-id> <column>` — move a card by hand. Moving to planning starts its lead thread if needed and waits for capacity; other moves update the board.
 
-Use `add --no-start` when the user wants to capture a task for later. Start it before moving stages, pausing, stopping, or resuming; saved tasks can be removed without starting. The UI offers the same choice as **Save** and **Save and start**.
+Use `add` to capture a task for later. Start it before moving stages, pausing, stopping, or resuming; saved tasks can be removed without starting. Start puts the task in To do; a started task cannot return to Backlog. The UI offers **Save** and **Save and start**, and a saved card can be dragged to To do to start intake.
 
 An interrupted Start recovers an existing intake thread when found, or exposes Retry. Use `retry` on that card instead of adding another task.
 

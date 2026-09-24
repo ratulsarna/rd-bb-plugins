@@ -18,9 +18,9 @@ Cards show workflow state and a short reason the user is needed, and open the ow
 
 Use **New task** to add a title, context, attachments, and a machine. **Intake** and **Lead** each have a provider, model, and reasoning picker. They start from Pipeline settings. With **Remember last task’s choices** enabled, accepted UI and CLI tasks update those defaults. Each card saves both selections for its launches and retries.
 
-Choose **Save** to keep a task in Backlog without starting work, or **Save and start** to launch intake. Saved tasks show **Not started** and a **Start** action; they create no thread or queued message until started. Start uses the saved choices and waits for capacity when necessary. Start a task before moving it between stages or using execution controls. Use **Tasks** for a compact list, or **Board** for occupied stages. Filter by **Open**, **Needs you**, **Queued**, **Done**, or a specific stage. The layout choice is remembered; switching projects resets the filters.
+**Save** keeps a task in Backlog without starting work. **Save and start** places it in To do and launches intake. Saved tasks show **Not started** and a **Start** action; they create no thread or queued message until started. Start places a saved task in To do, uses its saved choices, and waits for capacity when necessary. A started task cannot return to Backlog; use Pause to stop work. Use **Tasks** for a compact list, or **Board** for occupied stages. Filter by **Open**, **Needs you**, **Queued**, **Done**, or a specific stage. The layout choice is remembered; switching projects resets the filters.
 
-Task titles open the owning thread. The details button opens context, diagnostics, attachments, execution choices, and task actions in a side panel, or full-screen on a phone. Queued tasks show their waiting reason directly. Both layouts use a single scrolling area; Board stages stack vertically on narrow screens. Drag started cards in Board to reveal all destination stages, or use **Move to** in the actions menu.
+Task titles open the owning thread. The details button opens context, diagnostics, attachments, execution choices, and task actions in a side panel, or full-screen on a phone. Queued tasks show their waiting reason directly. Both layouts use a single scrolling area; Board stages stack vertically on narrow screens. Drag a saved card to To do to start intake there. Drag a started card to reveal its destination stages, or use **Move to** in the actions menu.
 
 If a reload interrupts Start, Pipeline looks for the intake already created for that task and reconnects it. If it cannot find or check that thread, the card offers **Retry**; Retry checks again before launching intake.
 
@@ -69,7 +69,7 @@ GitHub access uses the BB server’s authenticated `gh`. Jev classification uses
 ## Commands
 
 ```text
-bb pipeline add --title <text> --machine <id-or-name> [--no-start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]
+bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]
 bb pipeline start <card-id>
 bb pipeline set-machine <card-id> --machine <id-or-name>
 bb pipeline list [--project <id>] [--all]
@@ -89,7 +89,7 @@ bb pipeline report --paused <request-id>
 bb pipeline remove <card-id>
 ```
 
-`add` starts intake unless you pass `--no-start`. Start a saved task with `bb pipeline start <card-id>`; repeated Start requests do not create another thread. A failed start uses the existing Retry action. Saved tasks retain their machine, execution choices, notes, and attachments across reloads.
+`add` saves a task in Backlog. Pass `--start` to place it in To do and launch intake. Start a saved task with `bb pipeline start <card-id>`; repeated Start requests do not create another thread. A failed start uses the existing Retry action. Saved tasks retain their machine, execution choices, notes, and attachments across reloads.
 
 Every command accepts `--json`. A CLI attachment must already be in BB's project attachment store:
 
