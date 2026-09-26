@@ -9,3 +9,9 @@ High-value improvements, in priority order:
 3. **Task dependencies.** Support “start B after A’s PR merges.” Begin dependent work with the prerequisite changes available, so related tasks do not build against an outdated base.
 
 4. **One “Needs me” view across projects.** List outstanding questions, approvals, failures, and merge decisions, each opening the relevant thread or PR. Keep unresolved decisions visible after their notifications have been dismissed.
+
+## Good to have
+
+- **Task search and saved views.** Search across projects and completed work. Save filters for machine, stage, and waiting state to revisit useful task lists.
+
+- **Flow metrics.** Show time spent executing, queued for capacity, waiting for the user, and awaiting external checks, plus repeated returns from review or QA. Use recorded activity to identify bottlenecks across tasks.
