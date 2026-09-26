@@ -3,7 +3,6 @@ import {
   buildBoard,
   canSettle,
   laneForThread,
-  selectPrProbeTargets,
   statusLabelForItem,
   TWO_DAYS_MS,
   type BoardThread,
@@ -476,57 +475,6 @@ describe("buildBoard scale", () => {
     expect(projected.every((item) => item.children.length === 2)).toBe(true);
     expect(board.pinned).toHaveLength(150);
     expect(board.settled).toHaveLength(0);
-  });
-});
-
-describe("selectPrProbeTargets", () => {
-  it("keeps badge probes ready for visible and settled trees", () => {
-    const board = buildBoard(
-      [
-        thread("pinned", { isPinned: true }),
-        thread("pinned-child", { parentThreadId: "pinned" }),
-        thread("running", { indicator: "runtime" }),
-        thread("running-child", { parentThreadId: "running" }),
-        thread("idle"),
-        thread("idle-child", { parentThreadId: "idle" }),
-        thread("settled"),
-        thread("settled-child", { parentThreadId: "settled" }),
-      ],
-      {
-        now: NOW,
-        overrides: overrideMap([["settled", "settled", NOW]]),
-      },
-    );
-
-    expect(
-      [...selectPrProbeTargets(board, new Set())].sort(),
-    ).toEqual(
-      [
-        "idle",
-        "idle-child",
-        "pinned",
-        "running",
-        "settled",
-        "settled-child",
-      ].sort(),
-    );
-
-    expect(
-      [
-        ...selectPrProbeTargets(board, new Set(["pinned", "running"])),
-      ].sort(),
-    ).toEqual(
-      [
-        "idle",
-        "idle-child",
-        "pinned",
-        "pinned-child",
-        "running",
-        "running-child",
-        "settled",
-        "settled-child",
-      ].sort(),
-    );
   });
 });
 

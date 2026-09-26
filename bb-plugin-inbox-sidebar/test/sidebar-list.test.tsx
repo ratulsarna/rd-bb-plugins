@@ -12,6 +12,7 @@ import {
 import type { PluginThreadListProps } from "@bb/plugin-sdk/app";
 import {
   configureFakeSdk,
+  pullRequestProbeCalls,
   registrations,
   resolvePendingRpc,
   rpcCalls,
@@ -614,9 +615,12 @@ describe("BoardSidebar sections", () => {
 
     await screen.findByText("Parent");
     expect(screen.queryByText("Subagent")).toBeNull();
+    expect(pullRequestProbeCalls).toContain("root");
+    expect(pullRequestProbeCalls).not.toContain("child");
 
     fireEvent.click(screen.getByLabelText("Expand 1 subagents"));
     expect(screen.getByText("Subagent")).toBeDefined();
+    await waitFor(() => expect(pullRequestProbeCalls).toContain("child"));
     expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
       false,
     );

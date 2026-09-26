@@ -80,6 +80,7 @@ export interface SidebarActionCall {
 }
 
 export const sidebarActionCalls: SidebarActionCall[] = [];
+export const pullRequestProbeCalls: string[] = [];
 export const rpcCalls: Array<{ method: string; input: unknown }> = [];
 export const splitPointerDownCalls: Array<{
   threadId: string;
@@ -130,6 +131,7 @@ export function rejectPendingRpc(
 export function configureFakeSdk(next: Partial<FakeSdkConfig> = {}): void {
   config = { ...DEFAULTS, ...next };
   sidebarActionCalls.length = 0;
+  pullRequestProbeCalls.length = 0;
   rpcCalls.length = 0;
   splitPointerDownCalls.length = 0;
   pendingRpc.length = 0;
@@ -299,10 +301,13 @@ export const experimental_useSidebarThreads = () => ({
 
 export const experimental_useSidebarThreadActions = () => actions;
 
-export const experimental_useSidebarThreadPullRequest = (threadId: string) => ({
-  isLoading: false,
-  pullRequest: config.pullRequests[threadId] ?? null,
-});
+export const experimental_useSidebarThreadPullRequest = (threadId: string) => {
+  pullRequestProbeCalls.push(threadId);
+  return {
+    isLoading: false,
+    pullRequest: config.pullRequests[threadId] ?? null,
+  };
+};
 
 export const experimental_useSidebarThreadSplit = (threadId: string) => ({
   splitProps: {
