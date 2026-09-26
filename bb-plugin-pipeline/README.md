@@ -2,6 +2,8 @@
 
 Pipeline tracks each project’s delivery tasks in a compact list or stage board backed by BB threads. Each card requires an explicit machine choice. Starting a card launches an intake thread in the project's existing checkout on that machine. Moving the card to planning starts a lead in its own managed worktree on the same machine, carrying the filed issue and the card's attachments into the work.
 
+Work that already has a GitHub issue can be imported instead of filed again: **Import issues** picks open issues assigned to the BB server's GitHub account and turns them into Backlog cards carrying the full issue snapshot. See [Imported issues](#imported-issues).
+
 Feature priorities are tracked in [WISHLIST.md](./WISHLIST.md).
 
 Both views track:
@@ -66,18 +68,28 @@ Clean or settled review asks for your merge decision. Sync moves a task to Done 
 
 GitHub access uses the BB server’s authenticated `gh`. Jev classification uses the existing `jevApiKey` and confidence threshold; unavailable classification reports Unknown. Paused and Done tasks retain their notification suppression. Neither a review-request comment nor an author reply starts another feedback turn.
 
+## Imported issues
+
+Import work that already has an issue instead of filing it again. **Import issues** in the header (or `bb pipeline issues`) lists the project's open GitHub issues assigned to the BB server's account, page by page, and marks the ones already imported. Pick several and import them as Backlog cards; no machine or intake/lead choice is needed yet, and importing an issue twice returns its existing card. The card carries the full snapshot — title, body, labels, comments — and links the source; the issue description stays in the snapshot, and the card's notes start empty.
+
+Starting an imported card is a normal start: it opens setup with the machine and intake/lead pickers, or use the `bb pipeline start` flags. Accepting setup saves the task in To do with its choices, and launching intake refreshes the full issue, labels and comments included. If that refresh fails, the card waits in To do with **Retry** and no intake thread; only cancelling setup leaves the card untouched. The snapshot also refreshes on import and through **Refresh issue** in task details. Issues are not polled in the background; PR checks and reviews keep their regular sync. A card keeps its issue when the source is closed or reassigned and shows that state.
+
+Work on an imported card never writes to the source issue: no edits to its body, labels, or comments, no comments, and no close, reopen, or reassign. Scope, decisions, and classification live in the card's local notes: intake and the lead persist them with `bb pipeline report --body <text>` or `--body-file <path>`, and the tier stays on the card instead of becoming issue labels. The workflow documents carry the same rules in their imported-issue sections. Normal cards and PR behavior are unchanged.
+
 ## Commands
 
 ```text
 bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]
-bb pipeline start <card-id>
+bb pipeline start <card-id> [--machine <id-or-name>] [execution overrides]
 bb pipeline set-machine <card-id> --machine <id-or-name>
 bb pipeline list [--project <id>] [--all]
 bb pipeline show <card-id>
+bb pipeline issues [--project <id>] [--page <n>]
+bb pipeline import-issues <number>... [--project <id>]
 bb pipeline queue [--project <id>]
 bb pipeline run-next <card-id> [--clear]
 bb pipeline move <card-id> <column>
-bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>]
+bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>] [--body <text> | --body-file <path>]
 bb pipeline github-sync <card-id>
 bb pipeline review-wait [--card <id>] [--handled <batch-id>]
 bb pipeline review-retry <card-id>
@@ -89,7 +101,9 @@ bb pipeline report --paused <request-id>
 bb pipeline remove <card-id>
 ```
 
-`add` saves a task in Backlog. Pass `--start` to place it in To do and launch intake. Start a saved task with `bb pipeline start <card-id>`; repeated Start requests do not create another thread. A failed start uses the existing Retry action. Saved tasks retain their machine, execution choices, notes, and attachments across reloads.
+`add` saves a task in Backlog. Pass `--start` to place it in To do and launch intake. Start a saved task with `bb pipeline start <card-id>`; repeated Start requests do not create another thread. `start` accepts the same machine and execution overrides as `add`, which is how an imported card without saved choices launches from the CLI. A failed start uses the existing Retry action. Saved tasks retain their machine, execution choices, notes, and attachments across reloads.
+
+`issues` pages through open issues assigned to the BB server's GitHub account; `import-issues` imports up to 50 at a time as Backlog cards. `report --body <text>` or `--body-file <path>` stores local scope notes on the card — `--body-file` requires a BB thread and reads the file from that thread's machine — and intake and the lead receive those notes.
 
 Every command accepts `--json`. A CLI attachment must already be in BB's project attachment store:
 
@@ -138,7 +152,7 @@ Initial settings use Claude Code with `claude-fable-5-1`, high reasoning, and fu
 
 Lead settings initially inherit the intake settings. Creating a task saves the resolved choices for both roles. Settings changes affect future cards; existing cards retain their saved selections. Cards created before per-role selections use the current settings when launching a role.
 
-The BB server needs `gh` installed and authenticated because Pipeline reads the GitHub issue when it launches a lead thread.
+The BB server needs `gh` installed and authenticated. Pipeline reads GitHub through the server's account: it lists and imports issues, refreshes an imported issue at intake launch, and reads the linked issue when it launches a lead thread.
 
 The Jev key is optional. Without it, an unsignalled lead idle is shown as `Idle · awaiting status` rather than guessed.
 

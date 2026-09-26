@@ -4,7 +4,7 @@ import { createPipelineCli } from "../lib/cli";
 import { intakePrompt, leadPrompt } from "../lib/prompts";
 import { resumeInstruction } from "../lib/control-prompts";
 import { reviewFollowup } from "../lib/github-sync";
-import { makeCard } from "./sdk-fake";
+import { makeCard, makeImportedIssue } from "./sdk-fake";
 
 const cli = createPipelineCli({} as never);
 const context = { cwd: "/remote-machine/unrelated-checkout", signal: new AbortController().signal };
@@ -25,9 +25,12 @@ describe("workflow document delivery", () => {
 
   it("resolves the phase and template commands in kickoffs and workflow handoffs", async () => {
     const card = makeCard({ issueUrl: "https://github.com/o/r/issues/1" });
+    const imported = makeCard({ importedIssue: makeImportedIssue(), issueUrl: makeImportedIssue().url });
     const documents = [
       intakePrompt(card, "Example"),
+      intakePrompt(imported, "Example"),
       leadPrompt(card, { title: "Feature", body: "Details", labels: [] }),
+      leadPrompt(imported, { title: "Imported", body: "Details", labels: [] }),
       resumeInstruction({ ...card, ownerRole: "lead" }),
       resumeInstruction({ ...card, ownerRole: "intake" }),
       reviewFollowup(card, {
@@ -69,5 +72,24 @@ describe("workflow document delivery", () => {
       expect(result.stdout).toBeUndefined();
     }
     expect((await cli.run(["show", "card_1", "--file", "README.md"], context)).exitCode).toBe(1);
+  });
+
+  it("routes imported cards through the phase docs and the read-only source rules", async () => {
+    const intake = await readFile(new URL("../workflows/intake/README.md", import.meta.url), "utf8");
+    expect(intake).toContain("Imported issues");
+    expect(intake).toContain("--body-file");
+    expect(intake).toContain("Step 4 (filing) and step 6 (labeling) do not apply");
+
+    const overview = await readFile(new URL("../workflows/README.md", import.meta.url), "utf8");
+    expect(overview).toContain("Imported issue:");
+    expect(overview).toContain("read-only");
+
+    const imported = makeCard({ importedIssue: makeImportedIssue() });
+    for (const prompt of [intakePrompt(imported, "Example"), leadPrompt(imported, {
+      title: "Imported", body: "Details", labels: [],
+    })]) {
+      expect(prompt).toContain("read-only");
+      expect(prompt).toContain("bb pipeline instructions");
+    }
   });
 });

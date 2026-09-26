@@ -1,6 +1,16 @@
 import type { PluginBbSdk, PluginSidebarThread } from "@get-bb/plugin-sdk";
 import type { ExecutionSelection } from "../lib/execution";
 import type { Card } from "../lib/store";
+import type { ImportedIssue } from "../lib/issue-types";
+
+export function makeImportedIssue(overrides: Partial<ImportedIssue> = {}): ImportedIssue {
+  return {
+    url: "https://github.com/example/repo/issues/12", number: 12, title: "Existing issue",
+    body: "Original description", labels: ["bug"], state: "open", assignees: ["ratul"],
+    comments: [], updatedAt: "2026-09-26T00:00:00Z", importedBy: "ratul", syncedAt: 1, error: null,
+    ...overrides,
+  };
+}
 
 export type TestEnvironment = Awaited<
   ReturnType<PluginBbSdk["environments"]["get"]>
@@ -140,6 +150,7 @@ export function makeCard(overrides: Partial<Card> = {}): Card {
     reportSignal: null,
     tier: null,
     issueUrl: null,
+    importedIssue: null,
     prUrl: null,
     github: null,
     intakeThreadId: "intake",

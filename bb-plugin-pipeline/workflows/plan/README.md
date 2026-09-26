@@ -8,7 +8,7 @@ Create `run.md` per `bb pipeline instructions overview` first. Then learn how th
 
 `bb pipeline report --column planning --working`
 
-Tell the user what you understand the task to be, checked against what your research found, and what research could not settle: a technical call that needs human judgment, a business rule that is unclear, or a design preference that changes how it gets built. Open questions go to `/grill-me` (Codex: `$grill-me`). If the user corrects you, verify the correction yourself before moving on. Fold every answer back into the ticket. No plan until the user says the picture is right.
+Tell the user what you understand the task to be, checked against what your research found, and what research could not settle: a technical call that needs human judgment, a business rule that is unclear, or a design preference that changes how it gets built. Open questions go to `/grill-me` (Codex: `$grill-me`). If the user corrects you, verify the correction yourself before moving on. Fold every answer back into the ticket; an imported issue is read-only, so fold answers there into the card's local notes with `bb pipeline report --body-file <path>`. No plan until the user says the picture is right.
 
 `bb pipeline report --needs-you "<short waiting reason>"`
 

@@ -1,4 +1,4 @@
-import { basename } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import type {
   PluginBbSdk,
   PluginCliContext,
@@ -11,6 +11,7 @@ import type { PipelineService } from "./service";
 import type { PipelineCapacity } from "./capacity";
 import type { PipelineControls } from "./controls";
 import type { GithubSync } from "./github-sync";
+import type { IssueImporter } from "./issue-import";
 import { ownerThread } from "./card";
 import type { MachineQueue } from "./contract";
 import type { Card, CardAttachment, CardStore } from "./store";
@@ -20,13 +21,15 @@ import { USER_HANDOFF } from "./prompts";
 const USAGE = `Usage:
   bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]
   bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>] [--json]
-  bb pipeline start <card-id> [--json]
+  bb pipeline start <card-id> [--machine <id-or-name>] [execution options] [--json]
+  bb pipeline issues [--project <id>] [--page <number>] [--json]
+  bb pipeline import-issues <number>... [--project <id>] [--json]
   bb pipeline list [--project <id>] [--all] [--json]
   bb pipeline show <card-id> [--json]
   bb pipeline queue [--project <id>] [--json]
   bb pipeline run-next <card-id> [--clear] [--json]
   bb pipeline move <card-id> <column> [--json]
-  bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>] [--json]
+  bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>] [--body <text> | --body-file <path>] [--json]
   bb pipeline github-sync <card-id> [--json]
   bb pipeline review-wait [--card <id>] [--handled <batch-id>] [--json]
   bb pipeline review-retry <card-id> [--json]
@@ -38,7 +41,7 @@ const USAGE = `Usage:
   bb pipeline set-machine <card-id> --machine <id-or-name> [--json]
   bb pipeline remove <card-id> [--json]
 
-Add execution options (optional; omitted fields use remembered Pipeline settings):
+Add/start execution options (optional; omitted fields use saved choices or Pipeline settings):
   --intake-provider <id> --intake-model <id> --intake-reasoning <level>
   --lead-provider <id> --lead-model <id> --lead-reasoning <level>
   --intake-service-tier <default|fast> --lead-service-tier <default|fast>
@@ -56,6 +59,8 @@ const VALUE_OPTIONS = new Set([
   ...EXECUTION_OPTIONS,
   "title",
   "body",
+  "body-file",
+  "page",
   "attachment",
   "project",
   "machine",
@@ -70,7 +75,7 @@ const VALUE_OPTIONS = new Set([
   "file",
 ]);
 const BOOLEAN_OPTIONS = new Set(["json", "all", "working", "clear", "start"]);
-const MACHINE_COMMANDS = new Set(["add", "set-machine"]);
+const MACHINE_COMMANDS = new Set(["add", "start", "set-machine"]);
 
 interface ParsedArgs {
   command?: string;
@@ -237,6 +242,7 @@ export function createPipelineCli(input: {
   capacity: PipelineCapacity;
   controls: PipelineControls;
   github: GithubSync;
+  issues: IssueImporter;
 }): PluginCliRegistration {
   return {
     name: "pipeline",
@@ -244,7 +250,9 @@ export function createPipelineCli(input: {
     commands: [
       { name: "instructions", summary: "Read Pipeline workflow instructions or a phase template", usage: "bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]" },
       { name: "add", summary: "Add a card", usage: "bb pipeline add --title <text> --machine <id-or-name> [options]" },
-      { name: "start", summary: "Start intake for a saved task", usage: "bb pipeline start <card-id> [--json]" },
+      { name: "start", summary: "Start intake for a saved task", usage: "bb pipeline start <card-id> [--machine <id-or-name>] [execution options] [--json]" },
+      { name: "issues", summary: "List assigned GitHub issues", usage: "bb pipeline issues [--project <id>] [--page <number>] [--json]" },
+      { name: "import-issues", summary: "Import GitHub issues into Backlog", usage: "bb pipeline import-issues <number>... [--project <id>] [--json]" },
       { name: "list", summary: "List cards", usage: "bb pipeline list [--project <id>] [--all] [--json]" },
       { name: "show", summary: "Show a card", usage: "bb pipeline show <card-id> [--json]" },
       { name: "queue", summary: "Show running and waiting work by machine", usage: "bb pipeline queue [--project <id>] [--json]" },
@@ -278,13 +286,15 @@ export function createPipelineCli(input: {
       }
       if (args.options.has("machine") && !MACHINE_COMMANDS.has(args.command!)) {
         return failure(
-          `--machine is only accepted by add and set-machine, not ${args.command}`,
+          `--machine is only accepted by add, start and set-machine, not ${args.command}`,
           USAGE,
         );
       }
-      if (args.command !== "add" && EXECUTION_OPTIONS.some((name) => args.options.has(name))) {
-        return failure("intake and lead execution options are only accepted by add", USAGE);
+      if (!["add", "start"].includes(args.command) && EXECUTION_OPTIONS.some((name) => args.options.has(name))) {
+        return failure("intake and lead execution options are only accepted by add and start", USAGE);
       }
+      if (args.options.has("body-file") && args.command !== "report") return failure("--body-file is only accepted by report", USAGE);
+      if (args.options.has("page") && args.command !== "issues") return failure("--page is only accepted by issues", USAGE);
       if (args.options.has("handled") && args.command !== "review-wait") return failure("--handled is only accepted by review-wait", USAGE);
       if (args.options.has("paused") && args.command !== "report") return failure("--paused is only accepted by report", USAGE);
       if (args.options.has("clear") && args.command !== "run-next") return failure("--clear is only accepted by run-next", USAGE);
@@ -324,8 +334,32 @@ export function createPipelineCli(input: {
           }
           case "start": {
             if (args.positionals.length !== 1) return failure("start requires one card id", USAGE);
-            const card = await input.service.start(args.positionals[0]!, "cli");
+            const hasSetup = args.options.has("machine") || EXECUTION_OPTIONS.some((name) => args.options.has(name));
+            const card = await input.service.start(args.positionals[0]!, "cli", hasSetup ? {
+              hostId: option(args, "machine"), intake: executionOptions(args, "intake"), lead: executionOptions(args, "lead"),
+            } : undefined);
             return success(args, card, formatCard(card));
+          }
+          case "issues": {
+            if (args.positionals.length) return failure("issues takes no positional arguments", USAGE);
+            const page = Number(option(args, "page") ?? 1);
+            const result = await input.issues.list(projectId(args, context), page);
+            return success(args, result, [
+              `${result.repository}: issues assigned to ${result.viewer}`,
+              ...result.issues.map((issue) => `#${issue.number}  ${issue.title}${issue.cardId ? `  [already added: ${issue.cardId}]` : ""}`),
+              ...(result.issues.length === 0 ? ["No assigned open issues on this page."] : []),
+              ...(result.hasMore ? [`More issues: use --page ${page + 1}`] : []),
+            ].join("\n"));
+          }
+          case "import-issues": {
+            const result = await input.issues.import(projectId(args, context), args.positionals.map(Number));
+            return {
+              ...success(args, result, [
+                ...result.cards.map((card) => formatCard(card)),
+                ...result.errors.map((error) => `#${error.number}: ${error.message}`),
+              ].join("\n")),
+              exitCode: result.errors.length ? 1 : 0,
+            };
           }
           case "list": {
             if (args.positionals.length > 0) return failure("list takes no positional arguments", USAGE);
@@ -419,7 +453,25 @@ export function createPipelineCli(input: {
             if (tier !== undefined && !["trivial", "small", "standard"].includes(tier)) {
               return failure(`unknown tier ${tier}`, USAGE);
             }
+            let body = option(args, "body");
+            const bodyFile = option(args, "body-file");
+            if (bodyFile !== undefined) {
+              if (body !== undefined) return failure("Use either --body or --body-file", USAGE);
+              if (!context.threadId) return failure("--body-file requires a BB thread so its machine is known; use --body outside a thread");
+              const thread = await input.sdk.threads.get({ threadId: context.threadId });
+              if (!thread.environmentId) return failure("This thread has no environment to read --body-file from");
+              const environment = await input.sdk.environments.get({ environmentId: thread.environmentId });
+              if (!isAbsolute(bodyFile) && !context.cwd) return failure("Use an absolute --body-file path");
+              const file = await input.sdk.files.read({
+                hostId: environment.hostId,
+                path: isAbsolute(bodyFile) ? bodyFile : resolve(context.cwd!, bodyFile),
+                signal: context.signal,
+              });
+              if (file.contentEncoding !== "utf8") return failure("--body-file must contain UTF-8 text");
+              body = file.content;
+            }
             const hasReport =
+              body !== undefined ||
               column !== undefined ||
               option(args, "needs-you") !== undefined ||
               args.options.has("working") ||
@@ -436,6 +488,7 @@ export function createPipelineCli(input: {
               issueUrl: option(args, "issue"),
               prUrl: option(args, "pr"),
               tier: tier as "trivial" | "small" | "standard" | undefined,
+              body,
             });
             return success(args, card, option(args, "needs-you") === undefined
               ? formatCard(card)

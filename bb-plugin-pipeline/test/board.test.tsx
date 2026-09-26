@@ -6,6 +6,8 @@ import { COLUMNS, COLUMN_LABELS } from "../lib/columns";
 import { PAUSE_DELIVERY_PENDING } from "../lib/card";
 import type { MachineQueue } from "../lib/contract";
 import type { GithubStatus } from "../lib/github-types";
+import type { ImportedIssue } from "../lib/issue-types";
+import type { Card } from "../lib/store";
 import type { ExecutionDefaults } from "../lib/execution";
 import { makeCard, makeSidebarThread } from "./sdk-fake";
 
@@ -70,6 +72,52 @@ function waitingQueue(cardIds: string[]): MachineQueue[] {
   })];
 }
 
+function makeImportedIssue(overrides: Partial<ImportedIssue> = {}): ImportedIssue {
+  return {
+    url: "https://github.com/example/repo/issues/42",
+    number: 42,
+    title: "A pipeline card",
+    state: "open",
+    labels: ["bug"],
+    assignees: ["ratul-gh"],
+    updatedAt: "2026-09-25T09:00:00Z",
+    body: "Source issue description",
+    comments: [],
+    importedBy: "ratul-gh",
+    syncedAt: Date.UTC(2026, 8, 25, 10, 0),
+    error: null,
+    ...overrides,
+  };
+}
+
+function makeIssueRow(
+  number: number,
+  overrides: Partial<ImportedIssue> = {},
+  cardId: string | null = null,
+): ImportedIssue & { cardId: string | null } {
+  return {
+    ...makeImportedIssue({
+      number,
+      title: `Issue ${number}`,
+      url: `https://github.com/example/repo/issues/${number}`,
+      ...overrides,
+    }),
+    cardId,
+  };
+}
+
+function makeImportedCard(overrides: Partial<Card> = {}, issue: Partial<ImportedIssue> = {}) {
+  return makeCard({
+    startRequested: false,
+    hostId: null,
+    intake: null,
+    lead: null,
+    intakeThreadId: null,
+    importedIssue: makeImportedIssue(issue),
+    ...overrides,
+  });
+}
+
 afterEach(() => {
   while (mounted.length > 0) mounted.pop()!.lifecycle.unmount();
   cleanup();
@@ -99,6 +147,9 @@ function renderBoard(options?: {
   removeCard?: ReturnType<typeof vi.fn>;
   startCard?: ReturnType<typeof vi.fn>;
   syncGithub?: ReturnType<typeof vi.fn>;
+  syncIssue?: ReturnType<typeof vi.fn>;
+  importIssues?: ReturnType<typeof vi.fn>;
+  listIssues?: ReturnType<typeof vi.fn>;
   retryReview?: ReturnType<typeof vi.fn>;
 }) {
   const listProjects =
@@ -151,6 +202,14 @@ function renderBoard(options?: {
         removeCard: options?.removeCard ?? (() => ({ removed: true })),
         startCard: options?.startCard ?? (() => makeCard()),
         syncGithub: options?.syncGithub ?? (() => makeCard()),
+        syncIssue: options?.syncIssue ?? (() => makeCard()),
+        importIssues: options?.importIssues ?? vi.fn(() => ({ cards: [], errors: [] })),
+        listIssues: options?.listIssues ?? vi.fn(() => ({
+          repository: "example/repo",
+          viewer: "ratul-gh",
+          issues: [],
+          hasMore: false,
+        })),
         retryReview: options?.retryReview ?? (() => makeCard()),
         showCard: () => ({ card: makeCard(), history: [], queued: false }),
       },
@@ -1785,6 +1844,422 @@ describe("pipeline board", () => {
     const detail = screen.getByRole("dialog");
     fireEvent.click(within(detail).getByRole("button", { name: "Stop now" }));
     await waitFor(() => expect(stopCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" }));
+  });
+
+});
+
+async function openImportDialog() {
+  // Re-query each tick: the trigger remounts when the project key settles.
+  await waitFor(() => expect(
+    (screen.getByRole("button", { name: "Import issues" }) as HTMLButtonElement).disabled,
+  ).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Import issues" }));
+  return screen.findByRole("dialog");
+}
+
+describe("pipeline issue import", () => {
+  it("lists assigned issues, marks added ones, and imports the selection to the board", async () => {
+    const importedCard = makeCard({
+      id: "card_new",
+      title: "Task from 101",
+      importedIssue: makeImportedIssue({ number: 101, title: "Task from 101" }),
+    });
+    const added = new Set<number>();
+    const listIssues = vi.fn((input: unknown) => {
+      const page = (input as { page?: number }).page ?? 1;
+      return {
+        repository: "example/repo",
+        viewer: "ratul-gh",
+        issues: page === 1
+          ? [makeIssueRow(101, {}, added.has(101) ? "card_new" : null), makeIssueRow(102, {}, "card_existing")]
+          : [],
+        hasMore: false,
+      };
+    });
+    const importIssues = vi.fn(async () => {
+      added.add(101);
+      return { cards: [importedCard], errors: [] };
+    });
+    const listCards = vi.fn()
+      .mockResolvedValueOnce({ cards: [], queue: [] })
+      .mockResolvedValue({ cards: [importedCard], queue: [] });
+    renderBoard({ listIssues, importIssues, listCards });
+
+    await openImportDialog();
+    expect(await screen.findByText("example/repo · assigned to ratul-gh")).toBeTruthy();
+    expect(await screen.findByText("Issue 101")).toBeTruthy();
+    expect(screen.getByText("#102")).toBeTruthy();
+    expect(screen.getByText("Issue 102")).toBeTruthy();
+    expect(screen.getByText("Added")).toBeTruthy();
+    expect((screen.getByRole("checkbox", { name: "Import issue 102" }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Import issue 101" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import 1 issue" }));
+    await waitFor(() => expect(importIssues).toHaveBeenCalledExactlyOnceWith({ projectId: "proj_1", numbers: [101] }));
+    expect(await screen.findByText("Imported 1 issue to Backlog.")).toBeTruthy();
+    expect(await screen.findByText("Task from 101")).toBeTruthy();
+    await waitFor(() => expect((screen.getByRole("checkbox", { name: "Import issue 101" }) as HTMLInputElement).disabled).toBe(true));
+    expect(listIssues).toHaveBeenCalledTimes(2);
+    const dialog = screen.getByRole("dialog");
+    expect((within(dialog).getByRole("button", { name: "Import issues" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows partial import failures, keeps failed ones selected, and retries without double import", async () => {
+    const added = new Set<number>();
+    const listIssues = vi.fn(() => ({
+      repository: "example/repo",
+      viewer: "ratul-gh",
+      issues: [201, 202, 203].map((number) => makeIssueRow(number, {}, added.has(number) ? `card_${number}` : null)),
+      hasMore: false,
+    }));
+    let importCall = 0;
+    const importIssues = vi.fn(async (input: unknown) => {
+      importCall += 1;
+      const { numbers } = input as { numbers: number[] };
+      for (const number of numbers) {
+        if (number !== 203 || importCall > 1) added.add(number);
+      }
+      if (importCall === 1) {
+        return {
+          cards: [
+            makeCard({ id: "card_201", importedIssue: makeImportedIssue({ number: 201 }) }),
+            makeCard({ id: "card_202", importedIssue: makeImportedIssue({ number: 202 }) }),
+          ],
+          errors: [{ number: 203, message: "rate limited" }],
+        };
+      }
+      return { cards: [makeCard({ id: "card_203", importedIssue: makeImportedIssue({ number: 203 }) })], errors: [] };
+    });
+    renderBoard({ listIssues, importIssues });
+
+    await openImportDialog();
+    await screen.findByText("Issue 201");
+    for (const number of [201, 202, 203]) {
+      fireEvent.click(screen.getByRole("checkbox", { name: `Import issue ${number}` }));
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Import 3 issues" }));
+    await waitFor(() => expect(importIssues).toHaveBeenCalledExactlyOnceWith({ projectId: "proj_1", numbers: [201, 202, 203] }));
+    expect(await screen.findByText("Imported 2 issues to Backlog.")).toBeTruthy();
+    expect((await screen.findAllByRole("alert")).some((alert) => alert.textContent!.includes("#203: rate limited"))).toBe(true);
+    expect((screen.getByRole("checkbox", { name: "Import issue 201" }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole("checkbox", { name: "Import issue 202" }) as HTMLInputElement).disabled).toBe(true);
+    const retry = screen.getByRole("checkbox", { name: "Import issue 203" }) as HTMLInputElement;
+    expect(retry.checked).toBe(true);
+    expect(retry.disabled).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Import 1 issue" }));
+    await waitFor(() => expect(importIssues).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(importIssues).toHaveBeenLastCalledWith({ projectId: "proj_1", numbers: [203] }));
+    expect(await screen.findByText("Imported 1 issue to Backlog.")).toBeTruthy();
+    await waitFor(() => expect((screen.getByRole("checkbox", { name: "Import issue 203" }) as HTMLInputElement).disabled).toBe(true));
+  });
+
+  it("keeps selections across pages and imports issues from more than one page", async () => {
+    const listIssues = vi.fn((input: unknown) => {
+      const page = (input as { page?: number }).page ?? 1;
+      return page === 1
+        ? { repository: "example/repo", viewer: "ratul-gh", issues: [makeIssueRow(301)], hasMore: true }
+        : { repository: "example/repo", viewer: "ratul-gh", issues: [makeIssueRow(302)], hasMore: false };
+    });
+    const importIssues = vi.fn(async () => ({
+      cards: [makeCard({ id: "card_301", importedIssue: makeImportedIssue({ number: 301 }) })],
+      errors: [],
+    }));
+    renderBoard({ listIssues, importIssues });
+
+    await openImportDialog();
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Import issue 301" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(await screen.findByText("Issue 302")).toBeTruthy();
+    expect(screen.queryByText("Issue 301")).toBeNull();
+    expect(screen.getByText("Page 2")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Previous" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Import issue 302" }));
+    expect(screen.getByRole("button", { name: "Import 2 issues" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Import 2 issues" }));
+    await waitFor(() => expect(importIssues).toHaveBeenCalledExactlyOnceWith({ projectId: "proj_1", numbers: [301, 302] }));
+  });
+
+  it("recovers from a failed issue listing with retry and shows the empty state", async () => {
+    const listIssues = vi.fn()
+      .mockRejectedValueOnce(new Error("GitHub unavailable"))
+      .mockResolvedValue({ repository: "example/repo", viewer: "ratul-gh", issues: [], hasMore: false });
+    renderBoard({ listIssues });
+
+    await openImportDialog();
+    expect((await screen.findByRole("alert")).textContent).toContain("GitHub unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("No open issues assigned to ratul-gh.")).toBeTruthy();
+    expect((within(screen.getByRole("dialog")).getByRole("button", { name: "Import issues" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("opens setup for an unconfigured imported task and cancels without starting", async () => {
+    const startCard = vi.fn(() => makeCard());
+    renderBoard({ cards: [makeImportedCard()], startCard });
+    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Set up task")).toBeTruthy();
+    expect(within(dialog).getByText("#42")).toBeTruthy();
+    expect(startCard).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(startCard).not.toHaveBeenCalled();
+    expect(within(screen.getByRole("article", { name: "A pipeline card" })).getByText("Not started")).toBeTruthy();
+  });
+
+  it("starts an imported task after setup and closes the dialog", async () => {
+    const started = makeCard({
+      column: "todo",
+      startRequested: true,
+      hostId: "host_mac",
+      intake: DEFAULT_EXECUTION.intake,
+      lead: DEFAULT_EXECUTION.lead,
+    });
+    const startCard = vi.fn(async () => started);
+    const listCards = vi.fn()
+      .mockResolvedValueOnce({ cards: [makeImportedCard()], queue: [] })
+      .mockResolvedValue({ cards: [started], queue: [] });
+    renderBoard({ cards: [makeImportedCard()], startCard, listCards });
+    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+
+    await screen.findByRole("dialog");
+    fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "host_mac" } });
+    await screen.findAllByTestId("bb-provider-model-picker");
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start task" }));
+
+    await waitFor(() => expect(startCard).toHaveBeenCalledExactlyOnceWith({
+      cardId: "card_1",
+      hostId: "host_mac",
+      intake: DEFAULT_EXECUTION.intake,
+      lead: DEFAULT_EXECUTION.lead,
+    }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(within(await screen.findByRole("article", { name: "A pipeline card" })).getByText("To do")).toBeTruthy();
+  });
+
+  it("keeps the setup dialog and selections when start fails until a retry succeeds", async () => {
+    const started = makeCard({
+      column: "todo",
+      startRequested: true,
+      hostId: "host_mac",
+      intake: DEFAULT_EXECUTION.intake,
+      lead: DEFAULT_EXECUTION.lead,
+    });
+    let rejectStart!: (cause: Error) => void;
+    const startCard = vi.fn()
+      .mockImplementationOnce(() => new Promise<never>((_, reject) => { rejectStart = reject; }))
+      .mockResolvedValueOnce(started);
+    renderBoard({ cards: [makeImportedCard()], startCard });
+    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+    await screen.findByRole("dialog");
+    fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "host_mac" } });
+    await screen.findAllByTestId("bb-provider-model-picker");
+
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start task" }));
+    await waitFor(() => expect(startCard).toHaveBeenCalledTimes(1));
+    expect((within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeNull();
+
+    await act(async () => rejectStart(new Error("host unreachable")));
+    expect((await within(screen.getByRole("dialog")).findByRole("alert")).textContent).toContain("host unreachable");
+    expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe("host_mac");
+    expect(screen.getAllByTestId("bb-provider-model-picker").length).toBe(2);
+
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start task" }));
+    await waitFor(() => expect(startCard).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("opens setup when an unconfigured imported task is dragged to To do", async () => {
+    const startCard = vi.fn(() => makeCard());
+    renderBoard({ cards: [makeImportedCard()], startCard });
+    await screen.findByText("A pipeline card");
+    const drag = dragCard();
+    const target = screen.getByRole("region", { name: "To do" });
+    fireEvent.dragOver(target, drag);
+    fireEvent.drop(target, drag);
+    fireEvent.dragEnd(drag.card, drag);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Set up task")).toBeTruthy();
+    expect(startCard).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(startCard).not.toHaveBeenCalled();
+    expect(within(screen.getByRole("article", { name: "A pipeline card" })).getByText("Not started")).toBeTruthy();
+  });
+
+  it("starts a regular saved task directly without the setup dialog", async () => {
+    const startCard = vi.fn(() => makeCard({ column: "todo", startRequested: true }));
+    renderBoard({
+      cards: [makeCard({ startRequested: false, intake: null, lead: null, intakeThreadId: null })],
+      startCard,
+    });
+    await screen.findByText("Not started");
+
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(startCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("closes setup on an accepted start and exposes the existing Retry for a launch failure", async () => {
+    const started = makeCard({
+      column: "todo",
+      startRequested: true,
+      hostId: "host_mac",
+      intake: DEFAULT_EXECUTION.intake,
+      lead: DEFAULT_EXECUTION.lead,
+      launchError: "no providers on host",
+    });
+    const startCard = vi.fn(async () => started);
+    const listCards = vi.fn()
+      .mockResolvedValueOnce({ cards: [makeImportedCard()], queue: [] })
+      .mockResolvedValue({ cards: [started], queue: [] });
+    renderBoard({ cards: [makeImportedCard()], startCard, listCards });
+    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+    await screen.findByRole("dialog");
+    fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "host_mac" } });
+    await screen.findAllByTestId("bb-provider-model-picker");
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start task" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await screen.findByText("Launch failed: no providers on host")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Actions for A pipeline card" }));
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+
+  it("does not force inline machine selection on an imported task without a machine", async () => {
+    renderBoard({ cards: [makeImportedCard()] });
+    const row = await screen.findByRole("article", { name: "A pipeline card" });
+    expect(within(row).queryByRole("combobox", { name: "Machine for A pipeline card" })).toBeNull();
+    expect(within(row).getByText("Set up at start")).toBeTruthy();
+
+    fireEvent.click(within(row).getByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+    expect(within(detail).queryByRole("combobox", { name: "Machine for A pipeline card" })).toBeNull();
+    expect(within(detail).getByText("Chosen when the task starts")).toBeTruthy();
+  });
+
+  it("shows issue source, state, assignment, last checked, and scope notes, and refreshes via syncIssue", async () => {
+    let card = makeCard({
+      body: "Scope notes text\nsecond line",
+      importedIssue: makeImportedIssue({
+        state: "closed",
+        assignees: ["Someone-Else"],
+        importedBy: "RATUL-gh",
+        labels: ["bug", "perf"],
+        syncedAt: Date.UTC(2026, 8, 25, 10, 0),
+      }),
+    });
+    const syncIssue = vi.fn(() => {
+      card = makeCard({
+        importedIssue: makeImportedIssue({
+          state: "open",
+          assignees: ["ratul-gh"],
+          importedBy: "ratul-gh",
+          labels: ["bug", "perf"],
+          syncedAt: Date.UTC(2026, 8, 25, 11, 0),
+        }),
+      });
+      return card;
+    });
+    renderBoard({ cards: [card], listCards: vi.fn(() => ({ cards: [card], queue: [] })), syncIssue });
+    const row = await screen.findByRole("article", { name: "A pipeline card" });
+    expect(within(row).getByText("Issue closed")).toBeTruthy();
+
+    fireEvent.click(within(row).getByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+    const issue = within(detail).getByRole("region", { name: "Imported issue" });
+    expect(((within(issue).getByRole("link", { name: "#42 on GitHub" }) as HTMLAnchorElement).href))
+      .toBe("https://github.com/example/repo/issues/42");
+    expect(within(issue).getByText("Closed · No longer assigned to you", { selector: "dd" })).toBeTruthy();
+    expect(within(issue).getByText("bug")).toBeTruthy();
+    expect(within(issue).getByText("perf")).toBeTruthy();
+    expect(within(issue).getByText("Last checked 2026-09-25 10:00 UTC", { selector: "dd" })).toBeTruthy();
+    expect(within(detail).getByRole("region", { name: "Scope notes" })).toBeTruthy();
+    expect(within(detail).getByText("Source issue description")).toBeTruthy();
+
+    fireEvent.click(within(issue).getByRole("button", { name: "Refresh issue" }));
+    await waitFor(() => expect(syncIssue).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" }));
+    await waitFor(() => expect(
+      within(issue).getByText("Open · Assigned to ratul-gh", { selector: "dd" }),
+    ).toBeTruthy());
+    expect(within(issue).getByText("Last checked 2026-09-25 11:00 UTC", { selector: "dd" })).toBeTruthy();
+    expect(within(row).getByText("Issue #42")).toBeTruthy();
+  });
+
+  it("surfaces a failed issue refresh with the persisted error and allows retry", async () => {
+    let card = makeCard({ importedIssue: makeImportedIssue() });
+    let failSync!: (cause: Error) => void;
+    const syncIssue = vi.fn(() => new Promise<ReturnType<typeof makeCard>>((_, reject) => {
+      failSync = reject;
+    }));
+    const listCards = vi.fn()
+      .mockResolvedValueOnce({ cards: [card], queue: [] })
+      .mockResolvedValue({
+        cards: [makeCard({ importedIssue: makeImportedIssue({ error: "GitHub unavailable", syncedAt: Date.UTC(2026, 8, 25, 12, 0) }) })],
+        queue: [],
+      });
+    const { slot } = renderBoard({ cards: [card], listCards, syncIssue });
+    const row = await screen.findByRole("article", { name: "A pipeline card" });
+    fireEvent.click(within(row).getByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+    const refresh = within(detail).getByRole("button", { name: "Refresh issue" });
+    fireEvent.click(refresh);
+
+    expect(syncIssue).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" });
+    expect((refresh as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(refresh);
+    expect(syncIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => failSync(new Error("GitHub unavailable")));
+    expect((await within(detail).findByRole("alert")).textContent).toContain("GitHub unavailable");
+    expect((within(detail).getByRole("button", { name: "Refresh issue" }) as HTMLButtonElement).disabled).toBe(false);
+
+    await slot.behavior.emitRealtime("cards:changed", {});
+    expect(await within(row).findByText("Issue refresh failed")).toBeTruthy();
+    expect(within(detail).getByText("Issue refresh failed: GitHub unavailable")).toBeTruthy();
+    expect(within(detail).getByText("Last checked 2026-09-25 12:00 UTC", { selector: "dd" })).toBeTruthy();
+  });
+
+  it("keeps a newer issue snapshot when a stale action resolves at the same revision", async () => {
+    const base = makeCard({ importedIssue: makeImportedIssue() });
+    const refreshed = makeCard({ importedIssue: makeImportedIssue({ syncedAt: Date.UTC(2026, 8, 25, 11, 0) }) });
+    const stalePaused = makeCard({
+      runState: "pause_requested",
+      importedIssue: makeImportedIssue({ syncedAt: Date.UTC(2026, 8, 25, 10, 0) }),
+    });
+    const listCards = vi.fn()
+      .mockResolvedValueOnce({ cards: [base], queue: [] })
+      .mockResolvedValueOnce({ cards: [refreshed], queue: [] })
+      .mockImplementation(() => new Promise<{ cards: typeof base[]; queue: never[] }>(() => {}));
+    const syncIssue = vi.fn(async () => refreshed);
+    let finishPause!: (value: typeof stalePaused) => void;
+    const pauseCard = vi.fn(() => new Promise<typeof stalePaused>((resolve) => { finishPause = resolve; }));
+    renderBoard({ listCards, syncIssue, pauseCard });
+    const row = await screen.findByRole("article", { name: "A pipeline card" });
+    fireEvent.click(within(row).getByRole("button", { name: "Details for A pipeline card" }));
+    const detail = screen.getByRole("dialog");
+
+    fireEvent.click(within(detail).getByRole("button", { name: "Refresh issue" }));
+    await waitFor(() => expect(
+      within(detail).getByText("Last checked 2026-09-25 11:00 UTC", { selector: "dd" }),
+    ).toBeTruthy());
+
+    fireEvent.click(within(detail).getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(pauseCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" }));
+    expect(within(row).getByText("Saving")).toBeTruthy();
+    await act(async () => finishPause(stalePaused));
+    // Same-revision action snapshot lands, but the newer issue observation stays.
+    expect(within(detail).getByText("Last checked 2026-09-25 11:00 UTC", { selector: "dd" })).toBeTruthy();
   });
 
 });

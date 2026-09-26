@@ -16,6 +16,8 @@ Phases are documents stored on the BB server, read with `bb pipeline instruction
 
 **Intake:** a new card → `bb pipeline instructions intake` → ticket filed and tiered → approved handoff to a separate lead
 
+**Imported issue:** a card imported from an open GitHub issue → `bb pipeline instructions intake` (scope only; the source issue is read-only) → approved handoff to a separate lead → feature or bug flow from there
+
 **Feature:** approved spec → `bb pipeline instructions plan` → `bb pipeline instructions implement` → `bb pipeline instructions close-out`
 
 **Bug:** `bb pipeline instructions debug` (RCA first) → the lead plans the fix on the evidence → `bb pipeline instructions implement` gates → `bb pipeline instructions close-out`
@@ -35,7 +37,7 @@ Bugs get their final tier after the RCA; you cannot size what you have not diagn
 ## Non-negotiables
 
 1. Every piece of work traces to a ticket; a few words filed at kickoff is enough.
-2. The ticket is intent, not law. A requirement that is ambiguous, contradictory, or costs more than it is worth goes to the user with evidence, alternatives, and a recommendation. Update the ticket after the user decides.
+2. The ticket is intent, not law. A requirement that is ambiguous, contradictory, or costs more than it is worth goes to the user with evidence, alternatives, and a recommendation. Update the ticket after the user decides; an imported issue is read-only, so record that update in the card's local notes with `bb pipeline report --body-file <path>`.
 3. Every plan and engineering decision goes through the Oracle before it becomes work, including changes of direction mid-flight. No decision becomes work silently.
 4. Evidence before claims, at every gate.
 5. Root cause before fixes.

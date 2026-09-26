@@ -13,3 +13,13 @@ Ask every question in your user-facing chat reply, with the context and choices 
 5. **Ask the tier.** `trivial`, `small`, or `standard`. When it is a bug, the tier is provisional until the RCA stop. Before the turn ends on the question: `bb pipeline report --needs-you "tier selection"`.
 6. **Label.** Add `tier:<t>` (create the label if it is missing) and `bug` when it is a bug.
 7. **Hand off.** Ask "ready to plan?" Before a turn ends on that question or a no: `bb pipeline report --needs-you "approval to begin planning"`. On yes, run `bb pipeline report --column planning --issue <url> --tier <t> --working` as your last action.
+
+## Imported issues
+
+An imported card carries a GitHub issue the user picked: the full snapshot (title, body, labels, comments) sits on the card, the source URL is linked, and the issue already exists. The import is the task; the filing steps do not apply.
+
+- Read the snapshot, its comments, and the card's local notes first. Ask only what they leave open, not "what is this about".
+- The source issue is read-only. Never edit its body, labels, or comments, never comment on it, and never close, reopen, or reassign it. Step 4 (filing) and step 6 (labeling) do not apply.
+- Classification and scope decisions are local: write them to a file and persist them with `bb pipeline report --body-file <path>` before you hand off, stating the kind — bug or feature — you settled on so the lead can route without the source labels. The card's tier is stored on the card; do not turn it into issue labels.
+- Confirm the tier with the user when the card has none; keep the stored one when it does.
+- Hand off as in step 7 with `bb pipeline report --column planning --tier <t> --working`; the source issue is already linked to the card.

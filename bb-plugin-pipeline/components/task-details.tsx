@@ -11,6 +11,8 @@ import {
   taskGithubReviewLabel,
   taskGithubStateLabel,
   taskGithubSyncedLabel,
+  taskIssueAssignmentLabel,
+  taskIssueSyncedLabel,
   taskPresentationState,
   taskStage,
 } from "./task-state";
@@ -72,13 +74,17 @@ export function TaskDetails(props: PipelineCardProps) {
             <dt>Machine</dt>
             <dd>
               {card.hostId === null ? (
-                <MachineSelect
-                  machines={props.machines}
-                  value=""
-                  onChange={props.onSetMachine}
-                  disabled={props.pending}
-                  label={`Machine for ${card.title}`}
-                />
+                card.importedIssue !== null ? (
+                  <span className="pipeline-machine-setup">Chosen when the task starts</span>
+                ) : (
+                  <MachineSelect
+                    machines={props.machines}
+                    value=""
+                    onChange={props.onSetMachine}
+                    disabled={props.pending}
+                    label={`Machine for ${card.title}`}
+                  />
+                )
               ) : machine === undefined ? card.hostId : machine.name}
             </dd>
             {card.issueUrl === null ? null : (
@@ -135,6 +141,56 @@ export function TaskDetails(props: PipelineCardProps) {
                 </p>
               ))}
             </div>
+          )}
+
+          {card.importedIssue === null ? null : (
+            <section className="pipeline-github" aria-label="Imported issue">
+              <h3>Issue</h3>
+              <dl className="pipeline-github-fields">
+                <dt>Source</dt>
+                <dd>
+                  <a href={card.importedIssue.url} target="_blank" rel="noreferrer">
+                    #{card.importedIssue.number} on GitHub <Icon name="ExternalLink" />
+                  </a>
+                </dd>
+                <dt>State</dt>
+                <dd>
+                  {card.importedIssue.state === "closed" ? "Closed" : "Open"}
+                  {taskIssueAssignmentLabel(card) === null ? null : ` · ${taskIssueAssignmentLabel(card)}`}
+                </dd>
+                <dt>Labels</dt>
+                <dd>
+                  {card.importedIssue.labels.length === 0 ? "None" : (
+                    <span className="pipeline-import-labels">
+                      {card.importedIssue.labels.map((label) => (
+                        <span key={label} className="pipeline-import-label">{label}</span>
+                      ))}
+                    </span>
+                  )}
+                </dd>
+                <dt>Checked</dt>
+                <dd>{taskIssueSyncedLabel(card)}</dd>
+              </dl>
+              {card.importedIssue.error === null ? null : (
+                <p className="pipeline-task-reason pipeline-card-error" data-tone="error">
+                  <Icon name="AlertCircle" />
+                  Issue refresh failed: {card.importedIssue.error}
+                </p>
+              )}
+              {card.importedIssue.body.trim() === "" ? null : (
+                <div className="pipeline-issue-body" aria-label="Issue description">{card.importedIssue.body}</div>
+              )}
+              <div className="pipeline-github-actions">
+                <button
+                  type="button"
+                  className="pipeline-button pipeline-ghost"
+                  disabled={props.pending}
+                  onClick={props.onSyncIssue}
+                >
+                  <Icon name="RotateCcw" /> Refresh issue
+                </button>
+              </div>
+            </section>
           )}
 
           {card.prUrl === null ? null : (
@@ -208,7 +264,12 @@ export function TaskDetails(props: PipelineCardProps) {
           )}
 
           {card.body.trim() === "" ? null : (
-            <p>{card.body}</p>
+            card.importedIssue === null ? <p>{card.body}</p> : (
+              <section className="pipeline-scope-notes" aria-label="Scope notes">
+                <h3>Scope notes</h3>
+                <p>{card.body}</p>
+              </section>
+            )
           )}
 
           {card.attachments.length === 0 ? null : (

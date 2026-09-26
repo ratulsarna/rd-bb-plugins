@@ -27,4 +27,17 @@ describe("skill frontmatter", () => {
       expect((fields.description as string).trim(), skillFile).not.toBe("");
     }
   });
+
+  it("documents the issue import commands and the card's local scope", () => {
+    const skill = readFileSync(join(resolve("skills"), "pipeline", "SKILL.md"), "utf8");
+    for (const fragment of [
+      "bb pipeline issues",
+      "bb pipeline import-issues",
+      "--body <text>",
+      "--body-file <path>",
+      "read-only",
+    ]) {
+      expect(skill, fragment).toContain(fragment);
+    }
+  });
 });

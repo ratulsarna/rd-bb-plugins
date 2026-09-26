@@ -14,11 +14,13 @@ import {
   createCardStore,
   MIGRATIONS,
   type CardAttachment,
+  type Card,
 } from "../lib/store";
 import { ownerThread } from "../lib/card";
 import type { Database } from "better-sqlite3";
 import {
   makeCatalogProvider,
+  makeImportedIssue,
   makeCheckoutEnvironment,
   testCatalogProviders,
   testProviderModels,
@@ -110,6 +112,7 @@ function setup(options?: {
   project?: typeof project;
   hosts?: typeof hostList;
   readIssue?: (url: string) => Promise<{ title: string; body: string; labels: string[] }>;
+  refreshImportedIssue?: (cardId: string) => Promise<Card>;
   classify?: (input: unknown) => Promise<{ decision: "needs" | "no" | "unknown"; probability: number | null }>;
   settings?: PipelineSettings;
   getSettings?: () => Promise<PipelineSettings>;
@@ -193,6 +196,7 @@ function setup(options?: {
     getSettings: options?.getSettings ?? (async () => options?.settings ?? settings),
     rememberExecution,
     readIssue,
+    refreshImportedIssue: (cardId) => options?.refreshImportedIssue?.(cardId) ?? Promise.resolve(store.get(cardId)!),
     classify,
     log,
     publish,
@@ -2943,5 +2947,81 @@ describe("machine selection", () => {
 
     expect(assigned.hostId).toBe("host_linux");
     expect(store.get("card_legacy")?.hostId).toBe("host_linux");
+  });
+});
+
+describe("starting imported issues", () => {
+  function imported(store: ReturnType<typeof setup>["store"]) {
+    return store.create({
+      id: "imported", projectId: "proj_1", hostId: null, title: "Imported task", body: "Local scope",
+      attachments: [], startRequested: false, source: "github", importedIssue: makeImportedIssue(),
+    });
+  }
+
+  it("keeps configuration untouched on rejected setup and serializes repeated starts", async () => {
+    const s = setup();
+    const card = imported(s.store);
+    await expect(s.service.start(card.id, "ui")).rejects.toThrow("Choose a machine");
+    await expect(s.service.start(card.id, "ui", { hostId: "host_mac", intake: { providerId: "missing", model: "none" } }))
+      .rejects.toThrow("not installed");
+    expect(s.store.get(card.id)).toEqual(card);
+    expect(s.rememberExecution).not.toHaveBeenCalled();
+    const [first, second] = await Promise.all([
+      s.service.start(card.id, "ui", { hostId: "host_mac" }),
+      s.service.start(card.id, "ui", { hostId: "host_mac" }),
+    ]);
+    expect(first.intakeThreadId).toBe(second.intakeThreadId);
+    expect(s.spawn).toHaveBeenCalledOnce();
+    expect(s.rememberExecution).toHaveBeenCalledOnce();
+    expect(first).toMatchObject({
+      startRequested: true, hostId: "host_mac", column: "todo",
+      intake: { providerId: settings.providerId, model: settings.model },
+      lead: { providerId: settings.providerId, model: settings.model },
+    });
+  });
+
+  it("waits on a failed GitHub refresh, then retries with fresh issue context and local scope", async () => {
+    let failure = true;
+    const refreshImportedIssue = vi.fn(async (id: string) => {
+      if (failure) throw new Error("GitHub unavailable");
+      s.store.setImportedIssue(id, makeImportedIssue({ body: "Latest description", comments: [
+        { author: "maintainer", body: "Latest constraint", createdAt: "2026-09-26T01:00:00Z", url: "https://github.com/example/repo/issues/12#issuecomment-2" },
+      ] }));
+      return s.store.get(id)!;
+    });
+    const s = setup({ refreshImportedIssue });
+    const card = imported(s.store);
+    const failed = await s.service.start(card.id, "ui", { hostId: "host_mac" });
+    expect(failed).toMatchObject({ startRequested: true, intakeThreadId: null, launchError: "intake: GitHub unavailable" });
+    expect(s.spawn).not.toHaveBeenCalled();
+    failure = false;
+    await s.service.retry(card.id);
+    expect(s.spawn).toHaveBeenCalledOnce();
+    const kickoff = JSON.stringify(s.spawn.mock.calls[0]);
+    expect(kickoff).toContain("Latest description");
+    expect(kickoff).toContain("Latest constraint");
+    expect(kickoff).toContain("Local scope");
+    expect(s.readIssue).not.toHaveBeenCalled();
+
+    await s.service.report({ cardId: card.id, body: "Clarified scope from intake", column: "planning", tier: "small" });
+    expect(s.spawn).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(s.spawn.mock.calls[1])).toContain("Clarified scope from intake");
+    expect(s.store.get(card.id)?.importedIssue?.body).toBe("Latest description");
+    await expect(s.service.report({ cardId: card.id, issueUrl: "https://github.com/example/repo/issues/99" }))
+      .rejects.toThrow("original issue");
+  });
+
+  it("does not launch after a task is paused during execution validation", async () => {
+    let finish!: () => void;
+    const blocked = new Promise<void>((resolve) => { finish = resolve; });
+    const s = setup({ listProviders: async () => { await blocked; return testCatalogProviders; } });
+    const card = imported(s.store);
+    const starting = s.service.start(card.id, "ui", { hostId: "host_mac" });
+    await vi.waitFor(() => expect(s.listProviders).toHaveBeenCalled());
+    s.store.update(card.id, { runState: "paused" });
+    finish();
+    await expect(starting).rejects.toThrow("resume it");
+    expect(s.spawn).not.toHaveBeenCalled();
+    expect(s.store.get(card.id)).toMatchObject({ hostId: null, startRequested: false, column: "backlog" });
   });
 });

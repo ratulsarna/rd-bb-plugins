@@ -1,7 +1,7 @@
 ---
 name: pipeline
 disable-model-invocation: true
-description: "Work the pipeline board: add, start, list, show, move, pause, and resume tasks. Specify a machine; optionally choose separate intake and lead models and reasoning. Upload attachments first."
+description: "Work the pipeline board: add, import GitHub issues, start, list, show, move, pause, and resume tasks. Specify a machine; optionally choose separate intake and lead models and reasoning. Upload attachments first."
 ---
 
 # Pipeline: Board
@@ -13,14 +13,17 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 - `bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>]` — read the workflow document or phase template when working on a Pipeline task.
 
 - `bb pipeline add --title <t> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project.
-- `bb pipeline start <card-id>` — start intake for a saved task using its stored machine, models, notes, and attachments. Repeated Start requests do not launch again; use Retry after a failed start.
+- `bb pipeline start <card-id> [--machine <id-or-name>] [execution overrides]` — start intake for a saved task using its stored machine, models, notes, and attachments; the flags accept the same machine and execution overrides as `add`. Repeated Start requests do not launch again; use Retry after a failed start.
 - `bb pipeline set-machine <card-id> --machine <id-or-name>` — assign a machine to a card that has none. An assigned machine cannot be changed.
 - `bb pipeline list [--project <id>] [--all]` — the board's cards; `done` is hidden unless `--all`.
+- `bb pipeline issues [--project <id>] [--page <n>]` — the project's open GitHub issues assigned to the BB server's account, page by page, each with the card it is imported to, if any.
+- `bb pipeline import-issues <number>... [--project <id>]` — import issues as Backlog cards carrying the full issue snapshot; up to 50 per call, and an already-imported issue returns its existing card.
 - `bb pipeline show <card-id>` — the card, its history, and its threads.
 - `bb pipeline queue [--project <id>]` — running and waiting tasks by machine, including each wait reason and the selected next task.
 - `bb pipeline run-next <card-id>` — favor this waiting task when a slot opens on its project and machine.
 - `bb pipeline run-next <card-id> --clear` — clear that selection if it is still current.
 - `bb pipeline github-sync <card-id>` — refresh the linked PR, checks, and review status; retry an unknown review classification.
+- `bb pipeline report --body <text>` or `bb pipeline report --body-file <path>` — store local scope notes on the card; `--body-file` requires a BB thread and reads the file from that thread's machine.
 - `bb pipeline review-wait [--card <id>] [--handled <batch-id>]` — hand off external review from the owning lead. It posts the configured request once per revision; an empty `reviewRequestComment` uses automatic reviews. End the turn after the command succeeds.
 - `bb pipeline review-retry <card-id>` — retry a cancelled or failed review follow-up. Check the lead first if delivery was unconfirmed.
 - `bb pipeline retry <card-id>` — retry a failed or cancelled kickoff. A cancelled kickoff uses its existing thread and waits for capacity.
@@ -54,6 +57,12 @@ bb pipeline add --title "Improve startup" --machine <id-or-name> \
 ```
 
 When spawning workers for a card, use `--parent-self` so they belong to the task, and use its existing environment or explicitly select its stored machine for a new environment.
+
+### Imported issues
+
+An imported card works from a GitHub issue the user picked. The card carries the full snapshot (title, body, labels, comments), the source link, and its own local notes (`Card.body`, stored with `report --body` or `report --body-file`). The source issue is read-only: never edit its body, labels, or comments, never comment on it, and never close, reopen, or reassign it. Keep scope, decisions, and classification in the local notes, and the tier on the card; do not add labels to the source issue.
+
+Start behaves like any card: an imported card missing a machine or role choices asks for them before launching. The snapshot refreshes on import, at start, and through **Refresh issue** in task details; `github-sync` stays PR-only and issues are not polled in the background. A closed or reassigned source keeps its card and shows its state.
 
 Two Pipeline tasks can run at once per project and machine. A card's intake, lead, and children share one slot until their running work, tracked background work, and active autonomous goals stop. Further starts, replies, and retries queue automatically when both slots are occupied. Use `bb pipeline queue` to read the occupants and wait reasons before choosing a card with `run-next`. The saved choice applies only to that project and machine, replaces an earlier choice there, and does not interrupt running work. It clears when the task starts. A nominee blocked for another reason does not prevent eligible work from running. `list` and `show` expose `queued`, `waitingReasons`, and `runNext` with `--json`. Send now cannot bypass the limit. Ordinary BB threads are outside it.
 

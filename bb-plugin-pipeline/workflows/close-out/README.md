@@ -10,7 +10,7 @@ Entry: the implementation walkthrough is approved in `run.md` and the implementa
    `bb pipeline report --column pr --pr <url> --working`
    For user-facing work attach the recording with `gh pr create --attach <file>`. If upload fails, report it and provide the local file path.
 3. **Hand off external review.** Run `bb pipeline review-wait`. It posts the configured review-request comment once for this revision (initially `@codex review`), or relies on automatic review when that setting is empty. A failed command is an incomplete handoff: explain the error and ask for help if needed.
-4. **Report and end the turn.** Give the user the draft PR link, verification summary, size, and relevant ledger decisions. State that external review is pending. Update the ticket with the outcome and PR link. Close finished task-scoped workers. Keep the Oracle session available for subsequent review decisions. Finish or pause autonomous goals and end the turn; Pipeline monitors review feedback and sends a follow-up when triage is needed. Missing CI runs do not block this handoff.
+4. **Report and end the turn.** Give the user the draft PR link, verification summary, size, and relevant ledger decisions. State that external review is pending. Update the ticket with the outcome and PR link; for an imported issue, record the outcome in the card's local notes with `bb pipeline report --body-file <path>` instead of editing the source. Close finished task-scoped workers. Keep the Oracle session available for subsequent review decisions. Finish or pause autonomous goals and end the turn; Pipeline monitors review feedback and sends a follow-up when triage is needed. Missing CI runs do not block this handoff.
 
 ## When Pipeline delivers review feedback
 

@@ -9,7 +9,8 @@ import {
 import type { Database } from "better-sqlite3";
 import plugin from "../server";
 import { createCardStore, type Card } from "../lib/store";
-import { makeCheckoutEnvironment, testCatalogProviders, testProviderModels } from "./sdk-fake";
+import * as issueReader from "../lib/issue";
+import { makeCheckoutEnvironment, makeImportedIssue, testCatalogProviders, testProviderModels } from "./sdk-fake";
 
 const skillIds = ["pipeline"];
 
@@ -17,6 +18,7 @@ const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
 
 afterEach(async () => {
   while (hosts.length > 0) await hosts.pop()!.harness.lifecycle.dispose();
+  vi.restoreAllMocks();
 });
 
 async function setup(options?: {
@@ -116,6 +118,44 @@ function seedLegacyCard(db: Database, id = "card_legacy"): void {
 }
 
 describe("plugin wiring", () => {
+  it("imports across RPC and CLI and waits for a successful issue refresh before launching", async () => {
+    const source = makeImportedIssue();
+    vi.spyOn(issueReader, "readGithubViewer").mockResolvedValue("ratul");
+    vi.spyOn(issueReader, "listAssignedIssues").mockResolvedValue({ issues: [source], hasMore: false });
+    const read = vi.spyOn(issueReader, "readGithubIssue").mockResolvedValue(source);
+    const { host } = await setup();
+    const rpc = host.harness.behavior.callRpc;
+    expect(await rpc("listIssues", { projectId: "proj_1" })).toMatchObject({
+      repository: "example/repo", viewer: "ratul", issues: [{ number: 12, cardId: null }],
+    });
+    const imported = await rpc("importIssues", { projectId: "proj_1", numbers: [12] }) as { cards: Card[] };
+    const card = imported.cards[0]!;
+    expect(card).toMatchObject({ hostId: null, intake: null, lead: null, startRequested: false });
+    const duplicate = await host.harness.behavior.runCli(["import-issues", "12", "--json"], { projectId: "proj_1" });
+    expect(duplicate.exitCode).toBe(0);
+    expect(JSON.parse(duplicate.stdout)).toMatchObject({ cards: [{ id: card.id }], errors: [] });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+
+    read.mockRejectedValueOnce(new Error("GitHub is unavailable"));
+    const started = await host.harness.behavior.runCli(["start", card.id, "--machine", "Work laptop", "--json"]);
+    expect(started.exitCode).toBe(0);
+    expect(JSON.parse(started.stdout)).toMatchObject({
+      startRequested: true, intakeThreadId: null, launchError: "intake: GitHub is unavailable",
+      importedIssue: { error: "GitHub is unavailable" },
+    });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+    read.mockResolvedValue({ ...source, body: "Fresh scope from GitHub" });
+    expect(await rpc("retryLaunch", { cardId: card.id })).toMatchObject({ intakeThreadId: "intake", launchError: null });
+    const launches = host.harness.inspection.sdk.callsTo("threads.spawn");
+    expect(launches).toHaveLength(1);
+    expect(JSON.stringify(launches[0])).toContain("Fresh scope from GitHub");
+    expect(await rpc("listIssues", { projectId: "proj_1" })).toMatchObject({ issues: [{ cardId: card.id }] });
+    read.mockResolvedValue({ ...source, state: "closed", assignees: [] });
+    expect(await rpc("syncIssue", { cardId: card.id })).toMatchObject({
+      column: "todo", importedIssue: { state: "closed", assignees: [], error: null },
+    });
+  });
+
   it("recovers a created intake after reload without starting other saved tasks", async () => {
     const { host, db } = await setup();
     const input = {
@@ -641,7 +681,7 @@ describe("plugin wiring", () => {
     );
 
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("--machine is only accepted by add and set-machine");
+    expect(result.stderr).toContain("--machine is only accepted by add, start and set-machine");
   });
 
   it("requires hostId on the addCard RPC", async () => {

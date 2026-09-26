@@ -4,6 +4,7 @@ import { COLUMNS } from "./columns";
 import { executionSelectionSchema } from "./execution";
 import { RUN_STATES } from "./store";
 import { githubStatusSchema } from "./github-types";
+import { githubIssueSummarySchema, importedIssueSchema } from "./issue-types";
 import { settingsViewSchema, settingsUpdateSchema, integrationStatusSchema } from "./settings";
 
 export const columnSchema = z.enum(COLUMNS);
@@ -37,6 +38,7 @@ export const cardSchema = z
     reportSignal: z.enum(["needs_you", "working"]).nullable(),
     tier: tierSchema.nullable(),
     issueUrl: z.string().nullable(),
+    importedIssue: importedIssueSchema.nullable(),
     prUrl: z.string().nullable(),
     github: githubStatusSchema.nullable(),
     intakeThreadId: z.string().nullable(),
@@ -149,6 +151,26 @@ export const rpcContract = defineRpcContract({
     output: cardSchema,
   },
   startCard: {
+    input: z.object({
+      cardId: z.string(),
+      hostId: z.string().trim().min(1).optional(),
+      intake: executionSelectionSchema.partial().optional(),
+      lead: executionSelectionSchema.partial().optional(),
+    }).strict(),
+    output: cardSchema,
+  },
+  listIssues: {
+    input: z.object({ projectId: z.string().min(1), page: z.number().int().positive().optional() }).strict(),
+    output: z.object({
+      repository: z.string(), viewer: z.string(), hasMore: z.boolean(),
+      issues: z.array(githubIssueSummarySchema.extend({ cardId: z.string().nullable() })),
+    }).strict(),
+  },
+  importIssues: {
+    input: z.object({ projectId: z.string().min(1), numbers: z.array(z.number().int().positive()).min(1).max(50) }).strict(),
+    output: z.object({ cards: z.array(cardSchema), errors: z.array(z.object({ number: z.number(), message: z.string() }).strict()) }).strict(),
+  },
+  syncIssue: {
     input: z.object({ cardId: z.string() }).strict(),
     output: cardSchema,
   },

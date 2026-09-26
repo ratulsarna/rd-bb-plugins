@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { createPipelineCli } from "../lib/cli";
 import type { MachineQueue } from "../lib/contract";
 import { createCardStore, MIGRATIONS } from "../lib/store";
+import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { makeCheckoutEnvironment } from "./sdk-fake";
+import type { ReportInput } from "../lib/service";
 
 function setup() {
   const db = new Database(":memory:");
@@ -38,12 +41,13 @@ function setup() {
     sdk: {} as never,
     controls: {} as never,
     github: {} as never,
+    issues: {} as never,
     capacity: {
       snapshot: vi.fn(async () => queue),
       setRunNext,
     } as never,
   });
-  return { db, card, cli, setRunNext };
+  return { db, store, card, cli, setRunNext };
 }
 
 describe("pipeline queue CLI", () => {
@@ -86,6 +90,37 @@ describe("pipeline queue CLI", () => {
       expect(setRunNext).toHaveBeenNthCalledWith(2, card.id, false);
     } finally {
       db.close();
+    }
+  });
+});
+
+describe("local scope reports", () => {
+  it("reads a body file from the invoking thread machine and preserves its newlines", async () => {
+    const s = setup();
+    const read = vi.fn(async () => ({ content: "Agreed scope\n\nKeep existing behavior.", contentEncoding: "utf8" as const, path: "/work/scope.md", sizeBytes: 43, sha256: "test" }));
+    const host = createFakePluginHost({ sdk: {
+      threads: { get: async () => makeThreadResponse({ environmentId: "env_remote" }) },
+      environments: { get: async () => makeCheckoutEnvironment({ id: "env_remote", hostId: "remote_host", path: "/work" }) },
+      files: { read },
+    } });
+    const report = vi.fn(async (input: ReportInput) => s.store.update(s.card.id, { body: input.body }));
+    const cli = createPipelineCli({
+      service: { report } as never, store: s.store, sdk: host.bb.sdk,
+      controls: {} as never, github: {} as never, issues: {} as never, capacity: {} as never,
+    });
+    try {
+      const result = await cli.run(["report", "--body-file", "scope.md", "--json"], { threadId: "intake", cwd: "/work" });
+      expect(result.exitCode).toBe(0);
+      expect(read).toHaveBeenCalledWith(expect.objectContaining({ hostId: "remote_host", path: "/work/scope.md" }));
+      expect(s.store.get(s.card.id)?.body).toBe("Agreed scope\n\nKeep existing behavior.");
+      const calls = read.mock.calls.length;
+      expect((await cli.run(["report", "--body", "inline", "--body-file", "scope.md"], { threadId: "intake" })).exitCode).toBe(1);
+      expect((await cli.run(["report", "--body-file", "/work/scope.md"], {})).exitCode).toBe(1);
+      expect(read).toHaveBeenCalledTimes(calls);
+      expect(report).toHaveBeenCalledOnce();
+    } finally {
+      s.db.close();
+      await host.harness.lifecycle.dispose();
     }
   });
 });

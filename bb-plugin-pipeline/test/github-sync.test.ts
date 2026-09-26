@@ -389,6 +389,7 @@ describe("GitHub review handoff", () => {
     const service = createPipelineService({
       store: s.store, sdk: s.host.bb.sdk, classify, publish: () => {}, log: () => {}, onAttention: () => {},
       readIssue: async () => ({ title: "", body: "", labels: [] }),
+      refreshImportedIssue: async (id) => s.store.get(id)!,
       getSettings: async () => ({ providerId: "codex", model: "model", reasoningLevel: "high", permissionMode: "full", jevThreshold: ".7" }),
     });
     await s.sync.waitForReview("card", "lead");

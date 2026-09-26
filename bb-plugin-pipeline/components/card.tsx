@@ -11,6 +11,7 @@ import { MachineSelect } from "./machine-select";
 import { TaskDetails } from "./task-details";
 import {
   taskGithubSummary,
+  taskIssueSummary,
   taskPresentationState,
   taskPrimaryReason,
   taskQuestionOpen,
@@ -48,6 +49,7 @@ export function PipelineCard(props: PipelineCardProps) {
   const state = taskPresentationState(card, props);
   const reason = taskPrimaryReason(card, props);
   const github = taskGithubSummary(card);
+  const issue = taskIssueSummary(card);
   const questionOpen = taskQuestionOpen(card, props.questionOpen);
   const machineName = props.machines.find((machine) => machine.id === card.hostId)?.name ?? card.hostId;
 
@@ -91,6 +93,9 @@ export function PipelineCard(props: PipelineCardProps) {
           {github === null ? null : (
             <span className="pipeline-github-chip" data-tone={github.tone}>{github.label}</span>
           )}
+          {issue === null ? null : (
+            <span className="pipeline-github-chip" data-tone={issue.tone}>{issue.label}</span>
+          )}
           {questionOpen ? <span className="sr-only" aria-label="Question open">Question open</span> : null}
           <StartTaskButton card={card} pending={props.pending} onStart={props.onStart} />
         </div>
@@ -110,13 +115,20 @@ export function PipelineCard(props: PipelineCardProps) {
 
         <div className="pipeline-task-machine" data-card-control>
           {card.hostId === null ? (
-            <MachineSelect
-              machines={props.machines}
-              value=""
-              onChange={props.onSetMachine}
-              disabled={props.pending}
-              label={`Machine for ${card.title}`}
-            />
+            card.importedIssue !== null ? (
+              <span className="pipeline-machine pipeline-machine-setup" title="Machine and execution are chosen when the task starts">
+                <Icon name="Laptop" />
+                <span className="pipeline-machine-name">Set up at start</span>
+              </span>
+            ) : (
+              <MachineSelect
+                machines={props.machines}
+                value=""
+                onChange={props.onSetMachine}
+                disabled={props.pending}
+                label={`Machine for ${card.title}`}
+              />
+            )
           ) : (
             <span className="pipeline-machine" title={`Machine: ${machineName}`}>
               <Icon name="Laptop" />

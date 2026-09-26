@@ -1,6 +1,7 @@
 import type { Database } from "better-sqlite3";
 import type { Column } from "./columns";
 import type { GithubStatus, GithubSyncState } from "./github-types";
+import type { ImportedIssue } from "./issue-types";
 import {
   executionSelectionSchema,
   type ExecutionSelection,
@@ -21,7 +22,7 @@ export interface CardAttachment {
 export interface Card {
   id: string;
   projectId: string;
-  /** Machine the card runs on; null only for rows created before machines were mandatory. */
+  /** Imported tasks choose their machine when started. */
   hostId: string | null;
   intake: ExecutionSelection | null;
   lead: ExecutionSelection | null;
@@ -37,6 +38,7 @@ export interface Card {
   reportSignal: "needs_you" | "working" | null;
   tier: "trivial" | "small" | "standard" | null;
   issueUrl: string | null;
+  importedIssue: ImportedIssue | null;
   prUrl: string | null;
   github: GithubStatus | null;
   intakeThreadId: string | null;
@@ -77,6 +79,10 @@ export type CardPatch = Partial<
   Pick<
     Card,
     | "column"
+    | "body"
+    | "hostId"
+    | "intake"
+    | "lead"
     | "needsUser"
     | "attentionReason"
     | "attentionSource"
@@ -115,6 +121,7 @@ interface CardRow {
   report_signal: "needs_you" | "working" | null;
   tier: "trivial" | "small" | "standard" | null;
   issue_url: string | null;
+  imported_issue: string | null;
   pr_url: string | null;
   github_state: string | null;
   intake_thread_id: string | null;
@@ -183,6 +190,8 @@ export const MIGRATIONS = [
   );`,
   `ALTER TABLE cards ADD COLUMN start_requested INTEGER NOT NULL DEFAULT 1 CHECK (start_requested IN (0, 1));`,
   `ALTER TABLE cards ADD COLUMN github_state TEXT;`,
+  `ALTER TABLE cards ADD COLUMN imported_issue TEXT;
+   CREATE UNIQUE INDEX cards_imported_issue ON cards(project_id, lower(issue_url)) WHERE imported_issue IS NOT NULL;`,
 ] as const;
 
 function parseAttachments(value: string): CardAttachment[] {
@@ -223,6 +232,7 @@ function cardFromRow(row: CardRow): Card {
     reportSignal: row.report_signal,
     tier: row.tier,
     issueUrl: row.issue_url,
+    importedIssue: row.imported_issue == null ? null : JSON.parse(row.imported_issue) as ImportedIssue,
     prUrl: row.pr_url,
     github: row.github_state == null ? null : (JSON.parse(row.github_state) as GithubSyncState).status,
     intakeThreadId: row.intake_thread_id,
@@ -257,7 +267,7 @@ export interface CardStore {
   create(input: {
     id: string;
     projectId: string;
-    hostId: string;
+    hostId: string | null;
     intake?: ExecutionSelection;
     lead?: ExecutionSelection;
     startRequested?: boolean;
@@ -265,14 +275,17 @@ export interface CardStore {
     body: string;
     attachments: CardAttachment[];
     source: string;
+    importedIssue?: ImportedIssue;
   }): Card;
-  /** One-time machine assignment for legacy cards; refuses to move an assigned card. */
+  /** Refuses to move an assigned card. */
   setHost(id: string, hostId: string): Card;
+  setImportedIssue(id: string, issue: ImportedIssue): boolean;
   get(id: string): Card | null;
   getByThread(threadId: string): Card | null;
   getIncompleteStart(id: string): Card | null;
   listIncompleteStarts(): Card[];
   list(projectId: string, includeDone?: boolean): Card[];
+  listIssueLinks(projectId: string): Array<{ id: string; issueUrl: string }>;
   listActiveWithOwner(): Card[];
   listControlled(): Card[];
   listGithubCards(): Card[];
@@ -330,11 +343,15 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       const current = read(id);
       if (current === null) throw new Error(`unknown card ${id}`);
       const next = { ...current, ...patch, updatedAt: now() };
+      if (current.hostId !== null && current.hostId !== next.hostId) {
+        throw new Error(`card ${id} is already assigned to machine ${current.hostId}`);
+      }
       db.prepare(
         `UPDATE cards SET
           "column" = ?, needs_user = ?, attention_reason = ?, attention_source = ?, attention_unknown = ?,
           report_signal = ?, tier = ?, issue_url = ?, pr_url = ?, intake_thread_id = ?, lead_thread_id = ?,
-          owner_role = ?, start_requested = ?, run_state = ?, pause_request_id = ?, control_error = ?, thread_error = ?, launch_error = ?, revision = revision + 1, updated_at = ?
+          owner_role = ?, start_requested = ?, run_state = ?, pause_request_id = ?, control_error = ?, thread_error = ?, launch_error = ?,
+          body = ?, host_id = ?, intake_execution = ?, lead_execution = ?, revision = revision + 1, updated_at = ?
          WHERE id = ?`,
       ).run(
         next.column,
@@ -355,6 +372,10 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         next.controlError,
         next.threadError,
         next.launchError,
+        next.body,
+        next.hostId,
+        next.intake === null ? null : JSON.stringify(next.intake),
+        next.lead === null ? null : JSON.stringify(next.lead),
         next.updatedAt,
         id,
       );
@@ -376,10 +397,15 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
     create: db.transaction((input) => {
       const at = now();
       const started = input.startRequested !== false;
+      if (input.importedIssue) {
+        const existing = db.prepare("SELECT * FROM cards WHERE project_id = ? AND issue_url = ? COLLATE NOCASE LIMIT 1")
+          .get(input.projectId, input.importedIssue.url) as CardRow | undefined;
+        if (existing) return cardFromRow(existing);
+      }
       db.prepare(
         `INSERT INTO cards
-          (id, project_id, host_id, intake_execution, lead_execution, start_requested, title, body, attachments, "column", created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, project_id, host_id, intake_execution, lead_execution, start_requested, title, body, attachments, "column", issue_url, imported_issue, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         input.id,
         input.projectId,
@@ -391,6 +417,8 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         input.body,
         JSON.stringify(input.attachments),
         started ? "todo" : "backlog",
+        input.importedIssue?.url ?? null,
+        input.importedIssue === undefined ? null : JSON.stringify(input.importedIssue),
         at,
         at,
       );
@@ -420,6 +448,15 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       return read(id)!;
     }),
     get: read,
+    listIssueLinks(projectId) {
+      return db.prepare("SELECT id, issue_url AS issueUrl FROM cards WHERE project_id = ? AND issue_url IS NOT NULL")
+        .all(projectId) as Array<{ id: string; issueUrl: string }>;
+    },
+    setImportedIssue(id, issue) {
+      // Observations must not invalidate an in-flight launch or overwrite local notes.
+      return db.prepare("UPDATE cards SET imported_issue = ? WHERE id = ? AND issue_url = ? COLLATE NOCASE AND imported_issue IS NOT NULL")
+        .run(JSON.stringify(issue), id, issue.url).changes > 0;
+    },
     listGithubCards() {
       return (db.prepare(`SELECT * FROM cards WHERE pr_url IS NOT NULL AND "column" <> 'done' AND start_requested = 1`).all() as CardRow[]).map(cardFromRow);
     },

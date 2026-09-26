@@ -249,7 +249,38 @@ export function taskGithubRetryable(card: Card): boolean {
 export function taskGithubSyncedLabel(card: Card): string {
   const github = card.github;
   if (github === null || github.syncedAt === null) return "Not synced yet";
-  const at = new Date(github.syncedAt);
+  return formatUtcStamp(github.syncedAt);
+}
+
+function formatUtcStamp(at: number): string {
+  const date = new Date(at);
   const part = (value: number) => String(value).padStart(2, "0");
-  return `${at.getUTCFullYear()}-${part(at.getUTCMonth() + 1)}-${part(at.getUTCDate())} ${part(at.getUTCHours())}:${part(at.getUTCMinutes())} UTC`;
+  return `${date.getUTCFullYear()}-${part(date.getUTCMonth() + 1)}-${part(date.getUTCDate())} ${part(date.getUTCHours())}:${part(date.getUTCMinutes())} UTC`;
+}
+
+function assigneeLogin(login: string): string {
+  return login.toLowerCase();
+}
+
+export function taskIssueSummary(card: Card): TaskGithubSummary | null {
+  const imported = card.importedIssue;
+  if (imported === null) return null;
+  if (imported.error !== null) return { label: "Issue refresh failed", tone: "error" };
+  if (imported.state === "closed") return { label: "Issue closed", tone: "warn" };
+  const mine = imported.assignees.some((login) => assigneeLogin(login) === assigneeLogin(imported.importedBy));
+  if (!mine) return { label: "No longer assigned to you", tone: "warn" };
+  return { label: `Issue #${imported.number}`, tone: "neutral" };
+}
+
+export function taskIssueSyncedLabel(card: Card): string {
+  const imported = card.importedIssue;
+  if (imported === null) return "";
+  return `Last checked ${formatUtcStamp(imported.syncedAt)}`;
+}
+
+export function taskIssueAssignmentLabel(card: Card): string | null {
+  const imported = card.importedIssue;
+  if (imported === null) return null;
+  const mine = imported.assignees.some((login) => assigneeLogin(login) === assigneeLogin(imported.importedBy));
+  return mine ? `Assigned to ${imported.importedBy}` : "No longer assigned to you";
 }

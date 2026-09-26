@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { experimental_ProviderModelPicker as ProviderModelPicker } from "@get-bb/plugin-sdk/app";
 import type { ExecutionDefaults, ExecutionSelection } from "@/lib/execution";
 import type { PipelineMachine } from "@/lib/machines";
 import { usePortalScopeProps } from "@/lib/portal-scope";
+import { ExecutionFields } from "./execution-fields";
 import { Icon } from "./icon";
-import { MachineSelect } from "./machine-select";
 
 export function AddCard(props: {
   disabled: boolean;
@@ -142,41 +141,16 @@ export function AddCard(props: {
                   onChange={(event) => setBody(event.target.value)}
                 />
               </label>
-              <MachineSelect
+              <ExecutionFields
                 machines={props.machines}
-                value={selectedHostId}
-                onChange={setHostId}
+                hostId={hostId}
+                onHostChange={setHostId}
+                intake={intake}
+                lead={lead}
+                onIntakeChange={setIntake}
+                onLeadChange={setLead}
                 disabled={pending || props.disabled}
               />
-              {props.machines.length === 0 ? (
-                <p className="pipeline-field-hint">This project has no machine with a checkout.</p>
-              ) : null}
-              {selectedHostId !== "" && intake !== null && lead !== null ? (
-                <div className="pipeline-execution">
-                  <div className="pipeline-execution-row" role="group" aria-label="Intake">
-                    <span className="pipeline-field-label">Intake</span>
-                    <ProviderModelPicker
-                      key={`intake-${selectedHostId}`}
-                      className="pipeline-execution-picker"
-                      value={intake}
-                      onChange={setIntake}
-                      routing={{ kind: "host", hostId: selectedHostId }}
-                      disabled={pending}
-                    />
-                  </div>
-                  <div className="pipeline-execution-row" role="group" aria-label="Lead">
-                    <span className="pipeline-field-label">Lead</span>
-                    <ProviderModelPicker
-                      key={`lead-${selectedHostId}`}
-                      className="pipeline-execution-picker"
-                      value={lead}
-                      onChange={setLead}
-                      routing={{ kind: "host", hostId: selectedHostId }}
-                      disabled={pending}
-                    />
-                  </div>
-                </div>
-              ) : null}
               <label className="pipeline-attach">
                 <Icon name="Paperclip" /> Attach files or screenshots
                 <input

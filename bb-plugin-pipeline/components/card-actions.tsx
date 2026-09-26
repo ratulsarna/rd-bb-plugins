@@ -17,6 +17,7 @@ export interface CardActionProps {
   onRetry(): void;
   onRemove(): void;
   onSyncGithub(): void;
+  onSyncIssue(): void;
   onRetryReview(): void;
 }
 

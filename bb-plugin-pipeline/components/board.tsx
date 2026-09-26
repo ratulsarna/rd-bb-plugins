@@ -14,6 +14,8 @@ import { ownerThread } from "@/lib/card";
 import type { Card, CardAttachment } from "@/lib/store";
 import { PipelineSettings } from "./settings";
 import { AddCard } from "./add-card";
+import { ImportIssues } from "./import-issues";
+import { StartSetup } from "./start-setup";
 import { Icon } from "./icon";
 import { PipelineCard } from "./card";
 import { taskNeedsAttention } from "./task-state";
@@ -24,6 +26,11 @@ const PROJECT_KEY = "pipeline:selected-project";
 const VIEW_KEY = "pipeline:view";
 type TaskFilter = "open" | "attention" | "queued" | "done";
 const CARD_DRAG_TYPE = "application/x-bb-pipeline-card";
+
+function needsExecutionSetup(card: Card): boolean {
+  return card.importedIssue !== null &&
+    (card.hostId === null || card.intake === null || card.lead === null);
+}
 
 interface UploadedAttachment {
   type: "localImage" | "localFile";
@@ -76,6 +83,7 @@ function PipelineTasks() {
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
   const [dropColumn, setDropColumn] = useState<Column | null>(null);
   const [pendingCards, setPendingCards] = useState<Set<string>>(new Set());
+  const [setupCardId, setSetupCardId] = useState<string | null>(null);
   const requestSequence = useRef(0);
   const projectIdRef = useRef<string | null>(null);
   const includeDoneRef = useRef(false);
@@ -105,6 +113,7 @@ function PipelineTasks() {
         setStage("all");
         setDraggedCardId(null);
         setDropColumn(null);
+        setSetupCardId(null);
       }
       projectIdRef.current = selected;
       setProjects(nextProjects);
@@ -211,6 +220,21 @@ function PipelineTasks() {
     setDropColumn(null);
   }
 
+  function mergeCardResult(result: Card) {
+    setCards((current) => current.map((item) => {
+      if (item.id !== result.id || result.revision < item.revision) return item;
+      const newerGithub = item.prUrl === result.prUrl && item.github !== null &&
+        (result.github === null || item.github.revision > result.github.revision);
+      const newerIssue = item.issueUrl === result.issueUrl && item.importedIssue !== null &&
+        (result.importedIssue === null || item.importedIssue.syncedAt > result.importedIssue.syncedAt);
+      return {
+        ...result,
+        github: newerGithub ? item.github : result.github,
+        importedIssue: newerIssue ? item.importedIssue : result.importedIssue,
+      };
+    }));
+  }
+
   async function updateCard(card: Card, update: () => Promise<Card | { removed: boolean } | { ok: true }>) {
     if (pendingCards.has(card.id) || card.projectId !== projectIdRef.current) return;
     setPendingCards((current) => new Set(current).add(card.id));
@@ -222,12 +246,7 @@ function PipelineTasks() {
         if ("removed" in result && result.removed) {
           setCards((current) => current.filter((item) => item.id !== card.id));
         } else if ("id" in result) {
-          setCards((current) => current.map((item) => {
-            if (item.id !== result.id || result.revision < item.revision) return item;
-            const newerGithub = item.prUrl === result.prUrl && item.github !== null &&
-              (result.github === null || item.github.revision > result.github.revision);
-            return { ...result, github: newerGithub ? item.github : result.github };
-          }));
+          mergeCardResult(result);
         }
       }
       await load();
@@ -251,6 +270,33 @@ function PipelineTasks() {
     void updateCard(card, () => rpc.call("moveCard", { cardId: card.id, column }));
   }
 
+  function start(card: Card) {
+    if (needsExecutionSetup(card)) {
+      setSetupCardId(card.id);
+      return;
+    }
+    void updateCard(card, () => rpc.call("startCard", { cardId: card.id }));
+  }
+
+  // Setup dialog flow: errors propagate to the dialog so selections stay intact.
+  async function startFromSetup(card: Card, hostId: string, intake: ExecutionSelection, lead: ExecutionSelection) {
+    if (pendingCards.has(card.id) || card.projectId !== projectIdRef.current) return;
+    setPendingCards((current) => new Set(current).add(card.id));
+    setError(null);
+    setActionError(null);
+    try {
+      const result = await rpc.call("startCard", { cardId: card.id, hostId, intake, lead });
+      if (projectIdRef.current === card.projectId) mergeCardResult(result);
+      await load();
+    } finally {
+      setPendingCards((current) => {
+        const next = new Set(current);
+        next.delete(card.id);
+        return next;
+      });
+    }
+  }
+
   async function add(
     title: string,
     body: string,
@@ -268,6 +314,9 @@ function PipelineTasks() {
   }
 
   const projectName = projects.find((project) => project.id === projectId)?.name ?? "";
+  const setupCard = setupCardId === null ? null :
+    (cards.find((card) => card.id === setupCardId && card.projectId === projectIdRef.current &&
+      !card.startRequested && needsExecutionSetup(card)) ?? null);
 
   function selectFilter(next: TaskFilter) {
     setFilter(next);
@@ -305,7 +354,7 @@ function PipelineTasks() {
         questionOpen={questionOpen(card)}
         occupied={occupiedCards.has(card.id)}
         onOpen={(threadId) => navigate.toThread(threadId)}
-        onStart={() => void updateCard(card, () => rpc.call("startCard", { cardId: card.id }))}
+        onStart={() => start(card)}
         onMove={(next) => void move(card, next)}
         onPause={() => void updateCard(card, () => rpc.call("pauseCard", { cardId: card.id }))}
         onResume={() => void updateCard(card, () => rpc.call("resumeCard", { cardId: card.id }))}
@@ -318,6 +367,7 @@ function PipelineTasks() {
           if (card.runState === "running") void updateCard(card, () => rpc.call("removeCard", { cardId: card.id }));
         }}
         onSyncGithub={() => void updateCard(card, () => rpc.call("syncGithub", { cardId: card.id }))}
+        onSyncIssue={() => void updateCard(card, () => rpc.call("syncIssue", { cardId: card.id }))}
         onRetryReview={() => void updateCard(card, () => rpc.call("retryReview", { cardId: card.id }))}
       />
     );
@@ -347,6 +397,7 @@ function PipelineTasks() {
               setFilter("open");
               setStage("all");
               includeDoneRef.current = false;
+              setSetupCardId(null);
               clearDrag();
               void load();
             }}
@@ -365,6 +416,13 @@ function PipelineTasks() {
             machines={machines}
             loadExecutionDefaults={() => rpc.call("executionDefaults", null)}
             onAdd={add}
+          />
+          <ImportIssues
+            key={`import-${projectId}`}
+            disabled={projectId === null || loading}
+            loadIssues={(page) => rpc.call("listIssues", { projectId: projectIdRef.current ?? "", page })}
+            importIssues={(numbers) => rpc.call("importIssues", { projectId: projectIdRef.current ?? "", numbers })}
+            onImported={() => void load()}
           />
         </div>
       </header>
@@ -447,6 +505,7 @@ function PipelineTasks() {
                       return;
                     }
                     if (draggedCard.startRequested) move(draggedCard, column);
+                    else if (needsExecutionSetup(draggedCard)) setSetupCardId(draggedCard.id);
                     else void updateCard(draggedCard, () => rpc.call("startCard", { cardId: draggedCard.id }));
                     clearDrag();
                   }}>
@@ -461,6 +520,23 @@ function PipelineTasks() {
           </div>
         )}
       </div>
+      {setupCard === null ? null : (
+        <StartSetup
+          card={setupCard}
+          machines={machines}
+          loadExecutionDefaults={() => rpc.call("executionDefaults", null)}
+          onStart={async (input) => {
+            const card = cards.find((candidate) => candidate.id === input.cardId);
+            if (card === undefined) return;
+            await startFromSetup(card, input.hostId, input.intake, input.lead);
+            // Accepted start (even with a launch error) closes; failures keep it open.
+            setSetupCardId(null);
+          }}
+          onOpenChange={(open) => {
+            if (!open) setSetupCardId(null);
+          }}
+        />
+      )}
     </div>
   );
 }

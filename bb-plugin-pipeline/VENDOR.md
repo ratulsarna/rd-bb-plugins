@@ -32,6 +32,7 @@ The forked bodies now live as plugin-owned documents under `workflows/`, stored 
 - `workflows/implement/README.md`: every tier has a user walkthrough of the resulting implementation before QA or close-out. It owns step-by-step `/show-me` delivery, deviation explanations, approval, resume, and rework rules. Its execution instructions permit this approval stop.
 - `workflows/README.md`: sizing retains the implementation walkthrough for small and trivial work; `run.md` records its outline, progress, reviewed commit, and approval.
 - `workflows/close-out/README.md`: entry requires the approved implementation walkthrough; material changes return through its rework rule. External review uses `review-wait` and asynchronous feedback batches instead of provider-specific polling. The Oracle remains available for subsequent review decisions.
+- `workflows/README.md`, `workflows/plan/README.md`, and `workflows/close-out/README.md`: imported GitHub issues stay read-only. Scope, decisions, classification, and outcomes are saved as card notes through `bb pipeline report --body-file`.
 
 ## Additions: board report lines
 
@@ -58,6 +59,6 @@ One line per site, in the phase document the moment belongs to; the full table a
 
 - `skills/pipeline/SKILL.md` — the board skill available to every thread: add, list, show, move cards; upload attachments first.
 - `skills/pipeline/agents/openai.yaml` — disables implicit Codex invocation of the board skill.
-- `workflows/intake/README.md` — intake: read the note and attachments, ask what this is, grill, file the issue, get the tier, label, hand off to planning; steps 2, 3, 5, and 7 report each stop for the user with `--needs-you`.
+- `workflows/intake/README.md` — intake: read the note and attachments, ask what this is, grill, file the issue, get the tier, label, hand off to planning; steps 2, 3, 5, and 7 report each stop for the user with `--needs-you`. Imported issues use their snapshot, clarify missing context, and save local scope without filing or labeling an issue.
 
 No symlinks anywhere under `skills/` or `workflows/`.

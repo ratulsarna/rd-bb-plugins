@@ -9,6 +9,7 @@ import { integrationStatus } from "./lib/integrations";
 import { readIssue } from "./lib/issue";
 import { askJev } from "./lib/jev";
 import { createGithubSync } from "./lib/github-sync";
+import { createIssueImporter } from "./lib/issue-import";
 import { listProjectMachines } from "./lib/machines";
 import { createAttentionNotifier, userAttentionReason } from "./lib/notifications";
 import { createPipelineService } from "./lib/service";
@@ -36,6 +37,7 @@ export default async function plugin(bb: BbPluginApi) {
   const notifyAttention = createAttentionNotifier(bb, () => currentSettings);
   const capacity = createPipelineCapacity(bb, store, () => currentSettings.taskLimit);
   const github = createGithubSync({ bb, store, getSettings: () => settings.get(), notify: notifyAttention });
+  const issues = createIssueImporter({ sdk: bb.sdk, store, publish: (projectId) => bb.realtime.publish(CARDS_CHANGED, { projectId }) });
   bb.experimental_hooks.on("message.dispatch", async (context) => {
     const reviewDecision = await github.decide(context);
     if (reviewDecision !== null) return reviewDecision;
@@ -62,6 +64,7 @@ export default async function plugin(bb: BbPluginApi) {
       });
     },
     readIssue,
+    refreshImportedIssue: (cardId) => issues.refresh(cardId),
     classify: (input) =>
       askJev({
         ...input,
@@ -114,6 +117,9 @@ export default async function plugin(bb: BbPluginApi) {
       };
     },
     syncGithub: ({ cardId }) => github.sync(cardId),
+    listIssues: ({ projectId, page }) => issues.list(projectId, page),
+    importIssues: ({ projectId, numbers }) => issues.import(projectId, numbers),
+    syncIssue: ({ cardId }) => issues.refresh(cardId),
     retryReview: ({ cardId }) => github.retry(cardId),
     async setRunNext({ cardId, enabled }) {
       await capacity.setRunNext(cardId, enabled);
@@ -128,8 +134,8 @@ export default async function plugin(bb: BbPluginApi) {
     addCard(input) {
       return service.createCard({ ...input, source: "ui" });
     },
-    startCard({ cardId }) {
-      return service.start(cardId, "ui");
+    startCard({ cardId, ...options }) {
+      return service.start(cardId, "ui", options);
     },
     moveCard({ cardId, column }) {
       return service.move(cardId, column, "ui");
@@ -152,7 +158,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk, capacity, controls, github }));
+  bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk, capacity, controls, github, issues }));
 
   bb.events.on("interaction.pending", ({ thread, interaction }) => {
     const card = store.getByThread(thread.id);

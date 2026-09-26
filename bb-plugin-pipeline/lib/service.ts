@@ -31,6 +31,7 @@ import type {
 import { ownerThread, rejectBacklog, requireStarted, roleThread } from "./card";
 import { userAttentionReason, type AttentionCategory } from "./notifications";
 import { normalizePullRequestUrl } from "./github";
+import { normalizeGithubIssueUrl } from "./issue";
 import {
   findPipelineThreadByMetadata,
   isThreadNotFound,
@@ -54,6 +55,13 @@ export interface ReportInput {
   issueUrl?: string;
   prUrl?: string;
   tier?: "trivial" | "small" | "standard";
+  body?: string;
+}
+
+export interface StartOptions {
+  hostId?: string;
+  intake?: Partial<ExecutionSelection>;
+  lead?: Partial<ExecutionSelection>;
 }
 
 export interface PipelineService {
@@ -70,7 +78,7 @@ export interface PipelineService {
   }): Promise<Card>;
   getExecutionDefaults(): Promise<ExecutionDefaults>;
   setMachine(cardId: string, hostId: string): Promise<Card>;
-  start(cardId: string, source: "ui" | "cli"): Promise<Card>;
+  start(cardId: string, source: "ui" | "cli", options?: StartOptions): Promise<Card>;
   launch(cardId: string, role: PipelineRole): Promise<Card>;
   retry(cardId: string): Promise<Card>;
   report(input: ReportInput): Promise<Card>;
@@ -91,6 +99,7 @@ export interface PipelineServiceDependencies {
   getSettings(): Promise<PipelineSettings>;
   rememberExecution?(defaults: ExecutionDefaults): Promise<void>;
   readIssue(url: string): Promise<IssueDetails>;
+  refreshImportedIssue(cardId: string): Promise<Card>;
   classify(input: {
     apiKey: string | undefined;
     threshold: number;
@@ -197,6 +206,10 @@ export function createPipelineService(
 ): PipelineService {
   const { store, sdk } = dependencies;
   const launches = new Map<string, Promise<Card>>();
+  const rememberSelections = (selected: ExecutionDefaults, cardId: string) =>
+    dependencies.rememberExecution?.(selected).catch((cause) => {
+      dependencies.log(`could not remember execution for card ${cardId}: ${errorMessage(cause)}`);
+    });
 
   const required = (id: string): Card => {
     const card = store.get(id);
@@ -248,18 +261,20 @@ export function createPipelineService(
         "card has no machine assigned; run `bb pipeline set-machine <card-id> --machine <id-or-name>`",
       );
     }
+    const hostId = card.hostId;
     const project = await sdk.projects.get({ projectId: card.projectId });
     const issueUrl = normalizeIssueUrl(card.issueUrl);
     if (role === "lead" && issueUrl === null) {
       throw new Error(MISSING_ISSUE_ERROR);
     }
+    if (card.importedIssue !== null) card = await dependencies.refreshImportedIssue(card.id);
     const prompt =
       role === "intake"
         ? intakePrompt(card, project.name)
-        : leadPrompt(card, await dependencies.readIssue(issueUrl!));
+        : leadPrompt(card, card.importedIssue ?? await dependencies.readIssue(issueUrl!));
     return {
       project,
-      hostId: card.hostId,
+      hostId,
       request: kickoffRequest({ card, role, prompt, settings }),
     };
   };
@@ -793,6 +808,7 @@ export function createPipelineService(
   const start = async (
     cardId: string,
     source: "ui" | "cli",
+    options: StartOptions = {},
   ): Promise<Card> => serializeLaunch(cardId, async () => {
     let card = required(cardId);
     if (card.startRequested) {
@@ -803,9 +819,31 @@ export function createPipelineService(
     }
     if (card.column === "done") throw new Error("Completed tasks cannot be started");
     requireRunning(card, "starting it");
+    let selected: ExecutionDefaults | undefined;
+    let hostId = card.hostId;
+    if (Object.keys(options).length > 0 || card.importedIssue !== null) {
+      const hostReference = options.hostId ?? card.hostId;
+      if (!hostReference?.trim()) throw new Error("Choose a machine before starting this task");
+      const machine = await resolveMachine(sdk, card.projectId, hostReference);
+      if (card.hostId !== null && machine.id !== card.hostId) {
+        throw new Error(`card ${card.id} is already assigned to machine ${card.hostId}`);
+      }
+      const defaults = executionDefaults(await dependencies.getSettings());
+      selected = {
+        intake: resolveExecution(card.intake ?? defaults.intake, options.intake),
+        lead: resolveExecution(card.lead ?? defaults.lead, options.lead),
+      };
+      if (machine.status === "connected") await validateExecutionSelections(sdk, machine, selected);
+      hostId = machine.id;
+      card = required(cardId);
+      requireRunning(card, "starting it");
+      if (card.column === "done") throw new Error("Completed tasks cannot be started");
+    }
     card = update(
       card.id,
       {
+        hostId,
+        ...(selected ?? {}),
         startRequested: true,
         column: "todo",
         needsUser: false,
@@ -823,7 +861,11 @@ export function createPipelineService(
         toColumn: "todo",
       },
     );
-    return doLaunch(card.id, "intake");
+    const [launched] = await Promise.all([
+      doLaunch(card.id, "intake"),
+      selected === undefined ? undefined : rememberSelections(selected, card.id),
+    ]);
+    return launched;
   });
 
   const service: PipelineService = {
@@ -864,11 +906,7 @@ export function createPipelineService(
           source: input.source,
         }),
       );
-      const remember = dependencies.rememberExecution?.(selected).catch((cause) => {
-        dependencies.log(
-          `could not remember execution for card ${card.id}: ${errorMessage(cause)}`,
-        );
-      });
+      const remember = rememberSelections(selected, card.id);
       if (!card.startRequested) {
         await remember;
         return card;
@@ -1018,6 +1056,7 @@ export function createPipelineService(
       });
     },
     async report(input) {
+      if (input.body !== undefined && input.body.length > 20_000) throw new Error("Task context must be at most 20000 characters");
       if (input.needsYou !== undefined && input.working) {
         throw new Error("--needs-you and --working cannot be used together");
       }
@@ -1059,6 +1098,10 @@ export function createPipelineService(
       if (input.issueUrl !== undefined && issueUrl === null) {
         throw new Error(MISSING_ISSUE_ERROR);
       }
+      if (card.importedIssue !== null && issueUrl !== undefined &&
+        normalizeGithubIssueUrl(issueUrl!)?.toLowerCase() !== card.importedIssue.url.toLowerCase()) {
+        throw new Error("An imported task keeps its original issue link");
+      }
       if (
         input.column === "planning" &&
         (issueUrl ?? normalizeIssueUrl(card.issueUrl)) === null
@@ -1067,7 +1110,8 @@ export function createPipelineService(
       }
 
       const patch: Parameters<CardStore["update"]>[1] = {};
-      if (issueUrl !== undefined) patch.issueUrl = issueUrl;
+      if (issueUrl !== undefined) patch.issueUrl = card.importedIssue?.url ?? issueUrl;
+      if (input.body !== undefined) patch.body = input.body;
       if (input.prUrl !== undefined) {
         const prUrl = normalizePullRequestUrl(input.prUrl);
         if (prUrl === null) throw new Error("--pr requires a github.com pull request URL");
