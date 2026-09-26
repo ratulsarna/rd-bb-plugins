@@ -5,7 +5,7 @@ import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { Machine, rpcContract } from "../contract";
 afterEach(cleanup);
 
-it("works without an active thread and switches only the chosen machines", async () => {
+it("offers a one-machine login without changing the bulk machine selection", async () => {
   const app = await loadPluginApp(() => import("../app"));
   const machines: Machine[] = ["VPS", "Mac", "WSL", "Offline"].map((name) => ({
     hostId: name,
@@ -57,13 +57,32 @@ it("works without an active thread and switches only the chosen machines", async
   expect(slot.queryByLabelText("Personal email")).toBeNull();
   expect(slot.queryByLabelText("Work email")).toBeNull();
   expect(slot.queryByRole("radio")).toBeNull();
+  expect(
+    slot.getByRole("checkbox", { name: /^Mac Login needed/ }),
+  ).toBeTruthy();
+  fireEvent.click(slot.getByRole("button", { name: "Log in on Mac" }));
+  await waitFor(() =>
+    expect(
+      slot.inspection.rpcCalls.filter((call) => call.method === "start"),
+    ).toHaveLength(1),
+  );
+  expect(
+    slot.inspection.rpcCalls.find((call) => call.method === "start")?.input,
+  ).toEqual({ hostIds: ["Mac"] });
+  await waitFor(() =>
+    expect(slot.getByRole("button", { name: "Log in on Mac" })).not.toHaveProperty(
+      "disabled",
+      true,
+    ),
+  );
   fireEvent.click(slot.getByRole("checkbox", { name: /^Mac / }));
   fireEvent.click(
     slot.getByRole("button", { name: "Switch account on 2 machines" }),
   );
   await waitFor(() =>
     expect(
-      slot.inspection.rpcCalls.find((call) => call.method === "start")?.input,
+      slot.inspection.rpcCalls.filter((call) => call.method === "start")[1]
+        ?.input,
     ).toEqual({ hostIds: ["VPS", "WSL"] }),
   );
   expect(

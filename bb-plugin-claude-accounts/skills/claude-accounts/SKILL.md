@@ -3,7 +3,7 @@ name: claude-accounts
 description: Switch Claude Code subscription accounts on selected BB machines from the Claude Accounts page.
 ---
 
-Open the Claude Accounts sidebar page. Choose the machines and start the switch. Choose the account on Claude’s browser login page. Each machine requires its own browser login and pasted code. The device showing BB does not need to be a registered machine.
+Open the Claude Accounts sidebar page. A machine showing Login needed can start its own login with its Log in button. To switch several machines, choose them and start the switch. Choose the account on Claude’s browser login page. Each machine requires its own browser login and pasted code. The device showing BB does not need to be a registered machine.
 
 The plugin shows the signed-in account after login. Ask the user to choose the intended account in each browser login. Have the user pause active Claude sessions and resume them after the switch.
 

@@ -2,7 +2,9 @@
 
 Switch Claude Code subscription accounts on selected BB machines from any browser signed into BB. The browser's device does not need to be registered as a machine.
 
-Open **Claude Accounts** in the sidebar, choose your machines, and click **Switch account**. All connected machines with a usable Claude Code installation are selected initially. Each selected machine gets its own **Open Claude login** button and code field. Choose the intended account in Claude's browser page and paste its code into that machine's field.
+Open **Claude Accounts** in the sidebar. A machine that is signed out or whose login has expired shows **Login needed**. Click **Log in** on that machine to start only its login. To switch several machines together, choose them and click **Switch account**. All connected machines with a usable Claude Code installation are selected initially. Each login gets its own **Open Claude login** button and code field. Choose the intended account in Claude's browser page and paste its code into that machine's field.
+
+Claude's account status reports whether a login is active, but does not distinguish an expired login from a machine that was signed out. The page uses **Login needed** for both cases.
 
 The result shows the account email and the machine list shows its organization. Choose the same account in each browser login if you want all machines to match. If you choose the wrong account, start another login to correct it. Cancellation does not undo a completed sign-in.
 

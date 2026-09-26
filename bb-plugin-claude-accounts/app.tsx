@@ -5,6 +5,15 @@ import { isActive } from "./lib/state";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 
+function canStart(machine: Machine) {
+  return (
+    machine.available &&
+    machine.connected &&
+    !machine.issue &&
+    !isActive(machine.login)
+  );
+}
+
 function LoginCard({
   machine,
   refresh,
@@ -141,12 +150,7 @@ export function AccountsPage() {
         if (!initialized.current) {
           setSelected(
             new Set(
-              result.machines
-                .filter(
-                  (machine) =>
-                    machine.available && !machine.issue && machine.connected,
-                )
-                .map((machine) => machine.hostId),
+              result.machines.filter(canStart).map((machine) => machine.hostId),
             ),
           );
           initialized.current = true;
@@ -178,22 +182,15 @@ export function AccountsPage() {
   }, [active, refresh]);
   const eligible =
     machines?.filter(
-      (machine) =>
-        selected.has(machine.hostId) &&
-        machine.available &&
-        machine.connected &&
-        !machine.issue &&
-        !isActive(machine.login),
+      (machine) => selected.has(machine.hostId) && canStart(machine),
     ) ?? [];
-  async function start() {
-    if (busy || !eligible.length) return;
+  async function start(hostIds: string[]) {
+    if (busy || !hostIds.length) return;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      const results = await rpc.call("start", {
-        hostIds: eligible.map((machine) => machine.hostId),
-      });
+      const results = await rpc.call("start", { hostIds });
       const failures = results.filter((result) => result.error);
       if (failures.length)
         setError(
@@ -232,44 +229,51 @@ export function AccountsPage() {
             <p>No machines are registered in BB.</p>
           ) : (
             machines.map((machine) => (
-              <label
+              <div
                 key={machine.hostId}
-                className="flex items-start gap-3 rounded-lg border border-border p-3 text-sm"
+                className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3 text-sm"
               >
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={selected.has(machine.hostId)}
-                  disabled={
-                    busy ||
-                    !machine.available ||
-                    !machine.connected ||
-                    !!machine.issue ||
-                    isActive(machine.login)
-                  }
-                  onChange={(event) =>
-                    setSelected((previous) => {
-                      const next = new Set(previous);
-                      if (event.target.checked) next.add(machine.hostId);
-                      else next.delete(machine.hostId);
-                      return next;
-                    })
-                  }
-                />
-                <span className="min-w-0">
-                  <span className="font-medium">{machine.name}</span>
-                  <span className="block break-words text-muted-foreground">
-                    {machine.issue ??
-                      machine.identity?.email ??
-                      "Not signed in"}
-                  </span>
-                  {machine.identity?.organization && (
-                    <span className="block break-words text-xs text-muted-foreground">
-                      {machine.identity.organization}
+                <label className="flex min-w-0 flex-1 items-start gap-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={selected.has(machine.hostId)}
+                    disabled={busy || !canStart(machine)}
+                    onChange={(event) =>
+                      setSelected((previous) => {
+                        const next = new Set(previous);
+                        if (event.target.checked) next.add(machine.hostId);
+                        else next.delete(machine.hostId);
+                        return next;
+                      })
+                    }
+                  />
+                  <span className="min-w-0">
+                    <span className="font-medium">{machine.name}</span>
+                    <span className="block break-words text-muted-foreground">
+                      {machine.issue ??
+                        machine.identity?.email ??
+                        "Login needed (signed out or expired)"}
                     </span>
-                  )}
-                </span>
-              </label>
+                    {machine.identity?.organization && (
+                      <span className="block break-words text-xs text-muted-foreground">
+                        {machine.identity.organization}
+                      </span>
+                    )}
+                  </span>
+                </label>
+                {canStart(machine) && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    aria-label={`${machine.identity ? "Switch account" : "Log in"} on ${machine.name}`}
+                    disabled={busy}
+                    onClick={() => void start([machine.hostId])}
+                  >
+                    {machine.identity ? "Switch account" : "Log in"}
+                  </Button>
+                )}
+              </div>
             ))
           )}
         </fieldset>
@@ -281,7 +285,7 @@ export function AccountsPage() {
         <div className="flex flex-wrap gap-2">
           <Button
             disabled={busy || !eligible.length}
-            onClick={() => void start()}
+            onClick={() => void start(eligible.map((machine) => machine.hostId))}
           >
             {busy
               ? "Starting..."
