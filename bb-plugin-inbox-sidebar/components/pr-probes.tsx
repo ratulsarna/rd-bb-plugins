@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import {
   experimental_useSidebarThreadPullRequest as useSidebarThreadPullRequest,
   type PluginSidebarPullRequest,
@@ -9,7 +9,78 @@ type Report = (
   pullRequest: PluginSidebarPullRequest | null,
 ) => void;
 
-function PrProbe({ threadId, report }: { threadId: string; report: Report }) {
+interface VisibilityEntry {
+  callback: (visible: boolean) => void;
+  intersects: boolean;
+  panel: Element | null;
+}
+
+const visibleCallbacks = new Map<Element, VisibilityEntry>();
+let visibilityObserver: IntersectionObserver | null = null;
+let panelObserver: MutationObserver | null = null;
+
+function isVisible(entry: VisibilityEntry): boolean {
+  const panel = entry.panel;
+  return (
+    entry.intersects &&
+    (panel === null ||
+      (!panel.hasAttribute("inert") &&
+        panel.getAttribute("data-state") !== "closed" &&
+        panel.getAttribute("data-collapsible") !== "offcanvas"))
+  );
+}
+
+function observeVisibility(
+  target: Element,
+  callback: (visible: boolean) => void,
+): () => void {
+  visibilityObserver ??= new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const observed = visibleCallbacks.get(entry.target);
+      if (observed === undefined) continue;
+      observed.intersects = entry.isIntersecting;
+      observed.callback(isVisible(observed));
+    }
+  });
+  panelObserver ??= new MutationObserver((changes) => {
+    for (const change of changes) {
+      for (const observed of visibleCallbacks.values()) {
+        if (observed.panel === change.target) {
+          observed.callback(isVisible(observed));
+        }
+      }
+    }
+  });
+  const panel =
+    target.closest("[data-collapsible]") ??
+    target.closest('[data-sidebar="panel"]');
+  visibleCallbacks.set(target, { callback, intersects: false, panel });
+  if (panel !== null) {
+    panelObserver.observe(panel, {
+      attributes: true,
+      attributeFilter: ["inert", "data-state", "data-collapsible"],
+    });
+  }
+  visibilityObserver.observe(target);
+  return () => {
+    visibilityObserver?.unobserve(target);
+    visibleCallbacks.delete(target);
+    if (visibleCallbacks.size === 0) {
+      visibilityObserver?.disconnect();
+      visibilityObserver = null;
+      panelObserver?.disconnect();
+      panelObserver = null;
+    }
+  };
+}
+
+function ActivePrProbe({
+  threadId,
+  report,
+}: {
+  threadId: string;
+  report: Report;
+}) {
   const { isLoading, pullRequest } = useSidebarThreadPullRequest(threadId);
 
   useEffect(() => {
@@ -19,22 +90,26 @@ function PrProbe({ threadId, report }: { threadId: string; report: Report }) {
   return null;
 }
 
-/**
- * The board's only PR subscriptions. Rendering nothing keeps them independent
- * of which rows are on screen — a collapsed tree still reports its PR state.
- */
-export function PrProbes({
-  threadIds,
+export function PrProbe({
+  threadId,
   report,
+  targetRef,
 }: {
-  threadIds: readonly string[];
+  threadId: string;
   report: Report;
+  targetRef: RefObject<HTMLElement | null>;
 }) {
-  return (
-    <>
-      {threadIds.map((threadId) => (
-        <PrProbe key={threadId} threadId={threadId} report={report} />
-      ))}
-    </>
-  );
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const target = targetRef.current;
+    if (target === null) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+    return observeVisibility(target, setVisible);
+  }, [targetRef]);
+
+  return visible ? <ActivePrProbe threadId={threadId} report={report} /> : null;
 }

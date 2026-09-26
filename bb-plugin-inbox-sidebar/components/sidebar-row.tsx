@@ -14,6 +14,7 @@ import {
   type PluginSidebarPullRequest,
 } from "@bb/plugin-sdk/app";
 import { ProviderIcon } from "@/components/provider-icon";
+import { PrProbe } from "@/components/pr-probes";
 import { isolatedRowGestureProps } from "@/components/row-gesture";
 import { OpenPrLink, StatusSlot } from "@/components/row-parts";
 import { RowContextMenu } from "@/components/row-context-menu";
@@ -50,6 +51,10 @@ interface SidebarRowProps {
   onCancelRename: () => void;
   onRename: (threadId: string, title: string) => Promise<void>;
   pullRequests: ReadonlyMap<string, PluginSidebarPullRequest | null>;
+  reportPullRequest: (
+    threadId: string,
+    pullRequest: PluginSidebarPullRequest | null,
+  ) => void;
   /** Settle / Unsettle, provided by the list for root rows only. */
   action?: { label: string; run: () => void };
   /** Pinned-root reordering, for the context menu and pointer gesture. */
@@ -84,6 +89,7 @@ export function SidebarRow({
   onCancelRename,
   onRename,
   pullRequests,
+  reportPullRequest,
   action,
   pinnedMove,
   reorder,
@@ -275,6 +281,11 @@ export function SidebarRow({
           </div>
         </div>
       </RowContextMenu>
+      <PrProbe
+        threadId={item.thread.id}
+        report={reportPullRequest}
+        targetRef={rowRef}
+      />
       {expanded && item.children.length > 0 && (
         <ul className="flex flex-col gap-1">
           {item.children.map((child) => (
@@ -293,6 +304,7 @@ export function SidebarRow({
               onCancelRename={onCancelRename}
               onRename={onRename}
               pullRequests={pullRequests}
+              reportPullRequest={reportPullRequest}
             />
           ))}
         </ul>

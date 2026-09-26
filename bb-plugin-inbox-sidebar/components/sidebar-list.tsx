@@ -5,18 +5,13 @@ import {
 } from "@bb/plugin-sdk/app";
 import { AddProjectButton } from "@/components/add-project";
 import { BotsSection } from "@/components/bots-section";
-import { PrProbes } from "@/components/pr-probes";
 import { ProjectSelect, useProjectFilter } from "@/components/project-select";
 import { CollapsibleSection } from "@/components/section";
 import { SidebarRow, type RowReorder } from "@/components/sidebar-row";
 import { SortableRows } from "@/components/sortable-rows";
 import { filterBoardForDisplay } from "@/lib/display-filter";
 import { ancestorIdsOf, effectiveExpandedIds } from "@/lib/expansion";
-import {
-  canSettle,
-  selectPrProbeTargets,
-  type BoardItem,
-} from "@/lib/lanes";
+import { canSettle, type BoardItem } from "@/lib/lanes";
 import { pinnedMoveActions } from "@/lib/pinned-order";
 import { useBoardState } from "@/lib/use-board-state";
 
@@ -136,6 +131,7 @@ export function BoardSidebar({
         onCancelRename={cancelRename}
         onRename={renameThread}
         pullRequests={state.pullRequests}
+        reportPullRequest={state.reportPullRequest}
         action={action}
       />
     ),
@@ -150,6 +146,7 @@ export function BoardSidebar({
       startRename,
       state.now,
       state.pullRequests,
+      state.reportPullRequest,
       toggleExpanded,
     ],
   );
@@ -187,6 +184,7 @@ export function BoardSidebar({
           onCancelRename={cancelRename}
           onRename={renameThread}
           pullRequests={state.pullRequests}
+          reportPullRequest={state.reportPullRequest}
           pinnedMove={pinnedMove}
           reorder={reorder}
         />
@@ -206,6 +204,7 @@ export function BoardSidebar({
       state.pinnedOrderMoving,
       state.pinnedOrderReady,
       state.pullRequests,
+      state.reportPullRequest,
       toggleExpanded,
       visibleExpandedIds,
     ],
@@ -216,13 +215,6 @@ export function BoardSidebar({
   const settledDefaultExpanded =
     activeThreadId !== null &&
     view.settled.some((item) => treeContains(item, activeThreadId));
-
-  // Probes read the same expanded set the rows do. Selecting off the raw
-  // toggle state would leave a revealed row unprobed and badge-less.
-  const probeTargetIds = useMemo(
-    () => [...selectPrProbeTargets(state.board, visibleExpandedIds)],
-    [state.board, visibleExpandedIds],
-  );
 
   if (state.threadStatus === "error" || state.overridesStatus === "error") {
     return (
@@ -250,10 +242,6 @@ export function BoardSidebar({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <PrProbes
-        threadIds={probeTargetIds}
-        report={state.reportPullRequest}
-      />
       <div className="flex shrink-0 items-center px-2 pb-1">
         <ProjectSelect
           projects={state.projects}
