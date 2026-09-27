@@ -181,7 +181,10 @@
 .pipeline-github-chip[data-tone="error"] { background: color-mix(in srgb, var(--destructive) 10%, var(--card)); color: var(--destructive); }
 .pipeline-task-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .pipeline-task-actions .pipeline-icon-button { margin: 0; }
-.pipeline-task-row .pipeline-start { margin-top: 6px; min-height: 30px; }
+.pipeline-task-row .pipeline-start { min-height: 30px; }
+.pipeline-task-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 6px; }
+.pipeline-task-tags:empty { display: none; }
+.pipeline-task-tags > .pipeline-github-chip { margin-top: 0; }
 .pipeline-detail-overlay { position: fixed; inset: 0; z-index: 50; background: rgb(0 0 0 / .4); pointer-events: auto; }
 .pipeline-detail-panel { position: fixed; z-index: 51; inset: 0 0 0 auto; width: min(480px, 100vw); max-height: 100dvh; overflow-y: auto; pointer-events: auto; background: var(--background); color: var(--foreground); border-left: 1px solid var(--border); box-shadow: -12px 0 40px rgb(0 0 0 / .15); }
 .pipeline-detail-header { position: sticky; top: 0; z-index: 1; display: flex; align-items: flex-start; gap: 12px; padding: 20px 22px; background: var(--background); border-bottom: 1px solid var(--border); }
@@ -216,6 +219,7 @@
 }
 @container (max-width: 680px) {
   .pipeline-viewbar { padding: 0 14px; gap: 8px; }
+  .pipeline-machine-queues { flex-basis: 100%; margin-left: 0; justify-content: flex-start; padding-bottom: 10px; }
   .pipeline-filters { padding: 10px 14px; gap: 6px; }
   .pipeline-filter-buttons { width: 100%; justify-content: space-between; gap: 0; }
   .pipeline-filter-buttons button { min-height: 42px; padding: 6px 8px; }

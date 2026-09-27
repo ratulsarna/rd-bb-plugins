@@ -90,14 +90,16 @@ export function PipelineCard(props: PipelineCardProps) {
               {reason.message}
             </div>
           )}
-          {github === null ? null : (
-            <span className="pipeline-github-chip" data-tone={github.tone}>{github.label}</span>
-          )}
-          {issue === null ? null : (
-            <span className="pipeline-github-chip" data-tone={issue.tone}>{issue.label}</span>
-          )}
+          <div className="pipeline-task-tags">
+            {github === null ? null : (
+              <span className="pipeline-github-chip" data-tone={github.tone}>{github.label}</span>
+            )}
+            {issue === null ? null : (
+              <span className="pipeline-github-chip" data-tone={issue.tone}>{issue.label}</span>
+            )}
+            <StartTaskButton card={card} pending={props.pending} onStart={props.onStart} />
+          </div>
           {questionOpen ? <span className="sr-only" aria-label="Question open">Question open</span> : null}
-          <StartTaskButton card={card} pending={props.pending} onStart={props.onStart} />
         </div>
 
         <span className="pipeline-task-stage" data-stage={card.column}>
