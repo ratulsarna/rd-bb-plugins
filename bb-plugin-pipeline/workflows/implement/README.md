@@ -18,7 +18,7 @@ A worker whose job has a template under `templates/` starts from it: read the fi
 
 ## Review configuration
 
-Which harnesses review, with what model and effort, and the review prompt every pass runs come from the environment's guidance. If it names none, ask the user once. If a binding is unavailable or the harness reports a different effective model or effort, stop and ask; never fall back silently.
+Every review pass runs through the `pair-review` skill. It owns the harnesses, models, efforts, and the review prompt.
 
 ## Implementation ledger
 
@@ -28,7 +28,7 @@ The lead keeps `~/.ai/artifacts/<project>/YYYY-MM-DD-<topic>/implementation-ledg
 
 One cycle over the landed change, where reviewers and QA see the whole picture:
 
-1. **Size line, then two stranger reviews.** First, one size line from `git diff --stat` against the base: files, lines added and removed, production lines against test lines, new types or files. It goes in the close-out report. A change much larger than the plan said, or tests that outweigh the code they cover, is a step 3 trigger. Then two reviews, each a fresh session on a different harness per the environment's bindings. Each pass gets the review prompt the environment names, rendered for the exact full-branch diff scope, and nothing else: no ticket, no plan, no prior findings. If a reviewer misreads the diff's intent, fix the artifact (code comments, commit messages), not the reviewer's packet. Reviewers judge the code; whether it does what the ticket asked is the lead's and QA's question. Keep passes independent until both return.
+1. **Size line, then two stranger reviews.** First, one size line from `git diff --stat` against the base: files, lines added and removed, production lines against test lines, new types or files. It goes in the close-out report. A change much larger than the plan said, or tests that outweigh the code they cover, is a step 3 trigger. Then two reviews, one per harness in `pair-review`. Each pass gets the `pair-review` prompt, rendered for the exact full-branch diff scope, and nothing else: no ticket, no plan, no prior findings. If a reviewer misreads the diff's intent, fix the artifact (code comments, commit messages), not the reviewer's packet. Reviewers judge the code; whether it does what the ticket asked is the lead's and QA's question. Keep passes independent until both return.
    `bb pipeline report --column reviewing --working`
 2. **Triage by severity.** Reconcile findings by evidence. The loop continues only on P1 or P2 correctness findings. P3 and polish are batched, judged together on whether each fix is worth its cost in code, and the ones worth taking ride along with required fixes in at most one round; a P3 alone never buys a round. A finding is set aside only when evidence shows it invalid, recorded in the ledger; a recurring finding without new evidence is resolved by that record, not by a new round.
 3. **Step back** when any of these fire: round 3 of this loop is about to start; the same finding across two rounds contests the approach; a reviewer cites how sibling code handles the same concern; the size line is out of range.

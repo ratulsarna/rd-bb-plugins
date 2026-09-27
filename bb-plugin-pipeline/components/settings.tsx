@@ -1,3 +1,4 @@
+import { ReviewModelSettings } from "./review-model-settings";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { experimental_ProviderModelPicker as ProviderModelPicker, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "@/lib/contract";
@@ -156,6 +157,7 @@ export function PipelineSettings() {
             <h2 id="pipeline-capacity-heading">Capacity</h2>
             <label className="pipeline-setting-row"><span>Concurrent tasks <small>Per project and machine. Running tasks finish when lowered.</small></span><input className="pipeline-input" type="number" min={1} max={32} step={1} value={Number.isNaN(values.taskLimit) ? "" : values.taskLimit} disabled={pending} onChange={(event) => edit("taskLimit", event.target.valueAsNumber)} /></label>
           </section>
+          <ReviewModelSettings catalogHost={catalogHost} />
           <section className="pipeline-settings-section" aria-labelledby="pipeline-reviews-heading">
             <h2 id="pipeline-reviews-heading">External reviews</h2>
             <label className="pipeline-field"><span className="pipeline-field-label">Request review</span><select className="pipeline-input" value={mode} disabled={pending} onChange={(event) => {

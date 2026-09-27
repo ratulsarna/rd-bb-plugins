@@ -1,5 +1,13 @@
 # VENDOR
 
+## Shared review model settings
+
+`vendor/ratulsarna-agent-models-0.1.0.tgz` is the standalone `@ratulsarna/agent-models` package. Its source lives in `agents/skills/pair-review/agent-models` in `ratulsarna/scratchpad-mbp16-m3max`. The package owns the file format, defaults, validation, and safe writes. Pipeline installs the checked-in archive through `package.json`; it has no runtime dependency on a scratchpad checkout. The general skill runs the same package's CLI directly.
+
+To update it, change and test the source package, bump its version, run `npm pack --ignore-scripts --pack-destination <pipeline>/vendor` there, and install the archive in Pipeline with `npm install --save-exact ./vendor/<archive>.tgz --ignore-scripts`. Remove the old archive and commit the new archive, dependency, and lockfile together.
+
+## Workflow sources
+
 The Pipeline workflow documents are forks of the nexus skills. Upstream: `/home/ratul/scratchpad-mbp16-m3max/nexus/` at git revision `8a2273de13d3cf820d694ffcb704c964eae407b5` (`8a2273d`). The upstream checkout was not modified.
 
 The forked bodies now live as plugin-owned documents under `workflows/`, stored on the BB server and read with `bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>]`. Invocation is explicit through that command, named by Pipeline's kickoffs, review feedback batches, and each phase's exit line; after the user approves a transition, the thread reads the next phase and continues. Only the board skill `skills/pipeline` remains packaged as a skill, invoked explicitly when a thread works the board.
@@ -11,7 +19,7 @@ The forked bodies now live as plugin-owned documents under `workflows/`, stored 
 | `nexus-README.md` | `workflows/README.md` (overview) | renames; sizing exception; implementation walkthrough gate and run state; Board section; phase-map references rewritten to `bb pipeline instructions` commands |
 | `nexus-plan/SKILL.md` | `workflows/plan/README.md` | renames; 4 report lines added (below); the run.md reference, Oracle brief, and exit rewritten to commands |
 | `nexus-plan/templates/oracle.md` | `workflows/plan/templates/oracle.md` | none — byte-for-byte |
-| `nexus-implement/SKILL.md` | `workflows/implement/README.md` | renames; implementation walkthrough before QA; board reports; template dispatch and exit rewritten to commands |
+| `nexus-implement/SKILL.md` | `workflows/implement/README.md` | renames; review configuration through `pair-review`; implementation walkthrough before QA; board reports; template dispatch and exit rewritten to commands |
 | `nexus-implement/templates/developer.md` | `workflows/implement/templates/developer.md` | none — byte-for-byte |
 | `nexus-implement/templates/oracle.md` | `workflows/implement/templates/oracle.md` | none — byte-for-byte |
 | `nexus-implement/templates/qa.md` | `workflows/implement/templates/qa.md` | none — byte-for-byte |

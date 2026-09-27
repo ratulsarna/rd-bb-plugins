@@ -138,6 +138,12 @@ Open **Settings** from the Pipeline header to configure execution defaults, capa
 
 Settings saves update only edited fields. Leave the TypeSafe key blank to retain it, enter a replacement, or explicitly clear it. Integration status checks GitHub authentication on the BB server and Notify availability; Jev’s status says whether a key is configured, not whether a request has succeeded.
 
+**Review models** sets the Codex and GLM model and reasoning level used by `pair-review`. Its separate Save button writes `~/.config/agent-models/config.json` on the BB server. The standalone skill reads the same file on the machine running the review. Install `pair-review` on each review machine. Each round reads both choices once, so a settings change takes effect on the next round.
+
+A fresh install uses the shared package's defaults. The file is created on the first save. `$XDG_CONFIG_HOME` changes the config directory; `AGENT_MODELS_CONFIG` selects an explicit file. Invalid files show an error instead of falling back. If another save or a file sync changes the file while Settings is open, reload review models before saving again.
+
+To share choices across machines, symlink that path to a file in your synced repository. Pipeline preserves the symlink when saving. Your sync process carries changes to other machines; Pipeline does not run it. Neither Pipeline nor the skill needs a particular repository or sync tool. Review models are file settings, separate from `bb plugin config`.
+
 Initial settings use Claude Code with `claude-fable-5-1`, high reasoning, and full permission for both roles. The same settings are available through `bb plugin config pipeline set`:
 
 - Intake: `providerId`, `model`, `reasoningLevel`, optional `serviceTier`

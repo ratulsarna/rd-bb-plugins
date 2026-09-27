@@ -1,3 +1,5 @@
+import { DEFAULT_REVIEW_MODELS } from "@ratulsarna/agent-models/schema";
+import type { ReviewModelSettings } from "@ratulsarna/agent-models";
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -28,7 +30,15 @@ async function setup(options: { machinesFail?: boolean; integrationsFail?: boole
     view = { values: { ...view.values, ...input.values }, jevApiKeyConfigured: input.jevApiKey === undefined ? view.jevApiKeyConfigured : input.jevApiKey !== null };
     return structuredClone(view);
   });
+  let review: ReviewModelSettings = { models: structuredClone(DEFAULT_REVIEW_MODELS), revision: "first", path: "/config/agent-models/config.json", source: "file" };
+  const updateReview = vi.fn(async (input: { models: ReviewModelSettings["models"]; expectedRevision: string }) => {
+    if (input.expectedRevision !== review.revision) throw new Error("Review settings changed. Reload them before saving.");
+    review = { ...review, models: input.models, revision: "next", source: "file" };
+    return structuredClone(review);
+  });
   const slot = renderSlot(app.navPanels[0]!, { subPath: "settings" }, { rpc: {
+    getReviewModels: async () => structuredClone(review),
+    updateReviewModels: (input) => updateReview(input as { models: ReviewModelSettings["models"]; expectedRevision: string }),
     getSettings: get, updateSettings: (input) => update(input as Update),
     settingsMachines: async () => {
       if (options.machinesFail) throw new Error("Machine catalog offline");
@@ -41,7 +51,7 @@ async function setup(options: { machinesFail?: boolean; integrationsFail?: boole
   } });
   mounted.push(slot);
   await screen.findByRole("spinbutton", { name: /Concurrent tasks/ });
-  return { slot, get, update, current: () => view, set: (next: View) => { view = next; } };
+  return { slot, get, update, updateReview, review: () => review, setReview: (value: ReviewModelSettings) => { review = value; }, current: () => view, set: (next: View) => { view = next; } };
 }
 const saveButton = () => screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
 function changeLimit(value: string) { fireEvent.change(screen.getByRole("spinbutton", { name: /Concurrent tasks/ }), { target: { value } }); }
@@ -147,6 +157,37 @@ describe("Pipeline settings page", () => {
     fireEvent.change(request, { target: { value: "comment" } });
     expect(comment()).toHaveProperty("value", "please review v2");
     expect(saveButton().disabled).toBe(true);
+  });
+
+  it("saves both reviewer choices to the shared file without saving unrelated Pipeline drafts", async () => {
+    const s = await setup();
+    const codex = within(await screen.findByRole("group", { name: "Codex reviewer" }));
+    changeLimit("3");
+    fireEvent.change(codex.getByLabelText("Model"), { target: { value: "custom-review-model" } });
+    fireEvent.change(codex.getByLabelText("Reasoning level"), { target: { value: "xhigh" } });
+    fireEvent.click(codex.getByRole("button", { name: "Apply execution selection" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save review models" }));
+    await screen.findByText("Review models saved");
+    expect(s.updateReview).toHaveBeenCalledExactlyOnceWith({
+      models: { ...DEFAULT_REVIEW_MODELS, codex: { model: "custom-review-model", reasoningLevel: "xhigh" } },
+      expectedRevision: "first",
+    });
+    expect(s.update).not.toHaveBeenCalled();
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it("keeps the reviewer draft after a sync conflict and reloads the actual saved pair on request", async () => {
+    const s = await setup();
+    const codex = within(await screen.findByRole("group", { name: "Codex reviewer" }));
+    fireEvent.change(codex.getByLabelText("Model"), { target: { value: "draft-model" } });
+    fireEvent.click(codex.getByRole("button", { name: "Apply execution selection" }));
+    s.setReview({ ...s.review(), revision: "synced", models: { ...DEFAULT_REVIEW_MODELS, codex: { model: "synced-model", reasoningLevel: "high" } } });
+    fireEvent.click(screen.getByRole("button", { name: "Save review models" }));
+    await screen.findByText("Review settings changed. Reload them before saving.");
+    expect(codex.getByLabelText("Model")).toHaveProperty("value", "draft-model");
+    expect(s.review().models.codex.model).toBe("synced-model");
+    fireEvent.click(screen.getByRole("button", { name: "Reload review models" }));
+    await waitFor(() => expect(codex.getByLabelText("Model")).toHaveProperty("value", "synced-model"));
   });
 
   it("uses the plugin settings link and Back to tasks without mounting a duplicate form", async () => {

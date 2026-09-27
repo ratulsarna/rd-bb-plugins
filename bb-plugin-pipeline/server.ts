@@ -1,3 +1,4 @@
+import { readReviewModels, writeReviewModels } from "@ratulsarna/agent-models";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createThreadPullRequestReader } from "./lib/thread-pull-request";
 import { createPipelineCli } from "./lib/cli";
@@ -92,6 +93,8 @@ export default async function plugin(bb: BbPluginApi) {
 
   const readThreadPullRequest = createThreadPullRequestReader(bb, store);
   bb.rpc.register(rpcContract, {
+    getReviewModels: () => readReviewModels(),
+    updateReviewModels: ({ models, expectedRevision }) => writeReviewModels(models, expectedRevision),
     threadPullRequests: ({ threadIds }) => readThreadPullRequest(threadIds),
     async getSettings() {
       return settingsView(await settings.get());
