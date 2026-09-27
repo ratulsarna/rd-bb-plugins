@@ -59,6 +59,7 @@ function makeService(s: ReturnType<typeof setup>, overrides: Partial<PipelineSer
     readIssue: async () => ({ title: "Issue", body: "", labels: [] }),
     refreshImportedIssue: async (id) => s.store.get(id)!,
     getSettings: async () => serviceSettings,
+    occupied: async () => [],
     ...overrides,
   });
 }

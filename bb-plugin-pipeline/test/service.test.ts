@@ -108,6 +108,7 @@ function setup(options?: {
   getThreadOutput?: (input: { threadId: string }) => Promise<{ output: string }>;
   listThreads?: (input: ThreadListInput) => Promise<ThreadListResult>;
   getThreadMetadata?: (input: { threadId: string }) => Promise<ThreadMetadataResult>;
+  occupied?: (cardId: string) => Promise<Array<{ id: string }>>;
   listEnvironments?: (input: TestEnvironmentListInput) => Promise<TestEnvironment[]>;
   project?: typeof project;
   hosts?: typeof hostList;
@@ -201,6 +202,7 @@ function setup(options?: {
     log,
     publish,
     onAttention,
+    occupied: options?.occupied ?? (async () => []),
     id: () => "card_new",
   });
   return { host, db: host.bb.storage.database(), store, service, spawn, send, classify, readIssue, publish, onAttention, log, rememberExecution, listProviders, listProviderModels, listEnvironments };
@@ -311,6 +313,35 @@ describe("idle policy", () => {
       attentionReason: "intake is waiting for you",
     });
     expect(store.history("card_1").at(-1)).toMatchObject({ kind: "attention", note: "intake is waiting for you" });
+  });
+
+  it("treats an idle owner with running child threads as working, then asks once they finish", async () => {
+    let running: Array<{ id: string }> = [{ id: "intake" }, { id: "helper" }];
+    const { store, service, classify, onAttention } = setup({
+      occupied: async () => running,
+      classify: async () => ({ decision: "needs" as const, probability: 0.99 }),
+    });
+    seed(store);
+    // A stale system prompt from an earlier idle must clear while helpers still run.
+    store.update("card_1", { intakeThreadId: "intake", needsUser: true, attentionReason: "intake is waiting for you", attentionSource: "system" });
+
+    await service.onThreadIdle(thread("intake"), "I'll merge the reports when all 8 are done.");
+    expect(store.get("card_1")).toMatchObject({ needsUser: false, attentionReason: null, attentionSource: null });
+
+    running = [];
+    await service.onThreadIdle(thread("intake"), "Here is the table. Which option?");
+    expect(store.get("card_1")).toMatchObject({ needsUser: true, attentionReason: "intake is waiting for you" });
+
+    store.update("card_1", { ownerRole: "lead", leadThreadId: "lead", needsUser: false, attentionReason: null, attentionSource: null });
+    running = [{ id: "worker" }];
+    await service.onThreadIdle(thread("lead"), "Waiting for the worker.");
+    expect(classify).not.toHaveBeenCalled();
+    expect(store.get("card_1")!.needsUser).toBe(false);
+
+    await service.report({ cardId: "card_1", needsYou: "Approve the plan" });
+    await service.onThreadIdle(thread("lead"), "Approve the plan?");
+    expect(store.get("card_1")).toMatchObject({ needsUser: true, attentionReason: "Approve the plan" });
+    expect(onAttention).toHaveBeenCalledTimes(2);
   });
 
   it("ignores intake idle after the lead owns the card", async () => {

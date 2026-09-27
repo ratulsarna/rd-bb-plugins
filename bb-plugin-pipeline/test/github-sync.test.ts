@@ -391,6 +391,7 @@ describe("GitHub review handoff", () => {
       readIssue: async () => ({ title: "", body: "", labels: [] }),
       refreshImportedIssue: async (id) => s.store.get(id)!,
       getSettings: async () => ({ providerId: "codex", model: "model", reasoningLevel: "high", permissionMode: "full", jevThreshold: ".7" }),
+      occupied: async () => [],
     });
     await s.sync.waitForReview("card", "lead");
     await service.onThreadIdle(s.thread, "External review pending. Nothing needed from you.");

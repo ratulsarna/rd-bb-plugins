@@ -16,6 +16,7 @@ import { createIssueImporter } from "./lib/issue-import";
 import { listProjectMachines } from "./lib/machines";
 import { createAttentionNotifier, userAttentionReason } from "./lib/notifications";
 import { createPipelineService } from "./lib/service";
+import { createTaskThreads } from "./lib/task-threads";
 import { createCardStore, MIGRATIONS } from "./lib/store";
 
 export { rpcContract } from "./lib/contract";
@@ -47,9 +48,11 @@ export default async function plugin(bb: BbPluginApi) {
     const decision = await capacity.decide(context);
     return (await github.decide(context)) ?? decision;
   }, { experimental_enforcement: "strict" });
+  const tasks = createTaskThreads(bb, store);
   const service = createPipelineService({
     store,
     sdk: bb.sdk,
+    occupied: (cardId) => tasks.occupied(cardId),
     getSettings: () => settings.get(),
     rememberExecution({ intake, lead }) {
       return serializeSettings(async () => {

@@ -109,6 +109,8 @@ export interface PipelineServiceDependencies {
   publish(projectId: string): void;
   onAttention(card: Card, reason: string, category?: AttentionCategory): void;
   onPrChanged?(card: Card): void;
+  /** Running threads that belong to the card, including BB child threads of its owner. */
+  occupied(cardId: string): Promise<Array<{ id: string }>>;
   id?: () => string;
 }
 
@@ -619,8 +621,15 @@ export function createPipelineService(
       initial = update(initial.id, { launchError: null });
     }
     if (thread.activeBackgroundAgentCount > 0) return;
+    if (initial.reportSignal === "needs_you") return;
+    // BB child threads report back asynchronously, so an idle owner with running children is still working.
+    if ((await dependencies.occupied(initial.id)).some((entry) => entry.id !== threadId)) {
+      if (initial.needsUser) {
+        update(initial.id, { needsUser: false, attentionReason: null, attentionSource: null, attentionUnknown: false });
+      }
+      return;
+    }
     if (role === "intake") {
-      if (initial.reportSignal === "needs_you") return;
       if (
         sameAttention(initial, {
           needsUser: true,
@@ -648,7 +657,6 @@ export function createPipelineService(
       );
       return;
     }
-    if (initial.reportSignal === "needs_you") return;
     const github = store.getGithub(initial.id);
     if (github?.awaitingReviewRevision === initial.revision && (github.batch === null || github.batch.state === "handled")) return;
     if (
