@@ -53,17 +53,16 @@ export function ReviewModelSettings({ catalogHost }: { catalogHost: string }) {
     <p className="pipeline-settings-help">Shared with pair-review and other tools on the BB server. File sync carries these choices to your other machines. Reviews already running keep their choices.</p>
     {saved && <p className="pipeline-settings-help">{saved.source === "defaults" ? "Using defaults. Saving creates " : "Saved in "}<code>{saved.path}</code>.</p>}
     {error && <p role="alert" className="pipeline-error">{error}</p>}
-    {models && (["codex", "glm"] as const).map((role) => <div key={role} role="group" aria-label={role === "codex" ? "Codex reviewer" : "GLM reviewer"} className="pipeline-settings-role">
-      <span className="pipeline-field-label">{role === "codex" ? "Codex" : "GLM"}</span>
-      {catalogHost === "" ? <span className="pipeline-settings-selection">{models[role].model} · {models[role].reasoningLevel}</span> : <ProviderModelPicker
+    {models && (["first", "second"] as const).map((role) => <div key={role} role="group" aria-label={role === "first" ? "Reviewer 1" : "Reviewer 2"} className="pipeline-settings-role">
+      <span className="pipeline-field-label">{role === "first" ? "Reviewer 1" : "Reviewer 2"}</span>
+      {catalogHost === "" ? <span className="pipeline-settings-selection">{models[role].providerId} · {models[role].model} · {models[role].reasoningLevel}</span> : <ProviderModelPicker
         key={`${role}-${catalogHost}`}
         className="pipeline-execution-picker"
-        allowProviderChange={false}
-        value={{ providerId: role === "codex" ? "codex" : "pi", model: models[role].model, reasoningLevel: models[role].reasoningLevel as ExecutionSelection["reasoningLevel"] }}
+        value={{ ...models[role], reasoningLevel: models[role].reasoningLevel as ExecutionSelection["reasoningLevel"] }}
         routing={{ kind: "host", hostId: catalogHost }}
         disabled={pending}
-        onChange={({ model, reasoningLevel }) => {
-          setDraft({ ...models, [role]: { model, reasoningLevel } }); setNotice("");
+        onChange={(selection) => {
+          setDraft({ ...models, [role]: selection }); setNotice("");
         }}
       />}
     </div>)}

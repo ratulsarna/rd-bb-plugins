@@ -32,7 +32,7 @@ describe("shared review model RPC", () => {
     const initial = await s.get();
     expect(initial.source).toBe("defaults");
     await expect(lstat(s.path)).rejects.toMatchObject({ code: "ENOENT" });
-    const models = { ...initial.models, glm: { model: "zai/custom-reviewer", reasoningLevel: "medium" } };
+    const models = { ...initial.models, second: { providerId: "pi", model: "zai/custom-reviewer", reasoningLevel: "medium" } };
     await s.save({ models, expectedRevision: initial.revision });
     expect((await readReviewModels()).models).toEqual(models);
     await expect(s.save({ models: initial.models, expectedRevision: initial.revision })).rejects.toThrow(/changed/);
@@ -48,11 +48,11 @@ describe("shared review model RPC", () => {
     await writeReviewModels(initial.models, initial.revision, target);
     await symlink(target, s.path);
     const before = await s.get();
-    await s.save({ models: { ...before.models, codex: { model: "custom", reasoningLevel: "high" } }, expectedRevision: before.revision });
+    await s.save({ models: { ...before.models, first: { providerId: "codex", model: "custom", reasoningLevel: "high" } }, expectedRevision: before.revision });
     expect((await lstat(s.path)).isSymbolicLink()).toBe(true);
-    expect((await readReviewModels(target)).models.codex.model).toBe("custom");
+    expect((await readReviewModels(target)).models.first.model).toBe("custom");
     const current = await s.get();
-    await expect(s.save({ models: { ...current.models, codex: { model: " ", reasoningLevel: "high" } }, expectedRevision: current.revision })).rejects.toThrow();
+    await expect(s.save({ models: { ...current.models, first: { providerId: "codex", model: " ", reasoningLevel: "high" } }, expectedRevision: current.revision })).rejects.toThrow();
     await writeFile(target, "broken json");
     await expect(s.get()).rejects.toThrow(/Invalid review models/);
     await expect(s.save({ models: current.models, expectedRevision: current.revision })).rejects.toThrow();

@@ -138,7 +138,7 @@ Open **Settings** from the Pipeline header to configure execution defaults, capa
 
 Settings saves update only edited fields. Leave the TypeSafe key blank to retain it, enter a replacement, or explicitly clear it. Integration status checks GitHub authentication on the BB server and Notify availability; Jev’s status says whether a key is configured, not whether a request has succeeded.
 
-**Review models** sets the Codex and GLM model and reasoning level used by `pair-review`. Its separate Save button writes `~/.config/agent-models/config.json` on the BB server. The standalone skill reads the same file on the machine running the review. Install `pair-review` on each review machine. Each round reads both choices once, so a settings change takes effect on the next round.
+**Review models** sets the harness, model, reasoning level, and optional service tier for Reviewer 1 and Reviewer 2 in `pair-review`. Its separate Save button writes `~/.config/agent-models/config.json` on the BB server. The standalone skill reads the same file on the machine running the review. Install `pair-review` on each review machine. Each round reads both choices once, so a settings change takes effect on the next round.
 
 A fresh install uses the shared package's defaults. The file is created on the first save. `$XDG_CONFIG_HOME` changes the config directory; `AGENT_MODELS_CONFIG` selects an explicit file. Invalid files show an error instead of falling back. If another save or a file sync changes the file while Settings is open, reload review models before saving again.
 

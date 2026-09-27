@@ -161,33 +161,44 @@ describe("Pipeline settings page", () => {
 
   it("saves both reviewer choices to the shared file without saving unrelated Pipeline drafts", async () => {
     const s = await setup();
-    const codex = within(await screen.findByRole("group", { name: "Codex reviewer" }));
+    const first = within(await screen.findByRole("group", { name: "Reviewer 1" }));
     changeLimit("3");
-    fireEvent.change(codex.getByLabelText("Model"), { target: { value: "custom-review-model" } });
-    fireEvent.change(codex.getByLabelText("Reasoning level"), { target: { value: "xhigh" } });
-    fireEvent.click(codex.getByRole("button", { name: "Apply execution selection" }));
+    fireEvent.change(first.getByLabelText("Provider ID"), { target: { value: "claude-code" } });
+    fireEvent.change(first.getByLabelText("Model"), { target: { value: "custom-review-model" } });
+    fireEvent.change(first.getByLabelText("Reasoning level"), { target: { value: "xhigh" } });
+    fireEvent.click(first.getByRole("button", { name: "Apply execution selection" }));
+    const second = within(screen.getByRole("group", { name: "Reviewer 2" }));
+    fireEvent.change(second.getByLabelText("Provider ID"), { target: { value: "codex" } });
+    fireEvent.change(second.getByLabelText("Model"), { target: { value: "second-model" } });
+    fireEvent.change(second.getByLabelText("Service tier"), { target: { value: "fast" } });
+    fireEvent.click(second.getByRole("button", { name: "Apply execution selection" }));
     fireEvent.click(screen.getByRole("button", { name: "Save review models" }));
     await screen.findByText("Review models saved");
     expect(s.updateReview).toHaveBeenCalledExactlyOnceWith({
-      models: { ...DEFAULT_REVIEW_MODELS, codex: { model: "custom-review-model", reasoningLevel: "xhigh" } },
+      models: {
+        first: { providerId: "claude-code", model: "custom-review-model", reasoningLevel: "xhigh" },
+        second: { providerId: "codex", model: "second-model", reasoningLevel: "high", serviceTier: "fast" },
+      },
       expectedRevision: "first",
     });
     expect(s.update).not.toHaveBeenCalled();
     expect(saveButton().disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Reload review models" }));
+    await waitFor(() => expect(first.getByLabelText("Provider ID")).toHaveProperty("value", "claude-code"));
   });
 
   it("keeps the reviewer draft after a sync conflict and reloads the actual saved pair on request", async () => {
     const s = await setup();
-    const codex = within(await screen.findByRole("group", { name: "Codex reviewer" }));
-    fireEvent.change(codex.getByLabelText("Model"), { target: { value: "draft-model" } });
-    fireEvent.click(codex.getByRole("button", { name: "Apply execution selection" }));
-    s.setReview({ ...s.review(), revision: "synced", models: { ...DEFAULT_REVIEW_MODELS, codex: { model: "synced-model", reasoningLevel: "high" } } });
+    const first = within(await screen.findByRole("group", { name: "Reviewer 1" }));
+    fireEvent.change(first.getByLabelText("Model"), { target: { value: "draft-model" } });
+    fireEvent.click(first.getByRole("button", { name: "Apply execution selection" }));
+    s.setReview({ ...s.review(), revision: "synced", models: { ...DEFAULT_REVIEW_MODELS, first: { providerId: "codex", model: "synced-model", reasoningLevel: "high" } } });
     fireEvent.click(screen.getByRole("button", { name: "Save review models" }));
     await screen.findByText("Review settings changed. Reload them before saving.");
-    expect(codex.getByLabelText("Model")).toHaveProperty("value", "draft-model");
-    expect(s.review().models.codex.model).toBe("synced-model");
+    expect(first.getByLabelText("Model")).toHaveProperty("value", "draft-model");
+    expect(s.review().models.first.model).toBe("synced-model");
     fireEvent.click(screen.getByRole("button", { name: "Reload review models" }));
-    await waitFor(() => expect(codex.getByLabelText("Model")).toHaveProperty("value", "synced-model"));
+    await waitFor(() => expect(first.getByLabelText("Model")).toHaveProperty("value", "synced-model"));
   });
 
   it("uses the plugin settings link and Back to tasks without mounting a duplicate form", async () => {
