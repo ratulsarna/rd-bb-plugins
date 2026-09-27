@@ -1,7 +1,8 @@
-import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createClaudeCredentialRecovery } from "./lib/claude-recovery";
-import { createUsageService, fetchUsageLimits } from "./lib/usage";
+import { createUsageService } from "./lib/usage";
+import { fetchFleetUsage } from "./lib/fleet-usage";
 import { fetchZaiUsage } from "./lib/zai";
 
 const paceSchema = z
@@ -27,6 +28,7 @@ const providerFields = {
     "unauthenticated",
     "expired",
     "error",
+    "offline",
   ]),
   accountEmail: z.string().nullable(),
   planLabel: z.string().nullable(),
@@ -45,13 +47,25 @@ const usageOutputSchema = z
             ...providerFields,
           })
           .strict(),
-        claudeCode: z
-          .object({
-            id: z.literal("claudeCode"),
-            name: z.literal("Claude Code"),
-            ...providerFields,
-          })
-          .strict(),
+        claudeCode: z.array(
+          z
+            .object({
+              id: z.literal("claudeCode"),
+              name: z.literal("Claude Code"),
+              accountId: z.string(),
+              machines: z.array(
+                z
+                  .object({
+                    id: z.string(),
+                    name: z.string(),
+                    status: providerFields.status,
+                  })
+                  .strict(),
+              ),
+              ...providerFields,
+            })
+            .strict(),
+        ),
         zai: z
           .object({
             id: z.literal("zai"),
@@ -86,10 +100,15 @@ export default function plugin(bb: BbPluginApi) {
     // bb has no Z.ai usage API, so the plugin asks Z.ai directly.
     fetchUsage: async () => {
       const [limits, zai] = await Promise.all([
-        fetchUsageLimits((args) => bb.sdk.system.usageLimits(args)),
+        fetchFleetUsage({
+          listHosts: () => bb.sdk.hosts.list(),
+          getPrimaryHostId: async () =>
+            (await bb.sdk.system.config()).primaryHostId,
+          usageLimits: (args) => bb.sdk.system.usageLimits(args),
+        }),
         settings.get().then(({ zaiApiKey }) => fetchZaiUsage(zaiApiKey)),
       ]);
-      return { ...limits, zai };
+      return { ...limits, providers: { ...limits.providers, zai } };
     },
     recoverClaudeCredentials: claudeRecovery.recover,
     publishUsageUpdated: ({ fetchedAt }) => {

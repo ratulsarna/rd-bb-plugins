@@ -1,16 +1,7 @@
-import {
-  calculatePace,
-  type Clock,
-  type Pace,
-  type ProviderId,
-} from "./pace";
+import { calculatePace, type Clock, type Pace, type ProviderId } from "./pace";
 
 export type ProviderStatus =
-  | "ok"
-  | "not_installed"
-  | "unauthenticated"
-  | "expired"
-  | "error";
+  "ok" | "not_installed" | "unauthenticated" | "expired" | "error" | "offline";
 
 export interface UsageWindow {
   label: string;
@@ -28,14 +19,36 @@ export interface UsageProvider {
   windows: UsageWindow[];
 }
 
+export interface UsageMachine {
+  id: string;
+  name: string;
+  status: ProviderStatus;
+}
+
+export interface ClaudeAccount extends UsageProvider {
+  id: "claudeCode";
+  name: "Claude Code";
+  accountId: string;
+  machines: UsageMachine[];
+}
+
+export interface RawClaudeMachine {
+  id: string;
+  name: string;
+  primary: boolean;
+  usage: RawUsageProvider;
+}
+
+export interface RawUsageSnapshot {
+  providers: RawUsageResponse;
+  claudeMachines: RawClaudeMachine[];
+}
+
 export interface UsageResponse {
   fetchedAt: string;
   providers: {
     codex: UsageProvider & { id: "codex"; name: "Codex" };
-    claudeCode: UsageProvider & {
-      id: "claudeCode";
-      name: "Claude Code";
-    };
+    claudeCode: ClaudeAccount[];
     zai: UsageProvider & { id: "zai"; name: "Z.ai" };
   };
 }
@@ -48,6 +61,7 @@ export interface RawUsageWindow {
 
 export interface RawUsageProvider {
   status: string;
+  accountKey?: string | null;
   accountEmail?: string | null;
   planLabel?: string | null;
   windows?: readonly RawUsageWindow[];
@@ -70,6 +84,7 @@ const PROVIDER_STATUSES = new Set<ProviderStatus>([
   "unauthenticated",
   "expired",
   "error",
+  "offline",
 ]);
 
 const optionalString = (value: unknown): string | null =>
@@ -133,21 +148,57 @@ function normalizeProvider<Id extends ProviderId>(
 }
 
 export function normalizeUsage(
-  raw: RawUsageResponse,
+  snapshot: RawUsageSnapshot,
   clock: Clock = () => new Date(),
 ): UsageResponse {
   const now = clock();
   const fixedClock = () => now;
+  const raw = snapshot.providers;
+  const accounts = new Map<string, ClaudeAccount>();
+  // Only use email to join a missing key when it identifies one known account.
+  const keysByEmail = new Map<string, Set<string>>();
+  for (const { usage } of snapshot.claudeMachines) {
+    const email = usage.accountEmail?.trim().toLowerCase();
+    if (email && usage.accountKey) {
+      const keys = keysByEmail.get(email) ?? new Set<string>();
+      keys.add(usage.accountKey);
+      keysByEmail.set(email, keys);
+    }
+  }
+  for (const machine of snapshot.claudeMachines) {
+    if (machine.usage.status === "not_installed") continue;
+    const provider = normalizeProvider("claudeCode", machine.usage, fixedClock);
+    const email = provider.accountEmail?.trim().toLowerCase();
+    const keys = email ? keysByEmail.get(email) : undefined;
+    const key =
+      machine.usage.accountKey || (keys?.size === 1 ? [...keys][0] : undefined);
+    const accountId = key
+      ? `account:${key}`
+      : email
+        ? `email:${email}`
+        : `host:${machine.id}`;
+    const previous = accounts.get(accountId);
+    const machines = [
+      ...(previous?.machines ?? []),
+      {
+        id: machine.id,
+        name: machine.name,
+        status: provider.status,
+      },
+    ];
+    // A failed login on one machine must not replace a working quota reading.
+    accounts.set(accountId, {
+      ...(previous?.status === "ok" ? previous : provider),
+      accountId,
+      machines,
+    });
+  }
 
   return {
     fetchedAt: now.toISOString(),
     providers: {
       codex: normalizeProvider("codex", raw.codex, fixedClock),
-      claudeCode: normalizeProvider(
-        "claudeCode",
-        raw["claude-code"],
-        fixedClock,
-      ),
+      claudeCode: [...accounts.values()],
       zai: normalizeProvider("zai", raw.zai, fixedClock),
     },
   };
@@ -161,7 +212,7 @@ export function fetchUsageLimits(
 }
 
 export function createUsageService(options: {
-  fetchUsage: () => Promise<RawUsageResponse>;
+  fetchUsage: () => Promise<RawUsageSnapshot>;
   recoverClaudeCredentials?: () => Promise<void>;
   publishUsageUpdated: (payload: { fetchedAt: string }) => void;
   clock?: Clock;
@@ -182,11 +233,7 @@ export function createUsageService(options: {
     }
 
     const nowMs = clock().getTime();
-    if (
-      !refresh &&
-      cached &&
-      nowMs - cached.cachedAtMs < USAGE_CACHE_TTL_MS
-    ) {
+    if (!refresh && cached && nowMs - cached.cachedAtMs < USAGE_CACHE_TTL_MS) {
       return Promise.resolve(cached.value);
     }
 
@@ -198,7 +245,9 @@ export function createUsageService(options: {
       let raw = firstRaw;
       const shouldRecover =
         request.refreshRequested &&
-        firstRaw["claude-code"]?.status === "expired";
+        firstRaw.claudeMachines.some(
+          (machine) => machine.primary && machine.usage.status === "expired",
+        );
 
       if (shouldRecover) {
         try {
@@ -215,14 +264,6 @@ export function createUsageService(options: {
       }
 
       const value = normalizeUsage(raw, clock);
-      if (
-        shouldRecover &&
-        value.providers.claudeCode.status === "expired" &&
-        cached?.value.providers.claudeCode.status === "ok"
-      ) {
-        throw new Error("Claude Code usage refresh failed");
-      }
-
       cached = { value, cachedAtMs: Date.parse(value.fetchedAt) };
       if (request.refreshRequested) {
         options.publishUsageUpdated({ fetchedAt: value.fetchedAt });

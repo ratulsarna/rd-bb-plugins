@@ -118,6 +118,69 @@ function seedLegacyCard(db: Database, id = "card_legacy"): void {
 }
 
 describe("plugin wiring", () => {
+  it("links task threads and descendants without sharing PRs through their checkout", async () => {
+    const { host, db } = await setup();
+    seedLegacyCard(db, "card_a");
+    seedLegacyCard(db, "card_b");
+    const store = createCardStore(db);
+    store.update("card_a", { intakeThreadId: "intake-a", leadThreadId: "lead-a", prUrl: "https://github.com/example/repo/pull/41" });
+    store.update("card_b", { leadThreadId: "lead-b", prUrl: "https://github.com/example/repo/pull/42" });
+    host.harness.inspection.sdk.stub("threads.get", async ({ threadId }) => makeThreadResponse({
+      id: threadId, projectId: "proj_1", environmentId: "shared-checkout",
+      parentThreadId: threadId === "child" ? "lead-a" : threadId === "grandchild" ? "child" : null,
+      originPluginId: threadId === "old-lead" ? "pipeline" : null,
+    }));
+    host.harness.inspection.sdk.stub("threads.getPluginMetadata", async () => ({ cardId: "card_a", role: "lead" }));
+    const read = (threadId: string) => host.harness.behavior.callRpc("threadPullRequests", { threadIds: [threadId] }).then((result) => (result as { rows: unknown[] }).rows[0]);
+    for (const id of ["intake-a", "lead-a", "child", "grandchild", "old-lead"]) {
+      expect(await read(id)).toMatchObject({ pullRequest: { number: 41, url: "https://github.com/example/repo/pull/41" } });
+    }
+    expect(await read("lead-b")).toMatchObject({ pullRequest: { number: 42 } });
+    expect(await read("unrelated")).toMatchObject({ pullRequest: null });
+
+    store.update("card_a", { prUrl: "https://github.com/example/repo/pull/43" });
+    expect(await read("grandchild")).toMatchObject({ pullRequest: { number: 43 } });
+    store.update("card_a", { prUrl: null });
+    expect(await read("grandchild")).toMatchObject({ pullRequest: null });
+    store.update("card_a", { prUrl: "https://github.com/example/repo/pull/43" });
+    store.remove("card_a");
+    expect(await read("old-lead")).toMatchObject({ pullRequest: null });
+    expect(await read("grandchild")).toMatchObject({ pullRequest: null });
+    expect(await read("lead-b")).toMatchObject({ pullRequest: { number: 42 } });
+  });
+
+  it("uses the linked PR state and drops missing threads", async () => {
+    const { host, db } = await setup();
+    seedLegacyCard(db);
+    const store = createCardStore(db);
+    const url = "https://github.com/example/repo/pull/41";
+    store.update("card_legacy", { leadThreadId: "lead", prUrl: url });
+    host.harness.inspection.sdk.stub("threads.get", async ({ threadId }) => {
+      if (threadId === "missing") throw Object.assign(new Error("gone"), { status: 404 });
+      return makeThreadResponse({ id: threadId, parentThreadId: null });
+    });
+    const read = () => host.harness.behavior.callRpc("threadPullRequests", { threadIds: ["lead"] }).then((result) => (result as { rows: unknown[] }).rows[0]);
+    for (const state of ["draft", "merged", "closed"] as const) {
+      store.setGithub("card_legacy", url, {
+        status: {
+          revision: 1, url, number: 41, state: state === "draft" ? "open" : state, draft: true,
+          headSha: "sha", checks: [], mergeable: "unknown", reviewDecision: null,
+          review: "waiting", followup: null, batchId: null, syncedAt: 1, error: null,
+        },
+        observed: {}, batch: null, requestedSha: null, awaitingReviewRevision: null, readFailures: 0,
+      });
+      expect(await read()).toMatchObject({ pullRequest: { state } });
+    }
+    store.update("card_legacy", { prUrl: "https://github.com/example/repo/pull/42" });
+    expect(await read()).toMatchObject({ pullRequest: { number: 42, state: "open" } });
+    expect(await host.harness.behavior.callRpc("threadPullRequests", {
+      threadIds: ["missing", "lead", "lead"],
+    })).toMatchObject({ rows: [
+      { threadId: "missing", pullRequest: null },
+      { threadId: "lead", pullRequest: { number: 42, state: "open" } },
+    ] });
+  });
+
   it("imports across RPC and CLI and waits for a successful issue refresh before launching", async () => {
     const source = makeImportedIssue();
     vi.spyOn(issueReader, "readGithubViewer").mockResolvedValue("ratul");

@@ -12,7 +12,7 @@ import {
 import type { PluginThreadListProps } from "@bb/plugin-sdk/app";
 import {
   configureFakeSdk,
-  pullRequestProbeCalls,
+  pullRequestLookupCalls,
   registrations,
   resolvePendingRpc,
   rpcCalls,
@@ -240,6 +240,7 @@ describe("BoardSidebar host contract", () => {
     expect(openPr.getAttribute("target")).toBe("_blank");
     expect(openPr.className).toContain("pointer-events-auto");
 
+    fireEvent.click(screen.getByRole("button", { name: /Settled/ }));
     const mergedRow = screen.getByRole("link", { name: "Merged PR row" })
       .parentElement!;
     const closedRow = screen.getByRole("link", { name: "Closed PR row" })
@@ -615,19 +616,19 @@ describe("BoardSidebar sections", () => {
 
     await screen.findByText("Parent");
     expect(screen.queryByText("Subagent")).toBeNull();
-    expect(pullRequestProbeCalls).toContain("root");
-    expect(pullRequestProbeCalls).not.toContain("child");
+    expect(pullRequestLookupCalls).toContain("root");
+    expect(pullRequestLookupCalls).toContain("child");
 
     fireEvent.click(screen.getByLabelText("Expand 1 subagents"));
     expect(screen.getByText("Subagent")).toBeDefined();
-    await waitFor(() => expect(pullRequestProbeCalls).toContain("child"));
+    await waitFor(() => expect(pullRequestLookupCalls).toContain("child"));
     expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
       false,
     );
   });
 });
 
-describe("BoardSidebar display-only pull requests", () => {
+describe("BoardSidebar Pipeline pull requests", () => {
   it("auto-settles quiet work while keeping its open PR badge and link", async () => {
     const now = Date.now();
     configureFakeSdk({
@@ -695,7 +696,7 @@ describe("BoardSidebar display-only pull requests", () => {
     expect(badge.getAttribute("href")).toBe("https://example.test/pulls/82");
   });
 
-  it("keeps recent merged and closed work in Inbox after probes report", async () => {
+  it("settles recent merged Pipeline work while closed work stays in Inbox", async () => {
     const recent = Date.now() - HOUR;
     configureFakeSdk({
       threads: [
@@ -729,9 +730,10 @@ describe("BoardSidebar display-only pull requests", () => {
 
     await act(async () => {});
     const inbox = await screen.findByRole("region", { name: "Inbox" });
-    expect(within(inbox).getByText("Recently merged")).toBeDefined();
+    expect(within(inbox).queryByText("Recently merged")).toBeNull();
     expect(within(inbox).getByText("Recently closed")).toBeDefined();
-    expect(screen.queryByRole("region", { name: "Settled" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Settled/ }));
+    expect(within(screen.getByRole("region", { name: "Settled" })).getByText("Recently merged")).toBeDefined();
   });
 });
 

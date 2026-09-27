@@ -131,7 +131,6 @@ export function BoardSidebar({
         onCancelRename={cancelRename}
         onRename={renameThread}
         pullRequests={state.pullRequests}
-        reportPullRequest={state.reportPullRequest}
         action={action}
       />
     ),
@@ -146,7 +145,6 @@ export function BoardSidebar({
       startRename,
       state.now,
       state.pullRequests,
-      state.reportPullRequest,
       toggleExpanded,
     ],
   );
@@ -184,7 +182,6 @@ export function BoardSidebar({
           onCancelRename={cancelRename}
           onRename={renameThread}
           pullRequests={state.pullRequests}
-          reportPullRequest={state.reportPullRequest}
           pinnedMove={pinnedMove}
           reorder={reorder}
         />
@@ -204,7 +201,6 @@ export function BoardSidebar({
       state.pinnedOrderMoving,
       state.pinnedOrderReady,
       state.pullRequests,
-      state.reportPullRequest,
       toggleExpanded,
       visibleExpandedIds,
     ],

@@ -71,6 +71,7 @@ interface BuildBoardOptions {
   overrides?: ReadonlyMap<string, SettledOverride>;
   /** bb's pinned-root order. Ids it doesn't list sort first, newest first. */
   pinnedOrder?: readonly string[];
+  mergedPipelineThreadIds?: ReadonlySet<string>;
 }
 
 const NEEDS_YOU_INDICATORS = new Set([
@@ -292,7 +293,8 @@ export function buildBoard<T extends BoardThread>(
     const activeOverrideAt = mark?.override === "active" ? mark.at : null;
     const quietSince = Math.max(item.latestActivityAt, activeOverrideAt ?? 0);
     const quiet = now - quietSince > idleCutoffMs;
-    if (quiet && canSettle(item)) {
+    const merged = options.mergedPipelineThreadIds?.has(item.thread.id) === true;
+    if ((quiet || (merged && activeOverrideAt === null)) && canSettle(item)) {
       settled.push({ ...item, settledAt: quietSince });
       continue;
     }

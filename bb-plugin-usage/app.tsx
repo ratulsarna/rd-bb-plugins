@@ -1,4 +1,4 @@
-import { definePluginApp } from "@bb/plugin-sdk/app";
+import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { UsageHeader } from "@/components/usage-header";
 import { UsagePanel } from "@/components/usage-panel";
 

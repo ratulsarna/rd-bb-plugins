@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { PROVIDER_ACCENT, ProviderMark } from "./provider-mark";
 import type { ProviderUsage, UsageWindow } from "./use-usage";
 import { useUsage } from "./use-usage";
@@ -148,8 +148,10 @@ const STATUS_COPY: Record<
       : `Sign in to ${name} to see usage.`,
   expired: (name) =>
     name === "Claude Code"
-      ? "Claude Code usage session expired. Click Refresh. If that still fails, open Claude Code on this server."
+      ? "Claude Code usage session expired. Click Refresh. If that still fails, open Claude Code on one of the listed machines."
       : `${name} sign-in expired. Sign in again.`,
+  offline: () =>
+    "Machine offline. Reconnect it to check its account and usage.",
   error: (name) => `Couldn’t read ${name} usage right now. Try refresh.`,
 };
 
@@ -161,10 +163,11 @@ function ProviderCard({
   now: number;
 }) {
   const accent = PROVIDER_ACCENT[provider.id];
+  const headingId = useId();
 
   return (
     <article
-      aria-labelledby={`${provider.id}-name`}
+      aria-labelledby={headingId}
       className="overflow-hidden rounded-xl border border-border bg-card/40"
     >
       <header className="flex items-center gap-2.5 border-b border-border/70 px-4 py-3">
@@ -177,7 +180,7 @@ function ProviderCard({
         </span>
         <div className="min-w-0 flex-1">
           <h2
-            id={`${provider.id}-name`}
+            id={headingId}
             className="truncate text-sm font-semibold tracking-tight text-foreground"
           >
             {provider.name}
@@ -186,6 +189,17 @@ function ProviderCard({
             {provider.accountEmail ??
               (provider.id === "zai" ? "API key" : "Account email unavailable")}
           </p>
+          {"machines" in provider && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {provider.machines
+                .map((machine) =>
+                  machine.status === "ok"
+                    ? machine.name
+                    : `${machine.name} · ${machine.status.replaceAll("_", " ")}`,
+                )
+                .join(", ")}
+            </p>
+          )}
         </div>
         {provider.planLabel && (
           <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
@@ -226,7 +240,7 @@ function UsageSkeleton() {
     <div
       role="status"
       aria-label="Loading usage"
-      className="grid items-start gap-4 lg:grid-cols-2"
+      className="grid items-start gap-4 @min-[640px]:grid-cols-2"
     >
       {[0, 1].map((column) => (
         <div
@@ -266,7 +280,7 @@ export function UsagePanel() {
   }, []);
 
   return (
-    <div className="h-full overflow-y-auto px-4 py-6 md:px-6">
+    <div className="@container h-full overflow-y-auto px-4 py-6">
       <div className="mx-auto w-full max-w-4xl">
         {state.phase === "loading" && <UsageSkeleton />}
         {state.phase === "error" && (
@@ -285,15 +299,25 @@ export function UsagePanel() {
         {state.phase === "ready" && (
           // Explicit columns, not one grid: a grid row grows to its tallest
           // card and leaves a hole under the short ones.
-          <div className="grid items-start gap-4 lg:grid-cols-2">
-            <div className="grid gap-4">
+          <div className="grid items-start gap-4 @min-[640px]:grid-cols-2">
+            <div className="grid min-w-0 gap-4">
               <ProviderCard provider={state.data.providers.codex} now={now} />
               <ProviderCard provider={state.data.providers.zai} now={now} />
             </div>
-            <ProviderCard
-              provider={state.data.providers.claudeCode}
-              now={now}
-            />
+            <div className="grid min-w-0 gap-4">
+              {state.data.providers.claudeCode.map((account) => (
+                <ProviderCard
+                  key={account.accountId}
+                  provider={account}
+                  now={now}
+                />
+              ))}
+              {!state.data.providers.claudeCode.length && (
+                <p className="text-sm text-muted-foreground">
+                  No Claude Code accounts found on your BB machines.
+                </p>
+              )}
+            </div>
           </div>
         )}
       </div>

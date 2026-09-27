@@ -17,7 +17,7 @@ export interface FakeSdkConfig {
   threadStatus: "loading" | "ready" | "error";
   threads: BoardThread[];
   projects: PluginSidebarProject[];
-  /** Reported by the PR probes; a missing key reports null. */
+  /** Reported by Pipeline; a missing key reports null. */
   pullRequests: Record<string, PluginSidebarPullRequest | null>;
   overrides: Array<{ threadId: string } & SettledOverride>;
   failRpc: boolean;
@@ -80,7 +80,7 @@ export interface SidebarActionCall {
 }
 
 export const sidebarActionCalls: SidebarActionCall[] = [];
-export const pullRequestProbeCalls: string[] = [];
+export const pullRequestLookupCalls: string[] = [];
 export const rpcCalls: Array<{ method: string; input: unknown }> = [];
 export const splitPointerDownCalls: Array<{
   threadId: string;
@@ -131,7 +131,7 @@ export function rejectPendingRpc(
 export function configureFakeSdk(next: Partial<FakeSdkConfig> = {}): void {
   config = { ...DEFAULTS, ...next };
   sidebarActionCalls.length = 0;
-  pullRequestProbeCalls.length = 0;
+  pullRequestLookupCalls.length = 0;
   rpcCalls.length = 0;
   splitPointerDownCalls.length = 0;
   pendingRpc.length = 0;
@@ -228,11 +228,18 @@ const actions = {
 const rpc = {
   call: async (method: string, input: unknown) => {
     rpcCalls.push({ method, input });
+    if (method === "threadPullRequests") {
+      pullRequestLookupCalls.push(...(input as { threadIds: string[] }).threadIds);
+    }
     if (config.failRpc) throw new Error("rpc failed");
     if (config.deferRpc.includes(method)) {
       return new Promise((resolve, reject) => {
         pendingRpc.push({ method, input, resolve, reject });
       });
+    }
+    if (method === "threadPullRequests") {
+      const { threadIds } = input as { threadIds: string[] };
+      return { rows: threadIds.map((threadId) => ({ threadId, pullRequest: config.pullRequests[threadId] ?? null })) };
     }
     if (method === "pinnedOrder") {
       if (config.failPinnedOrder) throw new Error("pinnedOrder failed");
@@ -300,14 +307,6 @@ export const experimental_useSidebarThreads = () => ({
 });
 
 export const experimental_useSidebarThreadActions = () => actions;
-
-export const experimental_useSidebarThreadPullRequest = (threadId: string) => {
-  pullRequestProbeCalls.push(threadId);
-  return {
-    isLoading: false,
-    pullRequest: config.pullRequests[threadId] ?? null,
-  };
-};
 
 export const experimental_useSidebarThreadSplit = (threadId: string) => ({
   splitProps: {

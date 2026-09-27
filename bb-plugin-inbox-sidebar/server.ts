@@ -76,6 +76,20 @@ async function targetingAutomationsOf(
 }
 
 export const boardRpcContract = defineRpcContract({
+  threadPullRequests: {
+    input: z.object({ threadIds: z.array(z.string().trim().min(1)).max(100) }),
+    output: z.object({
+      rows: z.array(z.object({
+        threadId: z.string(),
+        pullRequest: z.object({
+          number: z.number().int().positive(),
+          title: z.string(),
+          url: z.string(),
+          state: z.enum(["open", "draft", "closed", "merged"]),
+        }).nullable(),
+      })),
+    }),
+  },
   projectCreationContext: {
     input: z.object({}),
     output: z.object({
@@ -389,6 +403,14 @@ export default function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(boardRpcContract, {
+    threadPullRequests(input) {
+      return bb.sdk.plugins.callRpc({
+        pluginId: "pipeline",
+        method: "threadPullRequests",
+        input,
+        outputSchema: boardRpcContract.threadPullRequests.output,
+      });
+    },
     async projectCreationContext() {
       const [config, allHosts] = await Promise.all([
         bb.sdk.system.config(),

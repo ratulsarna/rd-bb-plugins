@@ -4,13 +4,17 @@ import {
   useRealtimeConnectionState,
   useRpc,
   type PluginRpcResult,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 
 export const AUTO_REFRESH_MS = 180_000;
 
 export type UsageData = PluginRpcResult<(typeof rpcContract)["getUsage"]>;
-export type ProviderUsage = UsageData["providers"][keyof UsageData["providers"]];
+export type ClaudeAccount = UsageData["providers"]["claudeCode"][number];
+export type ProviderUsage =
+  | UsageData["providers"]["codex"]
+  | UsageData["providers"]["zai"]
+  | ClaudeAccount;
 export type UsageWindow = ProviderUsage["windows"][number];
 
 const usageListeners = new Set<(data: UsageData) => void>();
@@ -26,7 +30,10 @@ type UsageState =
 
 export function useUsage({ realtime = false }: { realtime?: boolean } = {}) {
   const rpc = useRpc<typeof rpcContract>();
-  const [state, setState] = useState<UsageState>({ phase: "loading", data: null });
+  const [state, setState] = useState<UsageState>({
+    phase: "loading",
+    data: null,
+  });
   const [manualPending, setManualPending] = useState(false);
   const [manualFailed, setManualFailed] = useState(false);
   const mounted = useRef(false);

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   experimental_useSidebarThreads as useSidebarThreads,
   type PluginSidebarProject,
   type PluginSidebarPullRequest,
 } from "@bb/plugin-sdk/app";
+import { usePipelinePullRequests } from "@/lib/use-pipeline-pull-requests";
 import { useSettledOverrides } from "@/lib/use-settled";
 import { usePinnedOrder } from "@/lib/use-pinned-order";
 import {
@@ -20,10 +21,6 @@ export interface BoardState {
   /** The full projection over every non-archived thread. Never filtered. */
   board: BoardProjection<BoardThread>;
   pullRequests: ReadonlyMap<string, PluginSidebarPullRequest | null>;
-  reportPullRequest(
-    threadId: string,
-    pullRequest: PluginSidebarPullRequest | null,
-  ): void;
   now: number;
   settle(threadId: string): void;
   unsettle(threadId: string): void;
@@ -38,24 +35,9 @@ export interface BoardState {
   ): void;
 }
 
-function samePullRequest(
-  left: PluginSidebarPullRequest | null | undefined,
-  right: PluginSidebarPullRequest | null,
-): boolean {
-  if (left === right) return true;
-  if (!left || !right) return false;
-  return (
-    left.number === right.number &&
-    left.title === right.title &&
-    left.url === right.url &&
-    left.state === right.state &&
-    left.attention === right.attention
-  );
-}
-
 /**
  * Everything both board surfaces share: threads, the user's settle marks, the
- * display-only PR snapshot the probes fill in, and the board projection.
+ * Pipeline PR state, and the board projection.
  *
  * It deliberately takes no search or project input. Whatever the surface hides
  * on screen, the classification underneath is computed over every thread.
@@ -94,61 +76,13 @@ export function useBoardState(): BoardState {
   }, [allProjects, allThreads]);
   const settledApi = useSettledOverrides();
   const pinnedApi = usePinnedOrder();
-  const [pullRequests, setPullRequests] = useState<
-    Map<string, PluginSidebarPullRequest | null>
-  >(() => new Map());
+  const pullRequests = usePipelinePullRequests(threads);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
-
-  const reportPullRequest = useCallback(
-    (threadId: string, pullRequest: PluginSidebarPullRequest | null) => {
-      setPullRequests((current) => {
-        const existing = current.get(threadId);
-        if (
-          pullRequest === null &&
-          (existing?.state === "open" || existing?.state === "draft")
-        ) {
-          return current;
-        }
-        if (current.has(threadId) && samePullRequest(existing, pullRequest)) {
-          return current;
-        }
-        const next = new Map(current);
-        next.set(threadId, pullRequest);
-        return next;
-      });
-    },
-    [],
-  );
-
-  const liveThreadIds = useMemo(
-    () =>
-      new Set(
-        threads
-          .filter((thread) => !thread.isArchived)
-          .map((thread) => thread.id),
-      ),
-    [threads],
-  );
-
-  useEffect(() => {
-    const prune = <V,>(current: ReadonlyMap<string, V>) => {
-      let changed = false;
-      const next = new Map(current);
-      for (const threadId of next.keys()) {
-        if (!liveThreadIds.has(threadId)) {
-          next.delete(threadId);
-          changed = true;
-        }
-      }
-      return changed ? next : current;
-    };
-    setPullRequests((current) => prune(current) as typeof current);
-  }, [liveThreadIds]);
 
   // Pinning happens outside our RPC — our own context menu pins through the
   // host — so nothing publishes on the pinned-order channel. Watch which
@@ -183,8 +117,11 @@ export function useBoardState(): BoardState {
         now,
         overrides: settledApi.overrides,
         pinnedOrder: pinnedApi.ids,
+        mergedPipelineThreadIds: new Set(
+          [...pullRequests].filter(([, pr]) => pr?.state === "merged").map(([id]) => id),
+        ),
       }),
-    [now, pinnedApi.ids, settledApi.overrides, threads],
+    [now, pinnedApi.ids, settledApi.overrides, threads, pullRequests],
   );
 
   return {
@@ -194,7 +131,6 @@ export function useBoardState(): BoardState {
     projects,
     board,
     pullRequests,
-    reportPullRequest,
     now,
     settle: settledApi.settle,
     unsettle: settledApi.unsettle,

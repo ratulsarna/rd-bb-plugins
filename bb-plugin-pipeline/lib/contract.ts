@@ -1,5 +1,6 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { threadPullRequestsSchema } from "./thread-pull-request";
 import { COLUMNS } from "./columns";
 import { executionSelectionSchema } from "./execution";
 import { RUN_STATES } from "./store";
@@ -91,6 +92,10 @@ export const machineQueueSchema = z.object({
 export type MachineQueue = z.infer<typeof machineQueueSchema>;
 
 export const rpcContract = defineRpcContract({
+  threadPullRequests: {
+    input: z.object({ threadIds: z.array(z.string().trim().min(1)).max(100) }).strict(),
+    output: threadPullRequestsSchema,
+  },
   getSettings: { input: z.null(), output: settingsViewSchema },
   updateSettings: { input: settingsUpdateSchema, output: settingsViewSchema },
   settingsMachines: {

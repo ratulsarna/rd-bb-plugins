@@ -18,12 +18,7 @@ import {
   setRealtimeConnectionState,
 } from "./sdk-fake";
 
-type Status =
-  | "ok"
-  | "not_installed"
-  | "unauthenticated"
-  | "expired"
-  | "error";
+type Status = "ok" | "not_installed" | "unauthenticated" | "expired" | "error";
 
 interface Pace {
   kind: "deficit" | "reserve" | "on_pace";
@@ -85,13 +80,19 @@ function usage({
     fetchedAt,
     providers: {
       codex: provider("codex", "Codex", codexStatus, codexRemaining, codexPace),
-      claudeCode: provider(
-        "claudeCode",
-        "Claude Code",
-        claudeStatus,
-        claudeRemaining,
-        claudePace,
-      ),
+      claudeCode: [
+        {
+          ...provider(
+            "claudeCode",
+            "Claude Code",
+            claudeStatus,
+            claudeRemaining,
+            claudePace,
+          ),
+          accountId: "claude",
+          machines: [{ id: "server", name: "Server", status: claudeStatus }],
+        },
+      ],
       zai: provider("zai", "Z.ai", zaiStatus, 60, null),
     },
   };
@@ -151,13 +152,45 @@ describe("usage panel", () => {
       (claudeBar.querySelector("[data-usage-fill]") as HTMLElement).style.width,
     ).toBe("80%");
     expect(
-      (claudeBar.querySelector("[data-expected-remaining]") as HTMLElement).style
-        .left,
+      (claudeBar.querySelector("[data-expected-remaining]") as HTMLElement)
+        .style.left,
     ).toBe("65%");
     expect(screen.getByText("+10% deficit")).toBeTruthy();
     expect(screen.getByText("15% reserve")).toBeTruthy();
     expect(screen.getAllByText("resets in 3d 1h")).toHaveLength(3);
     expect(document.querySelector("time")).toBeNull();
+  });
+
+  it("shows separate account cards with unique labels and all deduplicated machine names", async () => {
+    const data = usage();
+    data.providers.claudeCode[0]!.machines.push({
+      id: "laptop",
+      name: "Laptop",
+      status: "ok",
+    });
+    data.providers.claudeCode.push({
+      ...data.providers.claudeCode[0]!,
+      accountId: "other",
+      accountEmail: "other@example.com",
+      status: "expired",
+      windows: [],
+      machines: [{ id: "work", name: "Work", status: "expired" }],
+    });
+    configureFakeSdk({ getUsage: () => data });
+    renderPanel();
+    await screen.findByText("other@example.com");
+    const headings = screen.getAllByRole("heading", { name: "Claude Code" });
+    expect(headings).toHaveLength(2);
+    expect(new Set(headings.map((heading) => heading.id)).size).toBe(2);
+    expect(screen.getByText("Server, Laptop")).toBeTruthy();
+    expect(
+      within(headings[0]!.closest("article")!)
+        .getByRole("progressbar")
+        .getAttribute("aria-valuenow"),
+    ).toBe("80");
+    expect(
+      within(headings[1]!.closest("article")!).queryByRole("progressbar"),
+    ).toBeNull();
   });
 
   it("keeps a healthy provider usable when the other provider fails", async () => {
@@ -183,7 +216,9 @@ describe("usage panel", () => {
   });
 
   it("tells the user where the Z.ai key goes when none is configured", async () => {
-    configureFakeSdk({ getUsage: () => usage({ zaiStatus: "unauthenticated" }) });
+    configureFakeSdk({
+      getUsage: () => usage({ zaiStatus: "unauthenticated" }),
+    });
     renderPanel();
 
     expect(
@@ -194,7 +229,7 @@ describe("usage panel", () => {
     expect(remaining()).toBe("25");
   });
 
-  it("gives an honest server-local fallback for expired Claude usage", async () => {
+  it("names the machines to use as a fallback for expired Claude usage", async () => {
     configureFakeSdk({
       getUsage: () => usage({ claudeStatus: "expired" }),
     });
@@ -202,7 +237,7 @@ describe("usage panel", () => {
 
     expect(
       await screen.findByText(
-        "Claude Code usage session expired. Click Refresh. If that still fails, open Claude Code on this server.",
+        "Claude Code usage session expired. Click Refresh. If that still fails, open Claude Code on one of the listed machines.",
       ),
     ).toBeTruthy();
   });

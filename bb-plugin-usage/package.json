@@ -9,7 +9,7 @@
   },
   "engines": {
     "bb": ">=0.36",
-    "bbPluginSdk": "^0.4.1"
+    "bbPluginSdk": ">=0.5.31"
   },
   "bb": {
     "name": "Usage",
@@ -25,6 +25,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@get-bb/plugin-sdk": "0.5.30",
     "@testing-library/react": "^16.3.2",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",

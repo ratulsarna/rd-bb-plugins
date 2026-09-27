@@ -554,3 +554,37 @@ describe("laneForThread", () => {
     ).toBe("Workflow running");
   });
 });
+
+describe("merged Pipeline tasks", () => {
+  it("waits for the whole tree to become idle and unpinned", () => {
+    const parent = thread("parent");
+    const mergedPipelineThreadIds = new Set(["parent"]);
+    const options = { now: NOW, mergedPipelineThreadIds };
+    const blocked = [
+      { indicator: "runtime" },
+      { hasPendingInteraction: true },
+      { isUnread: true },
+      { isPinned: true },
+    ];
+    for (const state of blocked) {
+      const child = thread("child", { parentThreadId: "parent", ...state });
+      expect(buildBoard([parent, child], options).inbox.map((item) => item.thread.id)).toEqual(["parent"]);
+    }
+    expect(buildBoard([thread("parent", { isPinned: true })], options).pinned).toHaveLength(1);
+    const idle = buildBoard([parent, thread("child", { parentThreadId: "parent" }), thread("unrelated")], options);
+    expect(idle.settled.map((item) => item.thread.id)).toEqual(["parent"]);
+    expect(idle.settled[0].children[0].thread.id).toBe("child");
+    expect(idle.inbox.map((item) => item.thread.id)).toEqual(["unrelated"]);
+    expect(buildBoard([parent], { now: NOW }).inbox).toHaveLength(1);
+  });
+
+  it("honors Move to Inbox and restores running work after a merge", () => {
+    const mergedPipelineThreadIds = new Set(["lead"]);
+    const options = { now: NOW, mergedPipelineThreadIds };
+    expect(buildBoard([thread("lead")], options).settled).toHaveLength(1);
+    expect(buildBoard([thread("lead", { indicator: "runtime" })], options).inbox).toHaveLength(1);
+    expect(buildBoard([thread("lead")], {
+      ...options, overrides: overrideMap([["lead", "active", NOW]]),
+    }).inbox).toHaveLength(1);
+  });
+});
