@@ -1,4 +1,4 @@
-import { readReviewModels, writeReviewModels } from "@ratulsarna/agent-models";
+import { readAgentModels, writeAgentModels } from "@ratulsarna/agent-models";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createThreadPullRequestReader } from "./lib/thread-pull-request";
 import { createPipelineCli } from "./lib/cli";
@@ -6,6 +6,7 @@ import { createPipelineCapacity } from "./lib/capacity";
 import { createPipelineControls } from "./lib/controls";
 import { ownerThread } from "./lib/card";
 import { rpcContract } from "./lib/contract";
+import { subagentInstructions } from "./lib/agent-models";
 import { SETTINGS, settingsView, settingsPatch } from "./lib/settings";
 import { integrationStatus } from "./lib/integrations";
 import { readIssue } from "./lib/issue";
@@ -91,10 +92,16 @@ export default async function plugin(bb: BbPluginApi) {
     }
   });
 
+  // Read on every thread start so a synced config change reaches the next thread without a reload.
+  bb.agents.contributeInstructions(() => {
+    try { return subagentInstructions(readAgentModels().models.subagents); }
+    catch (cause) { return `## Subagent models\n\nThe subagent model settings could not be read: ${cause instanceof Error ? cause.message : String(cause)}. Ask the user before spawning subagents.`; }
+  });
+
   const readThreadPullRequest = createThreadPullRequestReader(bb, store);
   bb.rpc.register(rpcContract, {
-    getReviewModels: () => readReviewModels(),
-    updateReviewModels: ({ models, expectedRevision }) => writeReviewModels(models, expectedRevision),
+    getAgentModels: () => readAgentModels(),
+    updateAgentModels: ({ models, expectedRevision }) => writeAgentModels(models, expectedRevision),
     threadPullRequests: ({ threadIds }) => readThreadPullRequest(threadIds),
     async getSettings() {
       return settingsView(await settings.get());

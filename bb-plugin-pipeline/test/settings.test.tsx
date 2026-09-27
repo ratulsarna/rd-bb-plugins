@@ -1,5 +1,5 @@
-import { DEFAULT_REVIEW_MODELS } from "@ratulsarna/agent-models/schema";
-import type { ReviewModelSettings } from "@ratulsarna/agent-models";
+import { DEFAULT_REVIEW_MODELS, DEFAULT_SUBAGENT_MODELS } from "@ratulsarna/agent-models/schema";
+import type { AgentModelSettings } from "@ratulsarna/agent-models";
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -30,15 +30,15 @@ async function setup(options: { machinesFail?: boolean; integrationsFail?: boole
     view = { values: { ...view.values, ...input.values }, jevApiKeyConfigured: input.jevApiKey === undefined ? view.jevApiKeyConfigured : input.jevApiKey !== null };
     return structuredClone(view);
   });
-  let review: ReviewModelSettings = { models: structuredClone(DEFAULT_REVIEW_MODELS), revision: "first", path: "/config/agent-models/config.json", source: "file" };
-  const updateReview = vi.fn(async (input: { models: ReviewModelSettings["models"]; expectedRevision: string }) => {
-    if (input.expectedRevision !== review.revision) throw new Error("Review settings changed. Reload them before saving.");
+  let review: AgentModelSettings = { models: structuredClone({ review: DEFAULT_REVIEW_MODELS, subagents: DEFAULT_SUBAGENT_MODELS }), revision: "first", path: "/config/agent-models/config.json", source: "file" };
+  const updateReview = vi.fn(async (input: { models: AgentModelSettings["models"]; expectedRevision: string }) => {
+    if (input.expectedRevision !== review.revision) throw new Error("Agent model settings changed. Reload them before saving.");
     review = { ...review, models: input.models, revision: "next", source: "file" };
     return structuredClone(review);
   });
   const slot = renderSlot(app.navPanels[0]!, { subPath: "settings" }, { rpc: {
-    getReviewModels: async () => structuredClone(review),
-    updateReviewModels: (input) => updateReview(input as { models: ReviewModelSettings["models"]; expectedRevision: string }),
+    getAgentModels: async () => structuredClone(review),
+    updateAgentModels: (input) => updateReview(input as { models: AgentModelSettings["models"]; expectedRevision: string }),
     getSettings: get, updateSettings: (input) => update(input as Update),
     settingsMachines: async () => {
       if (options.machinesFail) throw new Error("Machine catalog offline");
@@ -51,7 +51,7 @@ async function setup(options: { machinesFail?: boolean; integrationsFail?: boole
   } });
   mounted.push(slot);
   await screen.findByRole("spinbutton", { name: /Concurrent tasks/ });
-  return { slot, get, update, updateReview, review: () => review, setReview: (value: ReviewModelSettings) => { review = value; }, current: () => view, set: (next: View) => { view = next; } };
+  return { slot, get, update, updateReview, review: () => review, setReview: (value: AgentModelSettings) => { review = value; }, current: () => view, set: (next: View) => { view = next; } };
 }
 const saveButton = () => screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
 function changeLimit(value: string) { fireEvent.change(screen.getByRole("spinbutton", { name: /Concurrent tasks/ }), { target: { value } }); }
@@ -159,7 +159,7 @@ describe("Pipeline settings page", () => {
     expect(saveButton().disabled).toBe(true);
   });
 
-  it("saves both reviewer choices to the shared file without saving unrelated Pipeline drafts", async () => {
+  it("saves reviewer and subagent choices together to the shared file without saving unrelated Pipeline drafts", async () => {
     const s = await setup();
     const first = within(await screen.findByRole("group", { name: "Reviewer 1" }));
     changeLimit("3");
@@ -167,23 +167,23 @@ describe("Pipeline settings page", () => {
     fireEvent.change(first.getByLabelText("Model"), { target: { value: "custom-review-model" } });
     fireEvent.change(first.getByLabelText("Reasoning level"), { target: { value: "xhigh" } });
     fireEvent.click(first.getByRole("button", { name: "Apply execution selection" }));
-    const second = within(screen.getByRole("group", { name: "Reviewer 2" }));
-    fireEvent.change(second.getByLabelText("Provider ID"), { target: { value: "codex" } });
-    fireEvent.change(second.getByLabelText("Model"), { target: { value: "second-model" } });
-    fireEvent.change(second.getByLabelText("Service tier"), { target: { value: "fast" } });
-    fireEvent.click(second.getByRole("button", { name: "Apply execution selection" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save review models" }));
-    await screen.findByText("Review models saved");
+    const workhorse = within(screen.getByRole("group", { name: "Workhorse" }));
+    fireEvent.change(workhorse.getByLabelText("Provider ID"), { target: { value: "codex" } });
+    fireEvent.change(workhorse.getByLabelText("Model"), { target: { value: "gpt-6-sol" } });
+    fireEvent.change(workhorse.getByLabelText("Service tier"), { target: { value: "fast" } });
+    fireEvent.click(workhorse.getByRole("button", { name: "Apply execution selection" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save agent models" }));
+    await screen.findByText("Agent models saved");
     expect(s.updateReview).toHaveBeenCalledExactlyOnceWith({
       models: {
-        first: { providerId: "claude-code", model: "custom-review-model", reasoningLevel: "xhigh" },
-        second: { providerId: "codex", model: "second-model", reasoningLevel: "high", serviceTier: "fast" },
+        review: { ...DEFAULT_REVIEW_MODELS, first: { providerId: "claude-code", model: "custom-review-model", reasoningLevel: "xhigh" } },
+        subagents: { ...DEFAULT_SUBAGENT_MODELS, workhorse: { providerId: "codex", model: "gpt-6-sol", reasoningLevel: "high", serviceTier: "fast" } },
       },
       expectedRevision: "first",
     });
     expect(s.update).not.toHaveBeenCalled();
     expect(saveButton().disabled).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "Reload review models" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reload agent models" }));
     await waitFor(() => expect(first.getByLabelText("Provider ID")).toHaveProperty("value", "claude-code"));
   });
 
@@ -192,12 +192,12 @@ describe("Pipeline settings page", () => {
     const first = within(await screen.findByRole("group", { name: "Reviewer 1" }));
     fireEvent.change(first.getByLabelText("Model"), { target: { value: "draft-model" } });
     fireEvent.click(first.getByRole("button", { name: "Apply execution selection" }));
-    s.setReview({ ...s.review(), revision: "synced", models: { ...DEFAULT_REVIEW_MODELS, first: { providerId: "codex", model: "synced-model", reasoningLevel: "high" } } });
-    fireEvent.click(screen.getByRole("button", { name: "Save review models" }));
-    await screen.findByText("Review settings changed. Reload them before saving.");
+    s.setReview({ ...s.review(), revision: "synced", models: { subagents: DEFAULT_SUBAGENT_MODELS, review: { ...DEFAULT_REVIEW_MODELS, first: { providerId: "codex", model: "synced-model", reasoningLevel: "high" } } } });
+    fireEvent.click(screen.getByRole("button", { name: "Save agent models" }));
+    await screen.findByText("Agent model settings changed. Reload them before saving.");
     expect(first.getByLabelText("Model")).toHaveProperty("value", "draft-model");
-    expect(s.review().models.first.model).toBe("synced-model");
-    fireEvent.click(screen.getByRole("button", { name: "Reload review models" }));
+    expect(s.review().models.review.first.model).toBe("synced-model");
+    fireEvent.click(screen.getByRole("button", { name: "Reload agent models" }));
     await waitFor(() => expect(first.getByLabelText("Model")).toHaveProperty("value", "synced-model"));
   });
 

@@ -1,4 +1,4 @@
-import { reviewModelsSchema, reviewModelSettingsSchema } from "./review-models";
+import { agentModelsSchema, agentModelSettingsSchema } from "./agent-models";
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { threadPullRequestsSchema } from "./thread-pull-request";
@@ -93,10 +93,10 @@ export const machineQueueSchema = z.object({
 export type MachineQueue = z.infer<typeof machineQueueSchema>;
 
 export const rpcContract = defineRpcContract({
-  getReviewModels: { input: z.null(), output: reviewModelSettingsSchema },
-  updateReviewModels: {
-    input: z.object({ models: reviewModelsSchema, expectedRevision: z.string().min(1) }).strict(),
-    output: reviewModelSettingsSchema,
+  getAgentModels: { input: z.null(), output: agentModelSettingsSchema },
+  updateAgentModels: {
+    input: z.object({ models: agentModelsSchema, expectedRevision: z.string().min(1) }).strict(),
+    output: agentModelSettingsSchema,
   },
   threadPullRequests: {
     input: z.object({ threadIds: z.array(z.string().trim().min(1)).max(100) }).strict(),
