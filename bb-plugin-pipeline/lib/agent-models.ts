@@ -3,7 +3,7 @@ import { parseAgentModels } from "@ratulsarna/agent-models/schema";
 import type { AgentModels, ModelSelection } from "@ratulsarna/agent-models/schema";
 
 export const REVIEWER_ROLES = [["first", "Reviewer 1"], ["second", "Reviewer 2"]] as const;
-export const SUBAGENT_ROLES = [["oracle", "Oracle"], ["complex", "Complex"], ["workhorse", "Workhorse"], ["qa", "QA"]] as const;
+export const SUBAGENT_ROLES = [["oracle", "Oracle"], ["complex", "Complex"], ["workhorse", "Workhorse"], ["qa", "QA & computer use"]] as const;
 
 const selectionSchema = z.object({ providerId: z.string(), model: z.string(), reasoningLevel: z.string(), serviceTier: z.enum(["default", "fast"]).optional() }).strict();
 export const agentModelsSchema = z.object({

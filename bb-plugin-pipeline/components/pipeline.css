@@ -289,7 +289,7 @@
 .pipeline-settings-section h2, .pipeline-settings-advanced summary { margin: 0; font-size: 14px; font-weight: 600; }
 .pipeline-settings-group { display: flex; flex-direction: column; gap: 12px; }
 .pipeline-settings-group h3 { margin: 8px 0 0; font-size: 13px; font-weight: 600; }
-.pipeline-settings-role { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 14px; }
+.pipeline-settings-role { display: grid; grid-template-columns: 132px minmax(0, 1fr); align-items: center; gap: 14px; }
 .pipeline-settings-selection, .pipeline-settings-help { color: var(--muted-foreground); overflow-wrap: anywhere; }
 .pipeline-settings-help { margin: 0; font-size: 12px; }
 .pipeline-agent-model-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
