@@ -17,6 +17,7 @@ import { listProjectMachines } from "./lib/machines";
 import { createAttentionNotifier, userAttentionReason } from "./lib/notifications";
 import { createPipelineService } from "./lib/service";
 import { createTaskThreads } from "./lib/task-threads";
+import { createWorktreeCleanup } from "./lib/worktree-cleanup";
 import { createCardStore, MIGRATIONS } from "./lib/store";
 
 export { rpcContract } from "./lib/contract";
@@ -38,6 +39,7 @@ export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, [...MIGRATIONS]);
   const store = createCardStore(db);
+  const worktrees = createWorktreeCleanup(bb, store);
   const notifyAttention = createAttentionNotifier(bb, () => currentSettings);
   const capacity = createPipelineCapacity(bb, store, () => currentSettings.taskLimit);
   const github = createGithubSync({ bb, store, getSettings: () => settings.get(), notify: notifyAttention });
@@ -239,6 +241,7 @@ export default async function plugin(bb: BbPluginApi) {
       await service.startupPass();
       await capacity.startup();
       await github.poll();
+      await worktrees.retireFinished();
       await bb.experimental_hooks.recheck("message.dispatch");
       await new Promise<void>((resolve) => {
         if (signal.aborted) return resolve();

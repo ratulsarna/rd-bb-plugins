@@ -296,6 +296,10 @@ export interface CardStore {
   setRunNext(cardId: string): void;
   clearRunNext(cardId: string): boolean;
   update(id: string, patch: CardPatch, history?: HistoryInput): Card;
+  /** Cards that reached Done and still name a lead thread. */
+  listDoneWithLead(): Card[];
+  /** Called after a card moves into Done, outside the write transaction. */
+  onDone(listener: (card: Card) => void): void;
   recordHistory(id: string, history: HistoryInput): void;
   history(id: string): CardHistory[];
   remove(id: string): boolean;
@@ -303,6 +307,7 @@ export interface CardStore {
 
 export function createCardStore(db: Database, now = Date.now): CardStore {
   const getRow = db.prepare("SELECT * FROM cards WHERE id = ?");
+  const doneListeners: Array<(card: Card) => void> = [];
   const incompleteStartWhere = `start_requested = 1
     AND run_state = 'running'
     AND "column" <> 'done'
@@ -541,7 +546,16 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       return db.prepare("DELETE FROM run_next WHERE card_id = ?").run(cardId).changes > 0;
     },
     update(id, patch, history) {
-      return write(id, patch, history);
+      const wasDone = read(id)?.column === "done";
+      const card = write(id, patch, history);
+      if (!wasDone && card.column === "done") for (const listener of doneListeners) listener(card);
+      return card;
+    },
+    listDoneWithLead() {
+      return (db.prepare(`SELECT * FROM cards WHERE "column" = 'done' AND lead_thread_id IS NOT NULL`).all() as CardRow[]).map(cardFromRow);
+    },
+    onDone(listener) {
+      doneListeners.push(listener);
     },
     recordHistory(id, history) {
       if (read(id) === null) throw new Error(`unknown card ${id}`);
