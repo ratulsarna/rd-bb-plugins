@@ -2,7 +2,7 @@ import type { Card } from "./store";
 import type { IssueDetails } from "./issue";
 import type { ImportedIssue } from "./issue-types";
 
-export const IMPORTED_ISSUE_RULES = "The source issue on GitHub is read-only: never edit its body, labels, or comments, never comment on it, and never close, reopen, or reassign it. Keep clarified scope, decisions, and classification in the card's local notes instead: write them to a file and run `bb pipeline report --body-file <path>` to store them on the card. The tier is stored on the card; do not turn it into issue labels.";
+export const IMPORTED_ISSUE_RULES = "You may change the source issue on GitHub (edit it, comment, label, close, reopen, or reassign it), but ask the user before each change. Keep clarified scope, decisions, and classification in the card's local notes: write them to a file and run `bb pipeline report --body-file <path>` to store them on the card. The tier is stored on the card. `Closes #<n>` in the PR body needs no approval; the issue only closes when the user merges.";
 
 function formatComments(comments: ImportedIssue["comments"]): string {
   if (comments.length === 0) {
@@ -55,7 +55,7 @@ export function leadPrompt(
     return `You are the lead for pipeline card ${card.id}: ${card.title}.
 Ticket: ${imported.url} (#${imported.number}, ${imported.state}; last updated ${imported.updatedAt}). Source labels: ${issue.labels.join(", ") || "none"}. Tier: ${card.tier ?? "unsized"}.
 ${IMPORTED_ISSUE_RULES}
-Classify before routing: the intake's classification in the local notes below wins, and the source labels are only a fallback; the source is read-only, so a missing bug label does not mean feature.
+Classify before routing: the intake's classification in the local notes below wins, and the source labels are only a fallback, so a missing bug label does not mean feature.
 ${WORKFLOW_ACCESS}
 Run \`bb pipeline instructions\` first and follow its routing by kind and tier. Report every column change and every stop for the user with \`bb pipeline report\` before you end the turn.
 --- source issue ---

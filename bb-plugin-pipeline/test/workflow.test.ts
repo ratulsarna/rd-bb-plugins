@@ -74,7 +74,7 @@ describe("workflow document delivery", () => {
     expect((await cli.run(["show", "card_1", "--file", "README.md"], context)).exitCode).toBe(1);
   });
 
-  it("routes imported cards through the phase docs and the read-only source rules", async () => {
+  it("routes imported cards through the phase docs and the ask-first source rules", async () => {
     const intake = await readFile(new URL("../workflows/intake/README.md", import.meta.url), "utf8");
     expect(intake).toContain("Imported issues");
     expect(intake).toContain("--body-file");
@@ -82,13 +82,14 @@ describe("workflow document delivery", () => {
 
     const overview = await readFile(new URL("../workflows/README.md", import.meta.url), "utf8");
     expect(overview).toContain("Imported issue:");
-    expect(overview).toContain("read-only");
+    const closeOut = await readFile(new URL("../workflows/close-out/README.md", import.meta.url), "utf8");
+    expect(closeOut).toContain("Closes #<n>");
 
     const imported = makeCard({ importedIssue: makeImportedIssue() });
     for (const prompt of [intakePrompt(imported, "Example"), leadPrompt(imported, {
       title: "Imported", body: "Details", labels: [],
     })]) {
-      expect(prompt).toContain("read-only");
+      expect(prompt).toContain("ask the user before each change");
       expect(prompt).toContain("bb pipeline instructions");
     }
   });

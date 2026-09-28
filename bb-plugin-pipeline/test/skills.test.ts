@@ -35,7 +35,7 @@ describe("skill frontmatter", () => {
       "bb pipeline import-issues",
       "--body <text>",
       "--body-file <path>",
-      "read-only",
+      "ask the user before each change",
     ]) {
       expect(skill, fragment).toContain(fragment);
     }

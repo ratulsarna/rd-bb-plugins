@@ -56,8 +56,8 @@ describe("lead prompt", () => {
     expect(prompt).toContain("Source labels: bug");
     expect(prompt).toContain("fallback");
     expect(prompt).toContain("Keep scope to the list view; the timeline page is out.");
-    expect(prompt).toContain("read-only");
-    expect(prompt).toContain("reassign");
+    expect(prompt).toContain("ask the user before each change");
+    expect(prompt).toContain("Closes #<n>");
     expect(prompt).toContain("--body-file");
     expect(prompt).toContain(sourceIssue.body);
     expect(prompt).toContain("--- source issue ---");
@@ -103,7 +103,7 @@ describe("lead prompt", () => {
       { title: "Feature", body: "Details", labels: [] },
     );
     expect(normal).not.toContain("local notes on the card");
-    expect(normal).not.toContain("read-only");
+    expect(normal).not.toContain("ask the user before each change");
   });
 });
 

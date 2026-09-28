@@ -60,7 +60,7 @@ When spawning workers for a card, use `--parent-self` so they belong to the task
 
 ### Imported issues
 
-An imported card works from a GitHub issue the user picked. The card carries the full snapshot (title, body, labels, comments), the source link, and its own local notes (`Card.body`, stored with `report --body` or `report --body-file`). The source issue is read-only: never edit its body, labels, or comments, never comment on it, and never close, reopen, or reassign it. Keep scope, decisions, and classification in the local notes, and the tier on the card; do not add labels to the source issue.
+An imported card works from a GitHub issue the user picked. The card carries the full snapshot (title, body, labels, comments), the source link, and its own local notes (`Card.body`, stored with `report --body` or `report --body-file`). You may change the source issue, but ask the user before each change. Keep scope, decisions, and classification in the local notes, and the tier on the card.
 
 Start behaves like any card: an imported card missing a machine or role choices asks for them before launching. The snapshot refreshes on import, at start, and through **Refresh issue** in task details; `github-sync` stays PR-only and issues are not polled in the background. A closed or reassigned source keeps its card and shows its state.
 

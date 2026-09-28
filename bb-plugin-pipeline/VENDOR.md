@@ -40,7 +40,8 @@ The forked bodies now live as plugin-owned documents under `workflows/`, stored 
 - `workflows/implement/README.md`: every tier has a user walkthrough of the resulting implementation before QA or close-out. It owns step-by-step `/show-me` delivery, deviation explanations, approval, resume, and rework rules. Its execution instructions permit this approval stop.
 - `workflows/README.md`: sizing retains the implementation walkthrough for small and trivial work; `run.md` records its outline, progress, reviewed commit, and approval.
 - `workflows/close-out/README.md`: entry requires the approved implementation walkthrough; material changes return through its rework rule. External review uses `review-wait` and asynchronous feedback batches instead of provider-specific polling. The Oracle remains available for subsequent review decisions.
-- `workflows/README.md`, `workflows/plan/README.md`, and `workflows/close-out/README.md`: imported GitHub issues stay read-only. Scope, decisions, classification, and outcomes are saved as card notes through `bb pipeline report --body-file`.
+- `workflows/README.md`, `workflows/plan/README.md`, and `workflows/close-out/README.md`: scope, decisions, classification, and outcomes for imported GitHub issues are saved as card notes through `bb pipeline report --body-file`. Agents change the source issue only after the user approves.
+- `workflows/close-out/README.md`: the PR body carries `Closes #<n>` for the task's issue.
 
 ## Additions: board report lines
 
