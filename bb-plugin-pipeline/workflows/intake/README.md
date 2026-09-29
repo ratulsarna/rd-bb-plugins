@@ -10,9 +10,9 @@ Ask every question in your user-facing chat reply, with the context and choices 
 2. **Ask what this is.** Start there; the note is rarely the whole story. Before the turn ends on the question: `bb pipeline report --needs-you "task clarification"`.
 3. **Grill.** Open questions go to `/grill-me` (Codex: `$grill-me`) until intent, scope, and constraints are sharp enough to file. Before every turn that stops for an answer: `bb pipeline report --needs-you "<short waiting reason>"`.
 4. **File the issue.** `gh issue create` in the project's origin repo: short body, `issue-descriptions` style — the task itself, nothing else. If the user already has an issue, take its URL and skip this step.
-5. **Mode and size.** The kickoff states the card's mode (`manual` or `auto`) and size (`small` or `standard`). Ask only for what the card lacks. When it is a bug, the size is provisional until the RCA. Before the turn ends on the question: `bb pipeline report --needs-you "mode and size"`.
+5. **Mode and size.** The kickoff states the card's mode (`manual` or `auto`) and size (`small` or `standard`). Ask only for what the card lacks. When it is a bug, the size is provisional until the RCA. Before the turn ends on the question: `bb pipeline report --needs-you "mode and size"`. Store the answer when it comes: `bb pipeline report --mode <m> --size <s> --working`, passing only what the user answered.
 6. **Label.** Add `bug` when it is a bug (create the label if it is missing).
-7. **Hand off.** Ask "ready to plan?" Before a turn ends on that question or a no: `bb pipeline report --needs-you "approval to begin planning"`. On yes, run `bb pipeline report --column planning --issue <url> --mode <m> --size <s> --working` as your last action.
+7. **Hand off.** Ask "ready to plan?" Before a turn ends on that question or a no: `bb pipeline report --needs-you "approval to begin planning"`. On yes, run `bb pipeline report --column planning --issue <url> --working` as your last action.
 
 ## Imported issues
 
@@ -22,4 +22,4 @@ An imported card carries a GitHub issue the user picked: the full snapshot (titl
 - You may change the source issue, but ask the user before each change. Step 4 (filing) and step 6 (labeling) do not apply.
 - Classification and scope decisions are local: write them to a file and persist them with `bb pipeline report --body-file <path>` before you hand off, stating the kind — bug or feature — you settled on so the lead can route without the source labels. The card's mode and size are stored on the card.
 - Ask for mode or size only when the card lacks it; keep what is stored.
-- Hand off as in step 7 with `bb pipeline report --column planning --mode <m> --size <s> --working`; the source issue is already linked to the card.
+- Hand off as in step 7 with `bb pipeline report --column planning --working`; the source issue is already linked to the card.
