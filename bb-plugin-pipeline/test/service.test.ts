@@ -1546,16 +1546,13 @@ describe("card settings", () => {
       .resolves.toMatchObject({ mode: "manual", size: "standard" });
   });
 
-  it("tells the running lead about a change, once, with the new settings", async () => {
+  it("tells the running lead about a change with the new settings", async () => {
     const { store, service, send } = setup();
     seed(store);
     store.update("card_1", { leadThreadId: "lead", ownerRole: "lead", column: "implementing", mode: "manual", size: "standard" });
 
-    const changed = await service.setSettings("card_1", { mode: "auto" }, "ui");
-    const unchanged = await service.setSettings("card_1", { mode: "auto", size: "standard" }, "ui");
+    await expect(service.setSettings("card_1", { mode: "auto" }, "ui")).resolves.toMatchObject({ mode: "auto", size: "standard" });
 
-    expect(changed).toMatchObject({ mode: "auto", size: "standard" });
-    expect(unchanged.revision).toBe(changed.revision);
     expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       threadId: "lead",
       mode: "auto",
@@ -1572,14 +1569,64 @@ describe("card settings", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it("keeps the change and says so when the owner cannot be told", async () => {
-    const { store, service } = setup({ send: async () => { throw new Error("machine offline"); } });
+  it("keeps a change whose note failed, and delivers it when the user repeats it", async () => {
+    let offline = true;
+    const { store, service, send } = setup({
+      send: async () => {
+        if (offline) throw new Error("machine offline");
+        return { ok: true, delivery: "sent" };
+      },
+    });
     seed(store);
     store.update("card_1", { intakeThreadId: "intake" });
 
     await expect(service.setSettings("card_1", { mode: "auto" }, "ui"))
       .rejects.toThrow("Saved, but the task owner was not told: machine offline");
     expect(store.get("card_1")?.mode).toBe("auto");
+
+    offline = false;
+    await service.setSettings("card_1", { mode: "auto" }, "cli");
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      threadId: "intake",
+      input: [expect.objectContaining({ text: expect.stringContaining("to mode auto, size unset") })],
+    }));
+    expect(store.history("card_1").filter((entry) => entry.kind === "settings_changed")).toHaveLength(1);
+  });
+
+  it("does not wake a cancelled start with a note in place of its kickoff", async () => {
+    const { store, service, send } = setup();
+    seed(store);
+    store.update("card_1", { intakeThreadId: "intake", launchError: "intake: start cancelled" });
+
+    await service.setSettings("card_1", { size: "small" }, "ui");
+
+    expect(send).not.toHaveBeenCalled();
+    expect(store.get("card_1")).toMatchObject({ size: "small", launchError: "intake: start cancelled" });
+  });
+
+  it("tells a thread that was still launching when the user changed a setting", async () => {
+    let finishSpawn!: () => void;
+    const spawned = new Promise<void>((resolve) => { finishSpawn = resolve; });
+    const spawn = vi.fn(async () => {
+      await spawned;
+      return makeThreadResponse({ id: "thr_new" });
+    });
+    const { store, service, send } = setup({ spawn });
+    seed(store);
+
+    const launching = service.launch("card_1", "intake");
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
+    const changing = service.setSettings("card_1", { mode: "auto" }, "ui");
+    finishSpawn();
+    await launching;
+    await changing;
+
+    expect(JSON.stringify(spawn.mock.calls[0])).not.toContain("Mode: auto");
+    expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      threadId: "thr_new",
+      input: [expect.objectContaining({ text: expect.stringContaining("to mode auto") })],
+    }));
   });
 });
 

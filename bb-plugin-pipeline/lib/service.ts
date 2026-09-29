@@ -956,25 +956,35 @@ export function createPipelineService(
       const patch: CardSettings = {};
       if (settings.mode !== undefined && settings.mode !== card.mode) patch.mode = settings.mode;
       if (settings.size !== undefined && settings.size !== card.size) patch.size = settings.size;
-      if (patch.mode === undefined && patch.size === undefined) return card;
-      const next = update(card.id, patch, {
-        kind: "settings_changed",
-        source,
-        note: `mode ${patch.mode ?? card.mode ?? "unset"}, size ${patch.size ?? card.size ?? "unset"}`,
-      });
-      const threadId = ownerThread(next);
-      if (!next.startRequested || next.column === "done" || threadId === null) return next;
-      try {
-        // A paused task's dispatch gate holds this until resume.
-        await dependencies.sdk.threads.send({
-          threadId,
-          mode: "auto",
-          input: [{ type: "text", text: settingsChangeInstruction(next), mentions: [] }],
+      // An unchanged request still notifies, so repeating it retries a failed delivery.
+      if (patch.mode !== undefined || patch.size !== undefined) {
+        update(card.id, patch, {
+          kind: "settings_changed",
+          source,
+          note: `mode ${patch.mode ?? card.mode ?? "unset"}, size ${patch.size ?? card.size ?? "unset"}`,
         });
-      } catch (cause) {
-        throw new Error(`Saved, but the task owner was not told: ${errorMessage(cause)}`);
       }
-      return next;
+      // Queued behind launches: a thread still being linked gets the note once it exists,
+      // and notes go out in order, each naming the card's settings at send time.
+      return serializeLaunch(cardId, async () => {
+        const current = required(cardId);
+        const threadId = ownerThread(current);
+        // A failed or cancelled start relaunches through Retry, whose kickoff reads the card.
+        if (!current.startRequested || current.column === "done" || current.launchError !== null || threadId === null) {
+          return current;
+        }
+        try {
+          // A paused task's dispatch gate holds this until resume.
+          await sdk.threads.send({
+            threadId,
+            mode: "auto",
+            input: [{ type: "text", text: settingsChangeInstruction(current), mentions: [] }],
+          });
+        } catch (cause) {
+          throw new Error(`Saved, but the task owner was not told: ${errorMessage(cause)}`);
+        }
+        return current;
+      });
     },
     start,
     launch,

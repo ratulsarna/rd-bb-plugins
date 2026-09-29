@@ -17,7 +17,7 @@ export function resumeInstruction(card: Card): string {
 }
 
 export function settingsChangeInstruction(card: Card): string {
-  return `The user changed Pipeline task ${card.id} to mode ${card.mode}, size ${card.size}. Follow the new settings from your next stop or gate, and record the change in run.md. Do not redo gates already passed.`;
+  return `The user changed Pipeline task ${card.id} to mode ${card.mode ?? "unset"}, size ${card.size ?? "unset"}. Follow the new settings from your next stop or gate, and record the change in run.md. Do not redo gates already passed.`;
 }
 
 export function isResumeInstruction(card: Card, text: string): boolean {
