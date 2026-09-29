@@ -15,6 +15,7 @@ import {
   type ExecutionSettings,
 } from "./execution";
 import { intakePrompt, leadPrompt } from "./prompts";
+import { settingsChangeInstruction } from "./control-prompts";
 import { resolveMachine } from "./machines";
 import {
   environmentFor,
@@ -25,6 +26,8 @@ import {
 import type {
   Card,
   CardAttachment,
+  CardMode,
+  CardSize,
   CardStore,
   HistoryInput,
 } from "./store";
@@ -54,8 +57,14 @@ export interface ReportInput {
   working?: boolean;
   issueUrl?: string;
   prUrl?: string;
-  tier?: "trivial" | "small" | "standard";
+  mode?: CardMode;
+  size?: CardSize;
   body?: string;
+}
+
+export interface CardSettings {
+  mode?: CardMode;
+  size?: CardSize;
 }
 
 export interface StartOptions {
@@ -73,11 +82,15 @@ export interface PipelineService {
     title: string;
     body?: string;
     attachments?: CardAttachment[];
+    mode?: CardMode;
+    size?: CardSize;
     start?: boolean;
     source: "ui" | "cli";
   }): Promise<Card>;
   getExecutionDefaults(): Promise<ExecutionDefaults>;
   setMachine(cardId: string, hostId: string): Promise<Card>;
+  /** The user's change; a running owner is told so it follows the new settings. */
+  setSettings(cardId: string, settings: CardSettings, source: "ui" | "cli"): Promise<Card>;
   start(cardId: string, source: "ui" | "cli", options?: StartOptions): Promise<Card>;
   launch(cardId: string, role: PipelineRole): Promise<Card>;
   retry(cardId: string): Promise<Card>;
@@ -911,6 +924,8 @@ export function createPipelineService(
           title,
           body: input.body ?? "",
           attachments: input.attachments ?? [],
+          mode: input.mode ?? "manual",
+          size: input.size ?? "standard",
           source: input.source,
         }),
       );
@@ -935,6 +950,31 @@ export function createPipelineService(
       );
       if (card.hostId === machine.id) return card;
       return changed(store.setHost(card.id, machine.id));
+    },
+    async setSettings(cardId, settings, source) {
+      const card = required(cardId);
+      const patch: CardSettings = {};
+      if (settings.mode !== undefined && settings.mode !== card.mode) patch.mode = settings.mode;
+      if (settings.size !== undefined && settings.size !== card.size) patch.size = settings.size;
+      if (patch.mode === undefined && patch.size === undefined) return card;
+      const next = update(card.id, patch, {
+        kind: "settings_changed",
+        source,
+        note: `mode ${patch.mode ?? card.mode ?? "unset"}, size ${patch.size ?? card.size ?? "unset"}`,
+      });
+      const threadId = ownerThread(next);
+      if (!next.startRequested || next.column === "done" || threadId === null) return next;
+      try {
+        // A paused task's dispatch gate holds this until resume.
+        await dependencies.sdk.threads.send({
+          threadId,
+          mode: "auto",
+          input: [{ type: "text", text: settingsChangeInstruction(next), mentions: [] }],
+        });
+      } catch (cause) {
+        throw new Error(`Saved, but the task owner was not told: ${errorMessage(cause)}`);
+      }
+      return next;
     },
     start,
     launch,
@@ -1125,7 +1165,8 @@ export function createPipelineService(
         if (prUrl === null) throw new Error("--pr requires a github.com pull request URL");
         patch.prUrl = prUrl;
       }
-      if (input.tier !== undefined) patch.tier = input.tier;
+      if (input.mode !== undefined) patch.mode = input.mode;
+      if (input.size !== undefined) patch.size = input.size;
       if (input.needsYou !== undefined) {
         patch.needsUser = true;
         patch.attentionReason = input.needsYou;

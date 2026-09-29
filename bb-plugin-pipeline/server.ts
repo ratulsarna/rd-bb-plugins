@@ -149,6 +149,9 @@ export default async function plugin(bb: BbPluginApi) {
     setMachine({ cardId, hostId }) {
       return service.setMachine(cardId, hostId);
     },
+    setCardSettings({ cardId, ...settings }) {
+      return service.setSettings(cardId, settings, "ui");
+    },
     addCard(input) {
       return service.createCard({ ...input, source: "ui" });
     },

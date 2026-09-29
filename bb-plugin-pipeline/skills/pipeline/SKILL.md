@@ -12,9 +12,10 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 
 - `bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>]` — read the workflow document or phase template when working on a Pipeline task.
 
-- `bb pipeline add --title <t> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project.
+- `bb pipeline add --title <t> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project. Mode and size are the user's call; omit them unless the user names them.
 - `bb pipeline start <card-id> [--machine <id-or-name>] [execution overrides]` — start intake for a saved task using its stored machine, models, notes, and attachments; the flags accept the same machine and execution overrides as `add`. Repeated Start requests do not launch again; use Retry after a failed start.
 - `bb pipeline set-machine <card-id> --machine <id-or-name>` — assign a machine to a card that has none. An assigned machine cannot be changed.
+- `bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>]` — change a card's mode or size for the user. A running owner is told and follows the new setting from its next stop or gate.
 - `bb pipeline list [--project <id>] [--all]` — the board's cards; `done` is hidden unless `--all`.
 - `bb pipeline issues [--project <id>] [--page <n>]` — the project's open GitHub issues assigned to the BB server's account, page by page, each with the card it is imported to, if any.
 - `bb pipeline import-issues <number>... [--project <id>]` — import issues as Backlog cards carrying the full issue snapshot; up to 50 per call, and an already-imported issue returns its existing card.
@@ -60,7 +61,7 @@ When spawning workers for a card, use `--parent-self` so they belong to the task
 
 ### Imported issues
 
-An imported card works from a GitHub issue the user picked. The card carries the full snapshot (title, body, labels, comments), the source link, and its own local notes (`Card.body`, stored with `report --body` or `report --body-file`). You may change the source issue, but ask the user before each change. Keep scope, decisions, and classification in the local notes, and the tier on the card.
+An imported card works from a GitHub issue the user picked. The card carries the full snapshot (title, body, labels, comments), the source link, and its own local notes (`Card.body`, stored with `report --body` or `report --body-file`). You may change the source issue, but ask the user before each change. Keep scope, decisions, and classification in the local notes, and the mode and size on the card.
 
 Start behaves like any card: an imported card missing a machine or role choices asks for them before launching. The snapshot refreshes on import, at start, and through **Refresh issue** in task details; `github-sync` stays PR-only and issues are not polled in the background. A closed or reassigned source keeps its card and shows its state.
 

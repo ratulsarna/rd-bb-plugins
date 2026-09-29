@@ -41,7 +41,8 @@ describe("lead prompt", () => {
   it("keeps local notes apart from the source issue and forbids source edits", () => {
     const card = makeImportedCard({
       body: "Keep scope to the list view; the timeline page is out.",
-      tier: "small",
+      mode: "auto",
+      size: "small",
       issueUrl: sourceIssue.url,
     });
     const prompt = leadPrompt(card, {
@@ -50,7 +51,7 @@ describe("lead prompt", () => {
       labels: ["bug"],
     });
 
-    expect(prompt).toContain("Tier: small.");
+    expect(prompt).toContain("Mode: auto. Size: small.");
     expect(prompt).toContain(sourceIssue.url);
     expect(prompt).not.toContain("Kind:");
     expect(prompt).toContain("Source labels: bug");

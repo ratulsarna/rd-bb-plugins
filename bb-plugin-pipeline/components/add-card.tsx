@@ -2,8 +2,10 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import type { ExecutionDefaults, ExecutionSelection } from "@/lib/execution";
 import type { PipelineMachine } from "@/lib/machines";
+import type { CardMode, CardSize } from "@/lib/store";
 import { usePortalScopeProps } from "@/lib/portal-scope";
 import { ExecutionFields } from "./execution-fields";
+import { TaskSettingsFields } from "./task-settings-fields";
 import { Icon } from "./icon";
 
 export function AddCard(props: {
@@ -18,6 +20,7 @@ export function AddCard(props: {
     hostId: string,
     intake: ExecutionSelection,
     lead: ExecutionSelection,
+    settings: { mode: CardMode; size: CardSize },
     start: boolean,
   ): Promise<void>;
 }) {
@@ -28,6 +31,8 @@ export function AddCard(props: {
   const [hostId, setHostId] = useState("");
   const [intake, setIntake] = useState<ExecutionSelection | null>(null);
   const [lead, setLead] = useState<ExecutionSelection | null>(null);
+  const [mode, setMode] = useState<CardMode>("manual");
+  const [size, setSize] = useState<CardSize>("standard");
   const [pending, setPending] = useState(false);
   const [pendingIntent, setPendingIntent] = useState<"save" | "start">("save");
   const [error, setError] = useState<string | null>(null);
@@ -69,13 +74,15 @@ export function AddCard(props: {
     setPendingIntent(intent);
     setError(null);
     try {
-      await props.onAdd(title.trim(), body, files, selectedHostId, intake, lead, intent === "start");
+      await props.onAdd(title.trim(), body, files, selectedHostId, intake, lead, { mode, size }, intent === "start");
       setTitle("");
       setBody("");
       setFiles([]);
       setHostId("");
       setIntake(null);
       setLead(null);
+      setMode("manual");
+      setSize("standard");
       setOpen(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -149,6 +156,13 @@ export function AddCard(props: {
                 lead={lead}
                 onIntakeChange={setIntake}
                 onLeadChange={setLead}
+                disabled={pending || props.disabled}
+              />
+              <TaskSettingsFields
+                mode={mode}
+                size={size}
+                onModeChange={setMode}
+                onSizeChange={setSize}
                 disabled={pending || props.disabled}
               />
               <label className="pipeline-attach">

@@ -11,7 +11,7 @@ import type { MachineQueue, rpcContract } from "@/lib/contract";
 import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import type { ExecutionSelection } from "@/lib/execution";
 import { ownerThread } from "@/lib/card";
-import type { Card, CardAttachment } from "@/lib/store";
+import type { Card, CardAttachment, CardMode, CardSize } from "@/lib/store";
 import { PipelineSettings } from "./settings";
 import { AddCard } from "./add-card";
 import { ImportIssues } from "./import-issues";
@@ -304,12 +304,13 @@ function PipelineTasks() {
     hostId: string,
     intake: ExecutionSelection,
     lead: ExecutionSelection,
+    settings: { mode: CardMode; size: CardSize },
     start: boolean,
   ) {
     const targetProjectId = projectIdRef.current;
     if (targetProjectId === null) return;
     const attachments = await Promise.all(files.map((file) => upload(targetProjectId, file)));
-    await rpc.call("addCard", { projectId: targetProjectId, hostId, intake, lead, title, body, attachments, start });
+    await rpc.call("addCard", { projectId: targetProjectId, hostId, intake, lead, title, body, attachments, ...settings, start });
     await load();
   }
 
@@ -338,6 +339,7 @@ function PipelineTasks() {
         card={card}
         machines={machines}
         onSetMachine={(hostId) => void updateCard(card, () => rpc.call("setMachine", { cardId: card.id, hostId }))}
+        onSetSettings={(settings) => void updateCard(card, () => rpc.call("setCardSettings", { cardId: card.id, ...settings }))}
         dragging={draggedCardId === card.id}
         pending={pendingCards.has(card.id)}
         queue={queuedCards.get(card.id) ?? null}

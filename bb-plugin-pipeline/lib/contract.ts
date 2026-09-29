@@ -4,13 +4,14 @@ import { z } from "zod";
 import { threadPullRequestsSchema } from "./thread-pull-request";
 import { COLUMNS } from "./columns";
 import { executionSelectionSchema } from "./execution";
-import { RUN_STATES } from "./store";
+import { MODES, RUN_STATES, SIZES } from "./store";
 import { githubStatusSchema } from "./github-types";
 import { githubIssueSummarySchema, importedIssueSchema } from "./issue-types";
 import { settingsViewSchema, settingsUpdateSchema, integrationStatusSchema } from "./settings";
 
 export const columnSchema = z.enum(COLUMNS);
-export const tierSchema = z.enum(["trivial", "small", "standard"]);
+export const modeSchema = z.enum(MODES);
+export const sizeSchema = z.enum(SIZES);
 
 export const attachmentSchema = z
   .object({
@@ -38,7 +39,8 @@ export const cardSchema = z
     attentionSource: z.string().nullable(),
     attentionUnknown: z.boolean(),
     reportSignal: z.enum(["needs_you", "working"]).nullable(),
-    tier: tierSchema.nullable(),
+    mode: modeSchema.nullable(),
+    size: sizeSchema.nullable(),
     issueUrl: z.string().nullable(),
     importedIssue: importedIssueSchema.nullable(),
     prUrl: z.string().nullable(),
@@ -156,6 +158,8 @@ export const rpcContract = defineRpcContract({
         title: z.string().trim().min(1).max(500),
         body: z.string().max(20_000),
         attachments: z.array(attachmentSchema).max(20),
+        mode: modeSchema.optional(),
+        size: sizeSchema.optional(),
         start: z.boolean().optional(),
       })
       .strict(),
@@ -209,6 +213,10 @@ export const rpcContract = defineRpcContract({
     input: z
       .object({ cardId: z.string(), hostId: z.string().trim().min(1) })
       .strict(),
+    output: cardSchema,
+  },
+  setCardSettings: {
+    input: z.object({ cardId: z.string(), mode: modeSchema.optional(), size: sizeSchema.optional() }).strict(),
     output: cardSchema,
   },
   removeCard: {

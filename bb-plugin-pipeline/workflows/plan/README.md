@@ -12,6 +12,8 @@ Tell the user what you understand the task to be, checked against what your rese
 
 `bb pipeline report --needs-you "<short waiting reason>"`
 
+In auto, the lead settles the picture from its research and takes it into Shape. What only the user can decide goes to the user.
+
 ## Shape
 
 Lay out the real ways to build it; your first idea is one of them, not the default. Open the Oracle session with the brief in `bb pipeline instructions plan --file templates/oracle.md`; it stays up for the whole run, and from there it is a conversation. Then a blind Oracle round: the ticket and the agreed picture, nothing of yours, and the question: how would you build this. From there, work it out as a duo: put your ways next to its approach, challenge each other's assumptions, and hash out the best-designed solution together. Every claim either side makes ends in evidence from the repo or a change of mind; a reply without a read list is not a round. The lead has the final say. If the design work shows that what you and the user agreed the task to be was wrong, go back to the user before going on.
@@ -38,10 +40,12 @@ Real blast radius (migrations, auth, data-loss surfaces, anything hard to roll b
 
 ## Walkthrough — the user's review
 
+Manual only. In auto, go to the exit when Shape ends.
+
 `bb pipeline report --column plan_ready --needs-you "plan ready; walkthrough step 1 of M"`
 
 Start with step 1 in the same chat reply that announces the plan is ready. Walk the user through it one step at a time, up to five or six steps: what we are solving and how, what path we are taking, with visuals and code snippets where they help. Use `/show-me` for each step. Present one step per chat turn and wait for the user's reply there; never all the steps at once. The card records only the stage and waiting reason. An objection at any step goes back to Shape, with the Oracle still up.
 
 `bb pipeline report --needs-you "walkthrough step N of M"`
 
-**Exit:** the user gives the go after the last step → read `bb pipeline instructions implement` and continue in this thread; no separate slash command is needed.
+**Exit:** the user gives the go after the last step, or Shape ends in auto → read `bb pipeline instructions implement` and continue in this thread.

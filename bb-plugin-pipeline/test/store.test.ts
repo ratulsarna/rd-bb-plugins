@@ -16,6 +16,27 @@ const lead = {
 };
 
 describe("card migrations", () => {
+  it("maps old tiers to sizes and makes every existing card manual", () => {
+    const db = new Database(":memory:");
+    try {
+      const last = MIGRATIONS.length - 1;
+      for (const migration of MIGRATIONS.slice(0, last)) db.exec(migration);
+      const insert = db.prepare(`INSERT INTO cards (id, project_id, title, "column", tier, created_at, updated_at)
+        VALUES (?, 'proj_1', 'Old card', 'todo', ?, 1, 1)`);
+      const tiers = [["trivial", "trivial"], ["small", "small"], ["standard", "standard"], ["unsized", null]] as const;
+      for (const [id, tier] of tiers) insert.run(id, tier);
+      db.exec(MIGRATIONS[last]);
+      const store = createCardStore(db);
+      expect(tiers.map(([id]) => [store.get(id)?.mode, store.get(id)?.size])).toEqual([
+        ["manual", "small"], ["manual", "small"], ["manual", "standard"], ["manual", null],
+      ]);
+      // Writes must not reference the dropped column.
+      expect(store.update("unsized", { size: "standard" }).size).toBe("standard");
+    } finally {
+      db.close();
+    }
+  });
+
   it("migrates running cards and persists an acknowledged pause without losing task data", () => {
     const db = new Database(":memory:");
     try {
@@ -25,7 +46,7 @@ describe("card migrations", () => {
       const before = createCardStore(db).get("card_1")!;
       for (const migration of MIGRATIONS.slice(4)) db.exec(migration);
       const store = createCardStore(db);
-      expect(store.get("card_1")).toEqual({ ...before, startRequested: true, runState: "running", pauseRequestId: null, controlError: null });
+      expect(store.get("card_1")).toEqual({ ...before, startRequested: true, runState: "running", pauseRequestId: null, controlError: null, mode: "manual", size: null });
       store.update("card_1", { runState: "pausing", pauseRequestId: "request", controlError: "machine offline" });
       const reloaded = createCardStore(db);
       expect(reloaded.listControlled()).toEqual([expect.objectContaining({

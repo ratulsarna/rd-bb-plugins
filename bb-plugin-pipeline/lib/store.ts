@@ -10,6 +10,10 @@ import {
 export type CardOwnerRole = "intake" | "lead";
 export const RUN_STATES = ["running", "pause_requested", "pausing", "paused", "stopping"] as const;
 export type CardRunState = typeof RUN_STATES[number];
+export const MODES = ["manual", "auto"] as const;
+export type CardMode = typeof MODES[number];
+export const SIZES = ["small", "standard"] as const;
+export type CardSize = typeof SIZES[number];
 
 export interface CardAttachment {
   path: string;
@@ -36,7 +40,8 @@ export interface Card {
   attentionSource: string | null;
   attentionUnknown: boolean;
   reportSignal: "needs_you" | "working" | null;
-  tier: "trivial" | "small" | "standard" | null;
+  mode: CardMode | null;
+  size: CardSize | null;
   issueUrl: string | null;
   importedIssue: ImportedIssue | null;
   prUrl: string | null;
@@ -88,7 +93,8 @@ export type CardPatch = Partial<
     | "attentionSource"
     | "attentionUnknown"
     | "reportSignal"
-    | "tier"
+    | "mode"
+    | "size"
     | "issueUrl"
     | "prUrl"
     | "intakeThreadId"
@@ -119,7 +125,8 @@ interface CardRow {
   attention_source: string | null;
   attention_unknown: number;
   report_signal: "needs_you" | "working" | null;
-  tier: "trivial" | "small" | "standard" | null;
+  mode: CardMode | null;
+  size: CardSize | null;
   issue_url: string | null;
   imported_issue: string | null;
   pr_url: string | null;
@@ -192,6 +199,11 @@ export const MIGRATIONS = [
   `ALTER TABLE cards ADD COLUMN github_state TEXT;`,
   `ALTER TABLE cards ADD COLUMN imported_issue TEXT;
    CREATE UNIQUE INDEX cards_imported_issue ON cards(project_id, lower(issue_url)) WHERE imported_issue IS NOT NULL;`,
+  `ALTER TABLE cards ADD COLUMN mode TEXT CHECK (mode IN ('manual', 'auto'));
+   ALTER TABLE cards ADD COLUMN size TEXT CHECK (size IN ('small', 'standard'));
+   UPDATE cards SET mode = 'manual',
+     size = CASE WHEN tier IS NULL THEN NULL WHEN tier = 'standard' THEN 'standard' ELSE 'small' END;
+   ALTER TABLE cards DROP COLUMN tier;`,
 ] as const;
 
 function parseAttachments(value: string): CardAttachment[] {
@@ -230,7 +242,8 @@ function cardFromRow(row: CardRow): Card {
     attentionSource: row.attention_source,
     attentionUnknown: row.attention_unknown === 1,
     reportSignal: row.report_signal,
-    tier: row.tier,
+    mode: row.mode,
+    size: row.size,
     issueUrl: row.issue_url,
     importedIssue: row.imported_issue == null ? null : JSON.parse(row.imported_issue) as ImportedIssue,
     prUrl: row.pr_url,
@@ -276,6 +289,8 @@ export interface CardStore {
     attachments: CardAttachment[];
     source: string;
     importedIssue?: ImportedIssue;
+    mode?: CardMode;
+    size?: CardSize;
   }): Card;
   /** Refuses to move an assigned card. */
   setHost(id: string, hostId: string): Card;
@@ -354,7 +369,7 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       db.prepare(
         `UPDATE cards SET
           "column" = ?, needs_user = ?, attention_reason = ?, attention_source = ?, attention_unknown = ?,
-          report_signal = ?, tier = ?, issue_url = ?, pr_url = ?, intake_thread_id = ?, lead_thread_id = ?,
+          report_signal = ?, mode = ?, size = ?, issue_url = ?, pr_url = ?, intake_thread_id = ?, lead_thread_id = ?,
           owner_role = ?, start_requested = ?, run_state = ?, pause_request_id = ?, control_error = ?, thread_error = ?, launch_error = ?,
           body = ?, host_id = ?, intake_execution = ?, lead_execution = ?, revision = revision + 1, updated_at = ?
          WHERE id = ?`,
@@ -365,7 +380,8 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         next.attentionSource,
         next.attentionUnknown ? 1 : 0,
         next.reportSignal,
-        next.tier,
+        next.mode,
+        next.size,
         next.issueUrl,
         next.prUrl,
         next.intakeThreadId,
@@ -409,8 +425,8 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       }
       db.prepare(
         `INSERT INTO cards
-          (id, project_id, host_id, intake_execution, lead_execution, start_requested, title, body, attachments, "column", issue_url, imported_issue, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, project_id, host_id, intake_execution, lead_execution, start_requested, title, body, attachments, "column", issue_url, imported_issue, mode, size, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         input.id,
         input.projectId,
@@ -424,6 +440,8 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         started ? "todo" : "backlog",
         input.importedIssue?.url ?? null,
         input.importedIssue === undefined ? null : JSON.stringify(input.importedIssue),
+        input.mode ?? null,
+        input.size ?? null,
         at,
         at,
       );

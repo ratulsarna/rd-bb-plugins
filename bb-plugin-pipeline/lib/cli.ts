@@ -14,13 +14,13 @@ import type { GithubSync } from "./github-sync";
 import type { IssueImporter } from "./issue-import";
 import { ownerThread } from "./card";
 import type { MachineQueue } from "./contract";
-import type { Card, CardAttachment, CardStore } from "./store";
+import { MODES, SIZES, type Card, type CardAttachment, type CardMode, type CardSize, type CardStore } from "./store";
 import { readWorkflow } from "./workflow";
 import { USER_HANDOFF } from "./prompts";
 
 const USAGE = `Usage:
   bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]
-  bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>] [--json]
+  bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--project <id>] [--json]
   bb pipeline start <card-id> [--machine <id-or-name>] [execution options] [--json]
   bb pipeline issues [--project <id>] [--page <number>] [--json]
   bb pipeline import-issues <number>... [--project <id>] [--json]
@@ -29,7 +29,7 @@ const USAGE = `Usage:
   bb pipeline queue [--project <id>] [--json]
   bb pipeline run-next <card-id> [--clear] [--json]
   bb pipeline move <card-id> <column> [--json]
-  bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>] [--body <text> | --body-file <path>] [--json]
+  bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--mode <manual|auto>] [--size <small|standard>] [--body <text> | --body-file <path>] [--json]
   bb pipeline github-sync <card-id> [--json]
   bb pipeline review-wait [--card <id>] [--handled <batch-id>] [--json]
   bb pipeline review-retry <card-id> [--json]
@@ -39,6 +39,7 @@ const USAGE = `Usage:
   bb pipeline stop <card-id> [--json]
   bb pipeline report --paused <request-id> [--card <id>] [--json]
   bb pipeline set-machine <card-id> --machine <id-or-name> [--json]
+  bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>] [--json]
   bb pipeline remove <card-id> [--json]
 
 Add/start execution options (optional; omitted fields use saved choices or Pipeline settings):
@@ -69,7 +70,8 @@ const VALUE_OPTIONS = new Set([
   "needs-you",
   "issue",
   "pr",
-  "tier",
+  "mode",
+  "size",
   "paused",
   "handled",
   "file",
@@ -111,6 +113,18 @@ function parse(argv: string[]): ParsedArgs {
 
 function option(args: ParsedArgs, name: string): string | undefined {
   return args.options.get(name)?.at(-1);
+}
+
+// Rejects bad values before any command runs; the service trusts these types.
+function cardSettings(args: ParsedArgs): { mode?: CardMode; size?: CardSize } {
+  const mode = option(args, "mode");
+  const size = option(args, "size");
+  if (mode !== undefined && !(MODES as readonly string[]).includes(mode)) throw new Error(`unknown mode ${mode}; use ${MODES.join(" or ")}`);
+  if (size !== undefined && !(SIZES as readonly string[]).includes(size)) throw new Error(`unknown size ${size}; use ${SIZES.join(" or ")}`);
+  return {
+    ...(mode === undefined ? {} : { mode: mode as CardMode }),
+    ...(size === undefined ? {} : { size: size as CardSize }),
+  };
 }
 
 function jsonEnabled(args: ParsedArgs): boolean {
@@ -198,7 +212,8 @@ function formatCard(
       ? `queued${queue.waitingReasons.length === 0 ? "" : `: ${queue.waitingReasons.join(", ")}`}`
       : null,
     queue.runNext ? "run next" : null,
-    card.tier,
+    card.mode === null ? "mode: unset" : `mode: ${card.mode}`,
+    card.size === null ? "size: unset" : `size: ${card.size}`,
     card.hostId === null ? "machine: unassigned" : `machine: ${card.hostId}`,
     card.needsUser ? `needs you: ${card.attentionReason ?? "unknown"}` : null,
     card.attentionUnknown ? "idle, unchecked" : null,
@@ -267,6 +282,7 @@ export function createPipelineCli(input: {
       { name: "resume", summary: "Resume a paused task", usage: "bb pipeline resume <card-id> [--json]" },
       { name: "stop", summary: "Stop task execution now and hold queued work", usage: "bb pipeline stop <card-id> [--json]" },
       { name: "set-machine", summary: "Assign a machine to a card that has none", usage: "bb pipeline set-machine <card-id> --machine <id-or-name> [--json]" },
+      { name: "set", summary: "Change a card's mode or size", usage: "bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>] [--json]" },
       { name: "remove", summary: "Remove a card", usage: "bb pipeline remove <card-id> [--json]" },
     ],
     async run(argv, context) {
@@ -300,6 +316,9 @@ export function createPipelineCli(input: {
       if (args.options.has("clear") && args.command !== "run-next") return failure("--clear is only accepted by run-next", USAGE);
       if (args.options.has("start") && args.command !== "add") return failure("--start is only accepted by add", USAGE);
       if (args.options.has("file") && args.command !== "instructions") return failure("--file is only accepted by instructions", USAGE);
+      if ((args.options.has("mode") || args.options.has("size")) && !["add", "report", "set"].includes(args.command)) {
+        return failure("--mode and --size are only accepted by add, report, and set", USAGE);
+      }
 
       try {
         switch (args.command) {
@@ -327,6 +346,7 @@ export function createPipelineCli(input: {
               title,
               body: option(args, "body") ?? "",
               attachments: (args.options.get("attachment") ?? []).map(attachment),
+              ...cardSettings(args),
               source: "cli",
               start: args.options.has("start"),
             });
@@ -449,10 +469,7 @@ export function createPipelineCli(input: {
             if (column !== undefined && !isColumn(column)) {
               return failure(`unknown column ${column}`, USAGE);
             }
-            const tier = option(args, "tier");
-            if (tier !== undefined && !["trivial", "small", "standard"].includes(tier)) {
-              return failure(`unknown tier ${tier}`, USAGE);
-            }
+            const settings = cardSettings(args);
             let body = option(args, "body");
             const bodyFile = option(args, "body-file");
             if (bodyFile !== undefined) {
@@ -477,7 +494,7 @@ export function createPipelineCli(input: {
               args.options.has("working") ||
               option(args, "issue") !== undefined ||
               option(args, "pr") !== undefined ||
-              tier !== undefined;
+              Object.keys(settings).length > 0;
             if (!hasReport) return failure("report requires at least one change", USAGE);
             const card = await input.service.report({
               threadId: context.threadId,
@@ -487,7 +504,7 @@ export function createPipelineCli(input: {
               working: args.options.has("working"),
               issueUrl: option(args, "issue"),
               prUrl: option(args, "pr"),
-              tier: tier as "trivial" | "small" | "standard" | undefined,
+              ...settings,
               body,
             });
             return success(args, card, option(args, "needs-you") === undefined
@@ -527,6 +544,13 @@ export function createPipelineCli(input: {
             }
             const card = await input.service.setMachine(args.positionals[0]!, machine);
             return success(args, card, `Assigned ${formatCard(card)}`);
+          }
+          case "set": {
+            if (args.positionals.length !== 1) return failure("set requires one card id", USAGE);
+            const settings = cardSettings(args);
+            if (Object.keys(settings).length === 0) return failure("set requires --mode or --size", USAGE);
+            const card = await input.service.setSettings(args.positionals[0]!, settings, "cli");
+            return success(args, card, formatCard(card));
           }
           case "remove": {
             if (args.positionals.length !== 1) return failure("remove requires one card id", USAGE);

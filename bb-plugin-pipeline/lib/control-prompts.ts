@@ -16,6 +16,10 @@ export function resumeInstruction(card: Card): string {
   return `${resumeHandoff(card)}\n${WORKFLOW_ACCESS}\nRun \`bb pipeline instructions ${phase}\` and read the current phase before continuing.`;
 }
 
+export function settingsChangeInstruction(card: Card): string {
+  return `The user changed Pipeline task ${card.id} to mode ${card.mode}, size ${card.size}. Follow the new settings from your next stop or gate, and record the change in run.md. Do not redo gates already passed.`;
+}
+
 export function isResumeInstruction(card: Card, text: string): boolean {
   return text.split("\n", 1)[0] === resumeHandoff(card);
 }

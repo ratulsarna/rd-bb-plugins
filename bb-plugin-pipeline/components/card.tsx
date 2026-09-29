@@ -3,6 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Popover from "@radix-ui/react-popover";
 import { ownerThread } from "@/lib/card";
 import type { PipelineMachine } from "@/lib/machines";
+import type { CardMode, CardSize } from "@/lib/store";
 import { usePortalScopeProps } from "@/lib/portal-scope";
 import type { CardActionProps } from "./card-actions";
 import { CardActions, StartTaskButton } from "./card-actions";
@@ -23,6 +24,7 @@ export interface PipelineCardProps extends CardActionProps {
   actionError?: string | null;
   machines: PipelineMachine[];
   onSetMachine(hostId: string): void;
+  onSetSettings(settings: { mode?: CardMode; size?: CardSize }): void;
   questionOpen: boolean;
   dragging: boolean;
   onDragStart: DragEventHandler<HTMLElement>;

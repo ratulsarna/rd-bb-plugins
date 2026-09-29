@@ -19,6 +19,7 @@ import {
 import type { PipelineCardProps } from "./card";
 import { CardActions } from "./card-actions";
 import { MachineSelect } from "./machine-select";
+import { TaskSettingsFields } from "./task-settings-fields";
 import { Icon } from "./icon";
 
 function executionLabel(execution: ExecutionSelection): string {
@@ -111,13 +112,17 @@ export function TaskDetails(props: PipelineCardProps) {
                 <dd>{executionLabel(card.lead)}</dd>
               </>
             )}
-            {card.tier === null ? null : (
-              <>
-                <dt>Tier</dt>
-                <dd>{card.tier}</dd>
-              </>
-            )}
           </dl>
+          <div className="pipeline-detail-settings">
+            <TaskSettingsFields
+              mode={card.mode}
+              size={card.size}
+              onModeChange={(mode) => props.onSetSettings({ mode })}
+              onSizeChange={(size) => props.onSetSettings({ size })}
+              disabled={props.pending || card.column === "done"}
+              taskTitle={card.title}
+            />
+          </div>
 
           {diagnostics.length === 0 ? null : (
             <div>

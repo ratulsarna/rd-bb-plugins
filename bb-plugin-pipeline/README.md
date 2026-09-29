@@ -74,14 +74,15 @@ Import work that already has an issue instead of filing it again. **Import issue
 
 Starting an imported card is a normal start: it opens setup with the machine and intake/lead pickers, or use the `bb pipeline start` flags. Accepting setup saves the task in To do with its choices, and launching intake refreshes the full issue, labels and comments included. If that refresh fails, the card waits in To do with **Retry** and no intake thread; only cancelling setup leaves the card untouched. The snapshot also refreshes on import and through **Refresh issue** in task details. Issues are not polled in the background; PR checks and reviews keep their regular sync. A card keeps its issue when the source is closed or reassigned and shows that state.
 
-Work on an imported card never writes to the source issue: no edits to its body, labels, or comments, no comments, and no close, reopen, or reassign. Scope, decisions, and classification live in the card's local notes: intake and the lead persist them with `bb pipeline report --body <text>` or `--body-file <path>`, and the tier stays on the card instead of becoming issue labels. The workflow documents carry the same rules in their imported-issue sections. Normal cards and PR behavior are unchanged.
+Work on an imported card never writes to the source issue: no edits to its body, labels, or comments, no comments, and no close, reopen, or reassign. Scope, decisions, and classification live in the card's local notes: intake and the lead persist them with `bb pipeline report --body <text>` or `--body-file <path>`, and the mode and size stay on the card instead of becoming issue labels. The workflow documents carry the same rules in their imported-issue sections. Normal cards and PR behavior are unchanged.
 
 ## Commands
 
 ```text
-bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--project <id>]
+bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--project <id>]
 bb pipeline start <card-id> [--machine <id-or-name>] [execution overrides]
 bb pipeline set-machine <card-id> --machine <id-or-name>
+bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>]
 bb pipeline list [--project <id>] [--all]
 bb pipeline show <card-id>
 bb pipeline issues [--project <id>] [--page <n>]
@@ -89,7 +90,7 @@ bb pipeline import-issues <number>... [--project <id>]
 bb pipeline queue [--project <id>]
 bb pipeline run-next <card-id> [--clear]
 bb pipeline move <card-id> <column>
-bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--tier <trivial|small|standard>] [--body <text> | --body-file <path>]
+bb pipeline report [--card <id>] [--column <column>] [--needs-you <reason> | --working] [--issue <url>] [--pr <url>] [--mode <manual|auto>] [--size <small|standard>] [--body <text> | --body-file <path>]
 bb pipeline github-sync <card-id>
 bb pipeline review-wait [--card <id>] [--handled <batch-id>]
 bb pipeline review-retry <card-id>
@@ -102,6 +103,8 @@ bb pipeline remove <card-id>
 ```
 
 `add` saves a task in Backlog. Pass `--start` to place it in To do and launch intake. Start a saved task with `bb pipeline start <card-id>`; repeated Start requests do not create another thread. `start` accepts the same machine and execution overrides as `add`, which is how an imported card without saved choices launches from the CLI. A failed start uses the existing Retry action. Saved tasks retain their machine, execution choices, notes, and attachments across reloads.
+
+Each card has a mode and a size. Set them in New task, in task details, with `add --mode --size`, or with `bb pipeline set`. New tasks start manual and standard; imported cards start unset, and intake asks. Manual stops for you at every workflow stop. Auto stops for the implementation walkthrough, after QA, and for decisions only you can make. On small, the lead writes the code; on standard, a developer worker does. Changing either on a started task tells its intake or lead, which follows the new setting from its next stop or gate.
 
 `issues` pages through open issues assigned to the BB server's GitHub account; `import-issues` imports up to 50 at a time as Backlog cards. `report --body <text>` or `--body-file <path>` stores local scope notes on the card — `--body-file` requires a BB thread and reads the file from that thread's machine — and intake and the lead receive those notes.
 
@@ -170,7 +173,7 @@ The Pipeline workflow lives in plugin-owned documents under `workflows/`, stored
 bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]
 ```
 
-With no phase, `instructions` reads the overview (`workflows/README.md`): roles, sizing, and the phase map. Each phase reads its `workflows/<phase>/README.md`, and `--file <relative-path>` reads a supporting file under that phase, such as a worker template dispatched during implementation. Documents are only read through this command, never from the task's host checkout. The intake kickoff reads `intake`; the lead reads `overview` and then the phase its kind and tier call for; after an approved plan it reads `implement`; a review follow-up reads `close-out`. After the user approves a transition, the thread reads the next phase and continues — no separate slash command is needed.
+With no phase, `instructions` reads the overview (`workflows/README.md`): roles, mode and size, and the phase map. Each phase reads its `workflows/<phase>/README.md`, and `--file <relative-path>` reads a supporting file under that phase, such as a worker template dispatched during implementation. Documents are only read through this command, never from the task's host checkout. The intake kickoff reads `intake`; the lead reads `overview` and then the phase its kind calls for; after the plan it reads `implement`; a review follow-up reads `close-out`. After a phase exit clears, with the user's approval where the card's mode asks for one, the thread reads the next phase and continues.
 
 Board operations stay in the general `pipeline` skill, invoked explicitly when a thread works the board.
 

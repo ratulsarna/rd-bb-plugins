@@ -570,6 +570,8 @@ describe("pipeline board", () => {
       title: "Twice",
       body: "",
       attachments: [{ path: "/attachments/spec.md", filename: "spec.md", sizeBytes: 12, isImage: false }],
+      mode: "manual",
+      size: "standard",
       start: false,
     }));
     expect(fetch).toHaveBeenCalledExactlyOnceWith(
@@ -624,6 +626,8 @@ describe("pipeline board", () => {
       title: "Task",
       body: "",
       attachments: [],
+      mode: "manual",
+      size: "standard",
       start: true,
     }));
     fireEvent.click(await screen.findByRole("button", { name: "New task" }));
@@ -681,6 +685,8 @@ describe("pipeline board", () => {
       target: { value: "fast" },
     });
     fireEvent.click(within(lead).getByRole("button", { name: "Apply execution selection" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Mode" }), { target: { value: "auto" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Size" }), { target: { value: "small" } });
     fireEvent.click(screen.getByRole("button", { name: "Save and start" }));
 
     await waitFor(() => expect(addCard).toHaveBeenCalledExactlyOnceWith({
@@ -701,6 +707,8 @@ describe("pipeline board", () => {
       title: "Delegate roles",
       body: "",
       attachments: [],
+      mode: "auto",
+      size: "small",
       start: true,
     }));
   });

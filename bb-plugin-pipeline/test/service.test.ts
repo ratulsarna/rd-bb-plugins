@@ -1202,7 +1202,7 @@ describe("held cards", () => {
       threadId: "intake",
       issueUrl: "https://github.com/o/r/issues/2",
       prUrl: "https://github.com/o/r/pull/3",
-      tier: "small",
+      size: "small",
       needsYou: "Keep this context for resume",
     });
 
@@ -1213,7 +1213,7 @@ describe("held cards", () => {
       intakeThreadId: "intake",
       issueUrl: "https://github.com/o/r/issues/2",
       prUrl: "https://github.com/o/r/pull/3",
-      tier: "small",
+      size: "small",
       needsUser: true,
       attentionReason: "Keep this context for resume",
     });
@@ -1407,7 +1407,7 @@ describe("startup pass", () => {
     });
   });
 
-  it("reconciles a deleted thread after an unrelated tier change", async () => {
+  it("reconciles a deleted thread after an unrelated size change", async () => {
     let rejectLookup!: (reason: unknown) => void;
     const lookup = new Promise<ReturnType<typeof makeThreadResponse>>(
       (_resolve, reject) => {
@@ -1421,7 +1421,7 @@ describe("startup pass", () => {
 
     const startup = service.startupPass();
     await vi.waitFor(() => expect(getThread).toHaveBeenCalledOnce());
-    store.update("card_1", { tier: "small" });
+    store.update("card_1", { size: "small" });
     rejectLookup(
       Object.assign(new Error("thread not found"), {
         status: 404,
@@ -1431,7 +1431,7 @@ describe("startup pass", () => {
     await startup;
 
     expect(store.get("card_1")).toMatchObject({
-      tier: "small",
+      size: "small",
       leadThreadId: null,
       launchError: "lead: thread deleted",
       attentionReason: "thread deleted",
@@ -1539,6 +1539,50 @@ describe("startup pass", () => {
   });
 });
 
+describe("card settings", () => {
+  it("defaults new cards to manual and standard unless the user picks", async () => {
+    const { service } = setup();
+    await expect(service.createCard({ projectId: "proj_1", hostId: "host_mac", title: "Default", source: "cli" }))
+      .resolves.toMatchObject({ mode: "manual", size: "standard" });
+  });
+
+  it("tells the running lead about a change, once, with the new settings", async () => {
+    const { store, service, send } = setup();
+    seed(store);
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead", column: "implementing", mode: "manual", size: "standard" });
+
+    const changed = await service.setSettings("card_1", { mode: "auto" }, "ui");
+    const unchanged = await service.setSettings("card_1", { mode: "auto", size: "standard" }, "ui");
+
+    expect(changed).toMatchObject({ mode: "auto", size: "standard" });
+    expect(unchanged.revision).toBe(changed.revision);
+    expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      threadId: "lead",
+      mode: "auto",
+      input: [expect.objectContaining({ text: expect.stringContaining("to mode auto, size standard") })],
+    }));
+    expect(store.history("card_1").filter((entry) => entry.kind === "settings_changed")).toHaveLength(1);
+  });
+
+  it("saves without a message when no owner thread exists yet", async () => {
+    const { store, service, send } = setup();
+    seed(store);
+
+    await expect(service.setSettings("card_1", { size: "small" }, "cli")).resolves.toMatchObject({ size: "small" });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("keeps the change and says so when the owner cannot be told", async () => {
+    const { store, service } = setup({ send: async () => { throw new Error("machine offline"); } });
+    seed(store);
+    store.update("card_1", { intakeThreadId: "intake" });
+
+    await expect(service.setSettings("card_1", { mode: "auto" }, "ui"))
+      .rejects.toThrow("Saved, but the task owner was not told: machine offline");
+    expect(store.get("card_1")?.mode).toBe("auto");
+  });
+});
+
 describe("report and active state", () => {
   it.each(["intake", "lead"])("resolves a report by %s thread id", async (role) => {
     const { store, service } = setup();
@@ -1550,9 +1594,9 @@ describe("report and active state", () => {
         : { leadThreadId: role, ownerRole: "lead" },
     );
 
-    await service.report({ threadId: role, tier: "standard" });
+    await service.report({ threadId: role, mode: "auto", size: "standard" });
 
-    expect(store.get("card_1")?.tier).toBe("standard");
+    expect(store.get("card_1")).toMatchObject({ mode: "auto", size: "standard" });
   });
 
   it("rejects an unknown reporting thread", async () => {
@@ -2648,12 +2692,12 @@ describe("saved cards", () => {
 
     await service.report({
       cardId: saved.id,
-      tier: "small",
+      size: "small",
       needsYou: "Keep this note",
     });
     expect(store.get(saved.id)).toMatchObject({
       startRequested: false,
-      tier: "small",
+      size: "small",
       needsUser: true,
       attentionReason: "Keep this note",
       intakeThreadId: null,
@@ -3034,7 +3078,7 @@ describe("starting imported issues", () => {
     expect(kickoff).toContain("Local scope");
     expect(s.readIssue).not.toHaveBeenCalled();
 
-    await s.service.report({ cardId: card.id, body: "Clarified scope from intake", column: "planning", tier: "small" });
+    await s.service.report({ cardId: card.id, body: "Clarified scope from intake", column: "planning", size: "small" });
     expect(s.spawn).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(s.spawn.mock.calls[1])).toContain("Clarified scope from intake");
     expect(s.store.get(card.id)?.importedIssue?.body).toBe("Latest description");

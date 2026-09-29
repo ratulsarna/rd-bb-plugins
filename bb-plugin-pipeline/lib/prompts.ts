@@ -2,7 +2,7 @@ import type { Card } from "./store";
 import type { IssueDetails } from "./issue";
 import type { ImportedIssue } from "./issue-types";
 
-export const IMPORTED_ISSUE_RULES = "You may change the source issue on GitHub (edit it, comment, label, close, reopen, or reassign it), but ask the user before each change. Keep clarified scope, decisions, and classification in the card's local notes: write them to a file and run `bb pipeline report --body-file <path>` to store them on the card. The tier is stored on the card. `Closes #<n>` in the PR body needs no approval; the issue only closes when the user merges.";
+export const IMPORTED_ISSUE_RULES = "You may change the source issue on GitHub (edit it, comment, label, close, reopen, or reassign it), but ask the user before each change. Keep clarified scope, decisions, and classification in the card's local notes: write them to a file and run `bb pipeline report --body-file <path>` to store them on the card. The mode and size are stored on the card. `Closes #<n>` in the PR body needs no approval; the issue only closes when the user merges.";
 
 function formatComments(comments: ImportedIssue["comments"]): string {
   if (comments.length === 0) {
@@ -15,7 +15,7 @@ function formatComments(comments: ImportedIssue["comments"]): string {
 
 export const USER_HANDOFF = "The Pipeline card tracks state only. Put questions, explanations, walkthroughs, and approval requests in your user-facing chat reply. When waiting, state the decision and relevant options there. Use `bb pipeline report --needs-you` for a short status label; it does not post a chat message or collect an answer. Wait for the user's reply in this thread.";
 
-export const WORKFLOW_ACCESS = `This task follows the Pipeline workflow. Read its instructions with \`bb pipeline instructions <phase>\` and its templates with \`bb pipeline instructions <phase> --file <relative-path>\`. Load each phase when you reach it and follow its exit instructions. Intake ends with the documented report that hands off to a separate lead. The lead continues between phases in its own thread after the required user approval; no separate slash command is needed. Keep every user-approval gate in those instructions.
+export const WORKFLOW_ACCESS = `This task follows the Pipeline workflow. Read its instructions with \`bb pipeline instructions <phase>\` and its templates with \`bb pipeline instructions <phase> --file <relative-path>\`. Load each phase when you reach it and follow its exit instructions. Intake ends with the documented report that hands off to a separate lead. The lead continues between phases in its own thread, after the user's approval where the card's mode asks for one. Keep every user-approval gate in those instructions that the card's mode calls for.
 ${USER_HANDOFF}`;
 
 export function intakePrompt(card: Card, projectName: string): string {
@@ -27,7 +27,7 @@ Run \`bb pipeline instructions intake\` first and follow it. This card imports a
 ${IMPORTED_ISSUE_RULES}
 Source issue #${imported.number}: ${imported.title}
 ${imported.url} (${imported.state}; last updated ${imported.updatedAt})
-Labels: ${imported.labels.join(", ") || "none"}. Assignees: ${imported.assignees.join(", ") || "none"}. Tier: ${card.tier ?? "unsized"} (stored on the card).
+Labels: ${imported.labels.join(", ") || "none"}. Assignees: ${imported.assignees.join(", ") || "none"}. Mode: ${card.mode ?? "unset"}. Size: ${card.size ?? "unset"} (stored on the card).
 --- source issue body ---
 ${imported.body}
 --- source issue comments ---
@@ -39,6 +39,7 @@ This issue already exists. Do not ask what this is about and do not file a new o
   return `You are the intake for pipeline card ${card.id} in project ${projectName}.
 ${WORKFLOW_ACCESS}
 Run \`bb pipeline instructions intake\` first and follow it.
+Mode: ${card.mode ?? "unset"}. Size: ${card.size ?? "unset"}.
 The user's note is below and their files are attached. This is limited information: start by asking the user what this is about.
 ---
 ${card.title}
@@ -53,11 +54,11 @@ export function leadPrompt(
   const imported = card.importedIssue;
   if (imported !== null) {
     return `You are the lead for pipeline card ${card.id}: ${card.title}.
-Ticket: ${imported.url} (#${imported.number}, ${imported.state}; last updated ${imported.updatedAt}). Source labels: ${issue.labels.join(", ") || "none"}. Tier: ${card.tier ?? "unsized"}.
+Ticket: ${imported.url} (#${imported.number}, ${imported.state}; last updated ${imported.updatedAt}). Source labels: ${issue.labels.join(", ") || "none"}. Mode: ${card.mode ?? "unset"}. Size: ${card.size ?? "unset"}.
 ${IMPORTED_ISSUE_RULES}
 Classify before routing: the intake's classification in the local notes below wins, and the source labels are only a fallback, so a missing bug label does not mean feature.
 ${WORKFLOW_ACCESS}
-Run \`bb pipeline instructions\` first and follow its routing by kind and tier. Report every column change and every stop for the user with \`bb pipeline report\` before you end the turn.
+Run \`bb pipeline instructions\` first and follow its routing by kind, mode, and size. Report every column change and every stop for the user with \`bb pipeline report\` before you end the turn.
 --- source issue ---
 ${issue.title}
 
@@ -71,9 +72,9 @@ ${card.body.trim() || "(none)"}`;
     ? "bug"
     : "feature";
   return `You are the lead for pipeline card ${card.id}: ${card.title}.
-Ticket: ${card.issueUrl}. Kind: ${kind}. Tier: ${card.tier ?? "unsized"}.
+Ticket: ${card.issueUrl}. Kind: ${kind}. Mode: ${card.mode ?? "unset"}. Size: ${card.size ?? "unset"}.
 ${WORKFLOW_ACCESS}
-Run \`bb pipeline instructions\` first and follow its routing by kind and tier. Report every column change and every stop for the user with \`bb pipeline report\` before you end the turn.
+Run \`bb pipeline instructions\` first and follow its routing by kind, mode, and size. Report every column change and every stop for the user with \`bb pipeline report\` before you end the turn.
 ---
 ${issue.title}
 
