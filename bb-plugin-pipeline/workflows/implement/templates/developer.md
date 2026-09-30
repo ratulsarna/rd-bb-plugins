@@ -14,6 +14,10 @@ The lead is on the other end of this thread. Talk to it whenever that helps: to 
 
 base: <<base branch from run.md>>, work: <<branch name>>
 
+# Guidelines
+
+<<guidelines.md path>>. Build to it.
+
 # Constraints (only if real — omit freely)
 
 <<only constraints the plan, a ruling, or a standing user rule actually imposes, each with its why (e.g. "no AI attribution in git-facing text"). An empty section is normal: the worker owns the how, and a default-filled restriction list is the lead authoring the implementation in reverse.>>

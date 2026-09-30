@@ -18,10 +18,10 @@ The forked bodies now live as plugin-owned documents under `workflows/`, stored 
 |---|---|---|
 | `nexus-README.md` | `workflows/README.md` (overview) | renames; mode and size replace sizing; implementation walkthrough gate and run state; Board section; phase-map references rewritten to `bb pipeline instructions` commands |
 | `nexus-plan/SKILL.md` | `workflows/plan/README.md` | renames; 4 report lines added (below); the run.md reference, Oracle brief, and exit rewritten to commands |
-| `nexus-plan/templates/oracle.md` | `workflows/plan/templates/oracle.md` | none — byte-for-byte |
+| `nexus-plan/templates/oracle.md` | `workflows/plan/templates/oracle.md` | a Guidelines section; the standard judges against that file instead of "the user's stated taste in the environment's guidance" |
 | `nexus-implement/SKILL.md` | `workflows/implement/README.md` | renames; review configuration through `pair-review`; implementation walkthrough before QA; board reports; template dispatch and exit rewritten to commands |
-| `nexus-implement/templates/developer.md` | `workflows/implement/templates/developer.md` | none — byte-for-byte |
-| `nexus-implement/templates/oracle.md` | `workflows/implement/templates/oracle.md` | none — byte-for-byte |
+| `nexus-implement/templates/developer.md` | `workflows/implement/templates/developer.md` | a Guidelines section naming the run's `guidelines.md` |
+| `nexus-implement/templates/oracle.md` | `workflows/implement/templates/oracle.md` | the guidelines path is attached; the standard judges against it instead of "the user's stated taste in the environment's guidance" |
 | `nexus-implement/templates/qa.md` | `workflows/implement/templates/qa.md` | none — byte-for-byte |
 | `nexus-close-out/SKILL.md` | `workflows/close-out/README.md` | renames; walkthrough approval entry gate; asynchronous external review handoff and feedback triage; implement references rewritten to commands |
 | `nexus-debug/SKILL.md` | `workflows/debug/README.md` | renames; 2 report lines added (below); the run.md reference, debugger dispatch, and exit rewritten to commands |
@@ -36,6 +36,7 @@ The forked bodies now live as plugin-owned documents under `workflows/`, stored 
 
 ## Copied prose edits
 
+- `workflows/README.md`: a "Guidelines" section and a `guidelines.md` artifact. Pipeline ships `workflows/guidelines/README.md`; the `guidelinesFile` and `guidelinesSection` settings can point `bb pipeline instructions guidelines` at a file on the BB server. The lead saves that output once per run and hands the path to the Oracle, the developer, and any reviewer whose prompt names it.
 - `workflows/README.md`: "Mode and size" replaces "Sizing". Mode (`manual` or `auto`) sets which stops need the user; auto keeps the implementation walkthrough, after QA, and what only the user can decide. Size (`small` or `standard`) sets whether the lead or a developer worker writes the code. A bug's size stays provisional until the RCA. The user can change either mid-run; Pipeline tells the lead. Non-negotiable 6 gives every diff two reviewer passes; non-negotiable 9 places the walkthrough by mode.
 - `workflows/implement/README.md`: every task has a user walkthrough of the resulting implementation, before QA in manual and after QA in auto. On size small, the lead writes the code as the owning worker. It owns step-by-step `/show-me` delivery, deviation explanations, approval, resume, and rework rules. Its execution instructions permit this approval stop.
 - `workflows/README.md`: `run.md` records mode and size, and the implementation walkthrough's outline, progress, reviewed commit, and approval.

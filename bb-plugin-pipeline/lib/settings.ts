@@ -3,6 +3,16 @@ import { z } from "zod";
 import { parseThreshold } from "./jev";
 import { executionDefaults, executionSelectionSchema, REASONING_LEVELS } from "./execution";
 
+// Empty means Pipeline's own document; anything else is a Markdown file on the BB server. Any
+// agent with `bb` can set this, so only `.md` is accepted. Shared with the browser bundle, so no
+// node:path here.
+export function validGuidelinesFile(value: string): boolean {
+  const path = value.trim();
+  return path === "" || ((path.startsWith("/") || path.startsWith("~/")) && path.endsWith(".md"));
+}
+
+const guidelinesFileSchema = z.string().refine(validGuidelinesFile, "Use an absolute path, or one starting with ~/, to a .md file on the BB server; empty for Pipeline's own guidelines");
+
 export const SETTINGS = {
   providerId: {
     type: "string",
@@ -61,6 +71,17 @@ export const SETTINGS = {
     default: "0.7",
     experimental_schema: z.string().refine((value) => value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) >= 0.5 && Number(value) <= 1, "Enter a confidence threshold from 0.5 to 1"),
   },
+  guidelinesFile: {
+    type: "string",
+    label: "Guidelines file (path on the BB server; empty for Pipeline's own)",
+    default: "",
+    experimental_schema: guidelinesFileSchema,
+  },
+  guidelinesSection: {
+    type: "string",
+    label: "Guidelines section (a ## heading; empty for the whole file)",
+    default: "",
+  },
   rememberExecution: { type: "boolean", label: "Remember last task's execution choices", default: true },
   taskLimit: { type: "number", label: "Concurrent tasks per project and machine", default: 2, experimental_schema: z.number().int().min(1).max(32) },
   autoReviewFollowup: { type: "boolean", label: "Send review findings to the lead automatically", default: true },
@@ -73,6 +94,8 @@ export const SETTINGS = {
 export const pipelineSettingsSchema = z.object({
   intake: executionSelectionSchema,
   lead: executionSelectionSchema,
+  guidelinesFile: guidelinesFileSchema,
+  guidelinesSection: z.string(),
   rememberExecution: z.boolean(),
   taskLimit: z.number().int().min(1).max(32),
   permissionMode: z.enum(["accept-edits", "auto", "full"]),
@@ -104,6 +127,8 @@ export function settingsView(settings: StoredSettings): z.infer<typeof settingsV
   return {
     values: pipelineSettingsSchema.parse({
       ...executionDefaults(settings),
+      guidelinesFile: settings.guidelinesFile ?? "",
+      guidelinesSection: settings.guidelinesSection ?? "",
       rememberExecution: settings.rememberExecution,
       taskLimit: settings.taskLimit,
       permissionMode: settings.permissionMode,

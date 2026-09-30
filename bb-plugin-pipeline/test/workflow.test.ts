@@ -6,7 +6,7 @@ import { resumeInstruction } from "../lib/control-prompts";
 import { reviewFollowup } from "../lib/github-sync";
 import { makeCard, makeImportedIssue } from "./sdk-fake";
 
-const cli = createPipelineCli({} as never);
+const cli = createPipelineCli({ getSettings: async () => ({}) } as never);
 const context = { cwd: "/remote-machine/unrelated-checkout", signal: new AbortController().signal };
 
 describe("workflow document delivery", () => {
@@ -16,7 +16,7 @@ describe("workflow document delivery", () => {
     expect(files).toContain("README.md");
     for (const path of files) {
       const [phase, ...parts] = path.split("/");
-      const args = path === "README.md" ? [] : [phase!, "--file", parts.join("/")];
+      const args = path === "README.md" ? [] : phase === "guidelines" ? ["guidelines"] : [phase!, "--file", parts.join("/")];
       const result = await cli.run(["instructions", ...args, "--json"], context);
       expect(result.exitCode, path).toBe(0);
       expect(JSON.parse(result.stdout!).content, path).toBe(await readFile(new URL(path, root), "utf8"));
@@ -49,10 +49,10 @@ describe("workflow document delivery", () => {
         visited.add(command);
         const result = await cli.run(command.split(" ").slice(2), context);
         expect(result.exitCode, command).toBe(0);
-        if (!command.includes("--file")) documents.push(result.stdout!);
+        documents.push(result.stdout!);
       }
     }
-    for (const phase of ["intake", "plan", "implement", "debug", "close-out"]) {
+    for (const phase of ["intake", "plan", "implement", "debug", "close-out", "guidelines"]) {
       expect(visited).toContain(`bb pipeline instructions ${phase}`);
     }
   });
@@ -61,6 +61,8 @@ describe("workflow document delivery", () => {
     for (const args of [
       ["__proto__"], ["../intake"], ["implement", "extra"],
       ["overview", "--file", "README.md"],
+      ["guidelines", "--file", "README.md"],
+      ["guidelines", "extra"],
       ["intake", "--file", "templates/developer.md"],
       ["implement", "--file", "../../package.json"],
       ["implement", "--file", "/etc/passwd"],

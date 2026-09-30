@@ -10,6 +10,10 @@ Pipeline starts downstream of requirements: a spec sharp enough to plan against,
 - **Oracle** — the lead's counterpart on design and decisions: proposes its own approach before it sees the lead's, challenges every claim with repo ground truth in hand, owns no deliverable, never writes code.
 - **Workers** — everything else. Each phase document says what needs doing; the lead spawns what the moment needs, fresh, with only the context the job requires.
 
+## Guidelines
+
+One document sets what every role builds to and judges against: the lead when it plans or writes, the developer, the Oracle, and any reviewer whose prompt names it. Pipeline ships its own; Settings can point at a Markdown file on the BB server, with an optional `##` section. At kickoff the lead saves the output of `bb pipeline instructions guidelines` as `guidelines.md` beside `run.md` and hands that path to every role it dispatches, so one run works to one text. If the command fails, the settings point at a file or section the server cannot read: stop and tell the user; do not run without it. A settings change reaches the next run; a running lead saves the file again only when the user asks, and records it in `run.md`.
+
 ## The flows
 
 Phases are documents stored on the BB server, read with `bb pipeline instructions <phase>`; `overview` is this document, and `--file <relative-path>` reads a supporting file under the phase. Kickoffs name the first phase to read; each phase's exit names the command that advances the run. Intake ends with the documented report that hands off to a separate lead. After a lead's phase exit clears, with the user's approval where its mode asks for one, the lead reads the next phase and continues in its own thread.
@@ -73,6 +77,7 @@ Working files live at `~/.ai/artifacts/<project>/YYYY-MM-DD-<topic>/`, out of th
   Keep the implementation walkthrough's step outline beneath the run card so a resumed lead can continue at the recorded step. Record the user's final approval with the reviewed commit.
 
   Ticket, base branch, scope, and deadline are facts only the user holds: read them from the user's message, or ask once in the first reply. After a compaction, read this file before anything else, then the phase named on its phase line with `bb pipeline instructions <phase>`. If the path is lost, take the newest directory under `~/.ai/artifacts/<project>/`.
+- `guidelines.md` — the run's guidelines, saved at kickoff from `bb pipeline instructions guidelines`; every role reads this copy.
 - `plan.md` — the implementation plan.
 - `implementation-ledger.md` — material implementation decisions, deviations, trade-offs, open questions, and invalid-finding records; maintained by the implementer, audited by the lead.
 - `rca.md` — reproduction, evidence chain, and root cause for bugs.

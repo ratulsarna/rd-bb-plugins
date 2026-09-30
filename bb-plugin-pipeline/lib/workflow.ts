@@ -11,7 +11,7 @@ const DOCUMENTS: Record<string, readonly string[]> = {
 
 export async function readWorkflow(phase = "overview", requestedFile?: string) {
   if (!Object.hasOwn(DOCUMENTS, phase)) {
-    throw new Error(`unknown workflow phase ${phase}; choose ${Object.keys(DOCUMENTS).join(", ")}`);
+    throw new Error(`unknown workflow phase ${phase}; choose ${Object.keys(DOCUMENTS).join(", ")}, or guidelines`);
   }
   if (phase === "overview" && requestedFile !== undefined) {
     throw new Error("overview does not accept --file");

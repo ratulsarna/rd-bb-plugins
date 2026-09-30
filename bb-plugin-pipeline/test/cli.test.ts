@@ -42,6 +42,7 @@ function setup() {
     controls: {} as never,
     github: {} as never,
     issues: {} as never,
+    getSettings: async () => ({}),
     capacity: {
       snapshot: vi.fn(async () => queue),
       setRunNext,
@@ -106,7 +107,7 @@ describe("local scope reports", () => {
     const report = vi.fn(async (input: ReportInput) => s.store.update(s.card.id, { body: input.body }));
     const cli = createPipelineCli({
       service: { report } as never, store: s.store, sdk: host.bb.sdk,
-      controls: {} as never, github: {} as never, issues: {} as never, capacity: {} as never,
+      controls: {} as never, github: {} as never, issues: {} as never, capacity: {} as never, getSettings: async () => ({}),
     });
     try {
       const result = await cli.run(["report", "--body-file", "scope.md", "--json"], { threadId: "intake", cwd: "/work" });
@@ -132,7 +133,7 @@ describe("mode and size", () => {
     const report = vi.fn();
     const cli = createPipelineCli({
       service: { setSettings, report } as never, store: s.store, sdk: {} as never,
-      controls: {} as never, github: {} as never, issues: {} as never, capacity: {} as never,
+      controls: {} as never, github: {} as never, issues: {} as never, capacity: {} as never, getSettings: async () => ({}),
     });
     try {
       expect((await cli.run(["set", s.card.id, "--mode", "trivial"], {})).stderr).toContain("unknown mode trivial");

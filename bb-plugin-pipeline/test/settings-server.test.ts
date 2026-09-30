@@ -46,6 +46,18 @@ describe("Pipeline settings boundary", () => {
     expect((await s.read()).jevApiKeyConfigured).toBe(false);
   });
 
+  it("stores a guidelines file and section, and refuses a path that is not on the BB server's filesystem root or home", async () => {
+    const s = await setup();
+    expect((await s.read()).values).toMatchObject({ guidelinesFile: "", guidelinesSection: "" });
+    await s.write({ values: { guidelinesFile: "~/notes/CLAUDE.md", guidelinesSection: "Taste" } });
+    expect((await s.read()).values).toMatchObject({ guidelinesFile: "~/notes/CLAUDE.md", guidelinesSection: "Taste" });
+    await expect(s.write({ values: { guidelinesFile: "notes/CLAUDE.md" } })).rejects.toThrow();
+    await expect(s.write({ values: { guidelinesFile: "/etc/passwd" } })).rejects.toThrow();
+    expect((await s.read()).values.guidelinesFile).toBe("~/notes/CLAUDE.md");
+    await s.write({ values: { guidelinesFile: "" } });
+    expect((await s.read()).values).toMatchObject({ guidelinesFile: "", guidelinesSection: "Taste" });
+  });
+
   it("preserves the displayed inherited Lead when only Intake is edited", async () => {
     const s = await setup();
     const before = await s.read();

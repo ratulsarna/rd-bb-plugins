@@ -157,6 +157,12 @@ export function PipelineSettings() {
             <h2 id="pipeline-capacity-heading">Capacity</h2>
             <label className="pipeline-setting-row"><span>Concurrent tasks <small>Per project and machine. Running tasks finish when lowered.</small></span><input className="pipeline-input" type="number" min={1} max={32} step={1} value={Number.isNaN(values.taskLimit) ? "" : values.taskLimit} disabled={pending} onChange={(event) => edit("taskLimit", event.target.valueAsNumber)} /></label>
           </section>
+          <section className="pipeline-settings-section" aria-labelledby="pipeline-guidelines-heading">
+            <h2 id="pipeline-guidelines-heading">Guidelines</h2>
+            <label className="pipeline-field"><span className="pipeline-field-label">File</span><input className="pipeline-input" type="text" value={values.guidelinesFile} disabled={pending} placeholder="Empty for Pipeline's own guidelines" onChange={(event) => edit("guidelinesFile", event.target.value)} /></label>
+            <label className="pipeline-field"><span className="pipeline-field-label">Section</span><input className="pipeline-input" type="text" value={values.guidelinesSection} disabled={pending} placeholder="A plain ## heading; empty for the whole file" onChange={(event) => edit("guidelinesSection", event.target.value)} /></label>
+            <p className="pipeline-settings-help">A Markdown file on the BB server, absolute or starting with ~/. A section runs to the next unindented # or ## line outside a code fence. What every role builds to; read with <code>bb pipeline instructions guidelines</code>.</p>
+          </section>
           <AgentModelSettings catalogHost={catalogHost} />
           <section className="pipeline-settings-section" aria-labelledby="pipeline-reviews-heading">
             <h2 id="pipeline-reviews-heading">External reviews</h2>

@@ -16,10 +16,12 @@ import { ownerThread } from "./card";
 import type { MachineQueue } from "./contract";
 import { MODES, SIZES, type Card, type CardAttachment, type CardMode, type CardSize, type CardStore } from "./store";
 import { readWorkflow } from "./workflow";
+import { readGuidelines, type GuidelinesSettings } from "./guidelines";
 import { USER_HANDOFF } from "./prompts";
 
 const USAGE = `Usage:
   bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]
+  bb pipeline instructions guidelines [--json]
   bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--project <id>] [--json]
   bb pipeline start <card-id> [--machine <id-or-name>] [execution options] [--json]
   bb pipeline issues [--project <id>] [--page <number>] [--json]
@@ -258,12 +260,13 @@ export function createPipelineCli(input: {
   controls: PipelineControls;
   github: GithubSync;
   issues: IssueImporter;
+  getSettings: () => Promise<GuidelinesSettings>;
 }): PluginCliRegistration {
   return {
     name: "pipeline",
     summary: "Manage pipeline cards and report delivery progress",
     commands: [
-      { name: "instructions", summary: "Read Pipeline workflow instructions or a phase template", usage: "bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]" },
+      { name: "instructions", summary: "Read Pipeline workflow instructions, a phase template, or the guidelines", usage: "bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json] | bb pipeline instructions guidelines [--json]" },
       { name: "add", summary: "Add a card", usage: "bb pipeline add --title <text> --machine <id-or-name> [options]" },
       { name: "start", summary: "Start intake for a saved task", usage: "bb pipeline start <card-id> [--machine <id-or-name>] [execution options] [--json]" },
       { name: "issues", summary: "List assigned GitHub issues", usage: "bb pipeline issues [--project <id>] [--page <number>] [--json]" },
@@ -325,6 +328,11 @@ export function createPipelineCli(input: {
           case "instructions": {
             if (args.positionals.length > 1 || [...args.options.keys()].some((name) => name !== "file" && name !== "json")) {
               return failure("instructions accepts one optional phase, --file, and --json", USAGE);
+            }
+            if (args.positionals[0] === "guidelines") {
+              if (args.options.has("file")) return failure("guidelines does not accept --file", USAGE);
+              const guidelines = await readGuidelines(await input.getSettings());
+              return success(args, { phase: "guidelines", ...guidelines }, guidelines.content);
             }
             const document = await readWorkflow(args.positionals[0], option(args, "file"));
             return success(args, document, document.content);

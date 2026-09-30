@@ -179,7 +179,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk, capacity, controls, github, issues }));
+  bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk, capacity, controls, github, issues, getSettings: () => settings.get() }));
 
   bb.events.on("interaction.pending", ({ thread, interaction }) => {
     const card = store.getByThread(thread.id);
