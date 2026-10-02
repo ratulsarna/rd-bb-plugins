@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { createCardStore, MIGRATIONS } from "../lib/store";
+import type { GithubSyncState } from "../lib/github-types";
 
 const intake = {
   providerId: "codex",
@@ -19,13 +20,13 @@ describe("card migrations", () => {
   it("maps old tiers to sizes and makes every existing card manual", () => {
     const db = new Database(":memory:");
     try {
-      const last = MIGRATIONS.length - 1;
+      const last = MIGRATIONS.findIndex((migration) => migration.includes("ADD COLUMN mode"));
       for (const migration of MIGRATIONS.slice(0, last)) db.exec(migration);
       const insert = db.prepare(`INSERT INTO cards (id, project_id, title, "column", tier, created_at, updated_at)
         VALUES (?, 'proj_1', 'Old card', 'todo', ?, 1, 1)`);
       const tiers = [["trivial", "trivial"], ["small", "small"], ["standard", "standard"], ["unsized", null]] as const;
       for (const [id, tier] of tiers) insert.run(id, tier);
-      db.exec(MIGRATIONS[last]);
+      for (const migration of MIGRATIONS.slice(last)) db.exec(migration);
       const store = createCardStore(db);
       expect(tiers.map(([id]) => [store.get(id)?.mode, store.get(id)?.size])).toEqual([
         ["manual", "small"], ["manual", "small"], ["manual", "standard"], ["manual", null],
@@ -318,6 +319,54 @@ describe("card machines", () => {
         "already assigned to machine host_mac",
       );
       expect(store.get("card_1")?.hostId).toBe("host_mac");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("review waiting", () => {
+  it("atomically carries review waiting through notes without reviving an expired wait", () => {
+    const db = new Database(":memory:");
+    for (const migration of MIGRATIONS) db.exec(migration);
+    try {
+      const store = createCardStore(db);
+      const url = "https://github.com/example/repo/pull/1";
+      store.create({ id: "card", projectId: "project", hostId: "host", title: "Task", body: "", attachments: [], source: "test" });
+      const card = store.update("card", { ownerRole: "lead", leadThreadId: "lead", prUrl: url, column: "pr" });
+      const state: GithubSyncState = {
+        status: {
+          revision: 0, url, number: 1, state: "open", draft: false, headSha: "head", checks: [],
+          mergeable: "mergeable", reviewDecision: null, review: "waiting", followup: null,
+          batchId: null, syncedAt: 1, error: null,
+        },
+        observed: {}, batch: null, requestedSha: "head", awaitingReviewRevision: card.revision, readFailures: 0,
+      };
+      store.setGithub(card.id, url, state);
+      const before = store.get(card.id);
+      const history = store.history(card.id);
+      db.exec(`CREATE TRIGGER reject_wait_marker BEFORE UPDATE OF github_state ON cards
+        BEGIN SELECT RAISE(ABORT, 'marker failed'); END`);
+      expect(() => store.update(card.id, { body: "Outcome posted to issue" }, { kind: "note", source: "report" }))
+        .toThrow("marker failed");
+      expect(store.get(card.id)).toEqual(before);
+      expect(store.history(card.id)).toEqual(history);
+
+      db.exec("DROP TRIGGER reject_wait_marker");
+      const noted = store.update(card.id, { body: "Outcome posted to issue" });
+      expect(createCardStore(db).getGithub(card.id)?.awaitingReviewRevision).toBe(noted.revision);
+
+      store.update(card.id, { body: "A new request", reportSignal: "working" });
+      const followup = store.update(card.id, { body: "Updated request details" });
+      expect(store.getGithub(card.id)?.awaitingReviewRevision).toBe(noted.revision);
+      expect(followup.revision).toBeGreaterThan(noted.revision);
+
+      store.setGithub(card.id, url, { ...state, awaitingReviewRevision: null });
+      store.update(card.id, { body: "Another note" });
+      expect(store.getGithub(card.id)?.awaitingReviewRevision).toBeNull();
+      store.update(card.id, { prUrl: "https://github.com/example/repo/pull/2" });
+      store.update(card.id, { body: "Replacement PR context" });
+      expect(store.getGithub(card.id)).toBeNull();
     } finally {
       db.close();
     }

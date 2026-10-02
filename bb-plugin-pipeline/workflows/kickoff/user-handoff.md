@@ -1,0 +1,1 @@
+The Pipeline card tracks state only. Put questions, explanations, walkthroughs, and approval requests in your user-facing chat reply. When waiting, state the decision and relevant options there. Use `bb pipeline report --needs-you` for a short status label; it does not post a chat message or collect an answer. Wait for the user's reply in this thread.

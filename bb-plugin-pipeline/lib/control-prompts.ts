@@ -1,5 +1,5 @@
 import type { Card } from "./store";
-import { WORKFLOW_ACCESS } from "./prompts";
+import { workflowAccess } from "./prompts";
 
 export function pauseInstruction(card: Card): string {
   return `Pause Pipeline task ${card.id}. Pause request: ${card.pauseRequestId}.
@@ -11,9 +11,9 @@ function resumeHandoff(card: Card): string {
   return `Resume Pipeline task ${card.id} from its pause handoff in this conversation. Inspect the existing workspace and worker state, then continue the interrupted task from where it stopped. Coordinate existing workers and preserve work already completed. If you still need a user decision, report that instead of guessing.`;
 }
 
-export function resumeInstruction(card: Card): string {
+export function resumeInstruction(card: Card, documents?: Readonly<Record<string, string>>): string {
   const phase = card.ownerRole === "intake" ? "intake" : "overview";
-  return `${resumeHandoff(card)}\n${WORKFLOW_ACCESS}\nRun \`bb pipeline instructions ${phase}\` and read the current phase before continuing.`;
+  return `${resumeHandoff(card)}\n${workflowAccess(documents)}\nRun \`bb pipeline instructions ${phase}\` and read the current phase before continuing.`;
 }
 
 export function settingsChangeInstruction(card: Card): string {

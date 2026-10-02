@@ -10,8 +10,9 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 
 ## Commands
 
-- `bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>]` — read the workflow document or phase template when working on a Pipeline task.
-- `bb pipeline instructions guidelines` — print the guidelines every role builds to: Pipeline's own, or the file and section chosen in Settings.
+- `bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--card <id>]` — read the workflow document or phase template when working on a Pipeline task.
+- `bb pipeline instructions kickoff --file <name.md> [--card <id>]` — read a kickoff template or shared prompt fragment.
+- `bb pipeline instructions guidelines [--card <id>]` — print the guidelines every role builds to: Pipeline's own, or the file and section chosen in Settings.
 
 - `bb pipeline add --title <t> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project. Mode and size are the user's call; omit them unless the user names them.
 - `bb pipeline start <card-id> [--machine <id-or-name>] [execution overrides]` — start intake for a saved task using its stored machine, models, notes, and attachments; the flags accept the same machine and execution overrides as `add`. Repeated Start requests do not launch again; use Retry after a failed start.
@@ -101,6 +102,8 @@ bb project attachment upload <projectId> --client-file <path>
 ```
 
 ## Settings
+
+**Instructions** edits phase documents, role templates, kickoff wording, and Pipeline’s guidelines. Save or restore each document independently. Tasks pin their instructions before kickoff; saved edits apply to new tasks. `instructions` reads the owning task’s snapshot, or the current defaults and overrides outside a task; pass `--card <id>` to select a task explicitly.
 
 The **Review models** section edits the shared `pair-review` harness, model, reasoning, and optional service tier choices for Reviewer 1 and Reviewer 2. Use its own Save button. It writes `~/.config/agent-models/config.json` on the BB server, respecting `XDG_CONFIG_HOME` and `AGENT_MODELS_CONFIG`. The standalone skill reads this file on each review machine at the start of a round. Missing files use shared defaults; invalid files stop the review. To share changes across machines, point each machine's config path at a synced file. Pipeline preserves symlinks but does not run the sync. These choices are not stored in `bb plugin config`.
 

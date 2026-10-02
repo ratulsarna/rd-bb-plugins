@@ -2,6 +2,7 @@ import { COLUMNS, COLUMN_LABELS, type Column } from "@/lib/columns";
 import type { Card } from "@/lib/store";
 import type { TaskQueueState } from "./task-state";
 import { Icon } from "./icon";
+import { PipelineSelect } from "./select";
 
 export interface CardActionProps {
   card: Card;
@@ -116,23 +117,17 @@ export function CardActions(
       ) : null}
       <label className="pipeline-field">
         <span className="pipeline-field-label">Move to</span>
-        <span className="pipeline-select-wrap">
-          <select
-            aria-label={`Move ${card.title}`}
-            className="pipeline-select"
-            value={card.column}
-            disabled={props.pending || !running || !card.startRequested}
-            onChange={(event) => {
-              props.onMove(event.target.value as Column);
-              props.onAction?.();
-            }}
-          >
-            {COLUMNS.filter((column) => column !== "backlog" || !card.startRequested).map((column) => (
-              <option key={column} value={column}>{COLUMN_LABELS[column]}</option>
-            ))}
-          </select>
-          <Icon name="ChevronDown" />
-        </span>
+        <PipelineSelect
+          aria-label={`Move ${card.title}`}
+          value={card.column}
+          disabled={props.pending || !running || !card.startRequested}
+          onValueChange={(column) => {
+            props.onMove(column as Column);
+            props.onAction?.();
+          }}
+          options={COLUMNS.filter((column) => column !== "backlog" || !card.startRequested)
+            .map((column) => ({ value: column, label: COLUMN_LABELS[column] }))}
+        />
       </label>
       <button
         type="button"

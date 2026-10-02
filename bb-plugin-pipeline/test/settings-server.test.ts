@@ -6,6 +6,7 @@ import { SETTINGS, settingsViewSchema } from "../lib/settings";
 import { integrationStatus } from "../lib/integrations";
 import { createCardStore } from "../lib/store";
 import { testCatalogProviders, testProviderModels } from "./sdk-fake";
+import { instructionDocumentSchema } from "../lib/instruction-types";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => { while (hosts.length) await hosts.pop()!.harness.lifecycle.dispose(); });
@@ -30,6 +31,29 @@ async function setup(stored: Record<string, string> = {}) {
 }
 
 describe("Pipeline settings boundary", () => {
+  it("saves exact instruction text through Settings, serves it at runtime, and restores the shipped default after reload", async () => {
+    const s = await setup();
+    const id = "intake/README.md";
+    let harness = s.harness;
+    const read = async () => instructionDocumentSchema.parse(await harness.behavior.callRpc("readInstruction", { id }));
+    const initial = await read();
+    const content = "  # Team intake\r\n\r\nAsk what the ticket leaves open.  \r\n";
+    await s.harness.behavior.callRpc("saveInstruction", { id, content, expectedRevision: initial.revision });
+    await expect(s.harness.behavior.callRpc("saveInstruction", { id, content: "stale", expectedRevision: initial.revision })).rejects.toThrow();
+    const cli = await s.harness.behavior.runCli(["instructions", "intake", "--json"]);
+    expect(cli.exitCode).toBe(0);
+    expect(JSON.parse(cli.stdout!).content).toBe(content);
+    const reloaded = await harness.lifecycle.reload(plugin);
+    hosts.push(reloaded);
+    harness = reloaded.harness;
+    const saved = await read();
+    expect(saved).toMatchObject({ content, defaultContent: initial.content, source: "custom" });
+    await harness.behavior.callRpc("resetInstruction", { id, expectedRevision: saved.revision });
+    expect(await read()).toMatchObject({ content: initial.content, source: "default" });
+    await expect(harness.behavior.callRpc("saveInstruction", { id, content, expectedRevision: saved.revision })).rejects.toThrow();
+    await expect(harness.behavior.callRpc("readInstruction", { id: "../settings.json" })).rejects.toThrow();
+  });
+
   it("uses saved secret configuration and patches only requested fields, including explicit tier/key clearing", async () => {
     const s = await setup();
     const initial = await s.read();

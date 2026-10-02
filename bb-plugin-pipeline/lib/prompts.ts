@@ -1,82 +1,82 @@
+import { readFileSync } from "node:fs";
 import type { Card } from "./store";
 import type { IssueDetails } from "./issue";
 import type { ImportedIssue } from "./issue-types";
+import { renderInstructionTemplate } from "./prompt-template";
+import type { ReviewBatch } from "./github-types";
 
-export const IMPORTED_ISSUE_RULES = "You may change the source issue on GitHub (edit it, comment, label, close, reopen, or reassign it), but ask the user before each change. Keep clarified scope, decisions, and classification in the card's local notes: write them to a file and run `bb pipeline report --body-file <path>` to store them on the card. The mode and size are stored on the card. `Closes #<n>` in the PR body needs no approval; the issue only closes when the user merges.";
+const KICKOFF_FILES = ["workflow", "user-handoff", "imported-issue", "intake", "intake-imported", "lead", "lead-imported", "review-feedback"] as const;
+const defaults: Readonly<Record<string, string>> = Object.fromEntries(KICKOFF_FILES.map((name) => [
+  `kickoff/${name}.md`, readFileSync(new URL(`../workflows/kickoff/${name}.md`, import.meta.url), "utf8"),
+]));
+
+function document(name: string, documents: Readonly<Record<string, string>>) {
+  const path = `kickoff/${name}.md`;
+  const content = documents[path];
+  if (content === undefined) throw new Error(`Missing instruction document ${path}`);
+  return content;
+}
+
+export function userHandoff(documents = defaults): string {
+  return document("user-handoff", documents);
+}
+
+export function workflowAccess(documents = defaults): string {
+  return renderInstructionTemplate(document("workflow", documents), { user_handoff: userHandoff(documents) });
+}
+
+export const USER_HANDOFF = userHandoff();
+
+export function reviewFeedbackPrompt(card: Card, batch: ReviewBatch, documents = defaults): string {
+  const marker = `[pipeline-review:${card.id}:${batch.id}]`;
+  const text = renderInstructionTemplate(document("review-feedback", documents), {
+    batch_marker: marker, card_id: card.id,
+    pr_url: card.prUrl ?? "null", head_sha: batch.headSha,
+    feedback_urls: batch.feedback.map((item) => item.url).join("\n"),
+    workflow_access: workflowAccess(documents), batch_id: batch.id,
+  });
+  return text.startsWith(marker) ? text : `${marker}\n${text}`;
+}
 
 function formatComments(comments: ImportedIssue["comments"]): string {
-  if (comments.length === 0) {
-    return "none";
-  }
-  return comments
+  return comments.length === 0 ? "none" : comments
     .map((comment) => `${comment.author} at ${comment.createdAt} (${comment.url}): ${comment.body}`)
     .join("\n\n");
 }
 
-export const USER_HANDOFF = "The Pipeline card tracks state only. Put questions, explanations, walkthroughs, and approval requests in your user-facing chat reply. When waiting, state the decision and relevant options there. Use `bb pipeline report --needs-you` for a short status label; it does not post a chat message or collect an answer. Wait for the user's reply in this thread.";
-
-export const WORKFLOW_ACCESS = `This task follows the Pipeline workflow. Read its instructions with \`bb pipeline instructions <phase>\` and its templates with \`bb pipeline instructions <phase> --file <relative-path>\`. Load each phase when you reach it and follow its exit instructions. Intake ends with the documented report that hands off to a separate lead. The lead continues between phases in its own thread, after the user's approval where the card's mode asks for one. Keep every user-approval gate in those instructions that the card's mode calls for.
-${USER_HANDOFF}`;
-
-export function intakePrompt(card: Card, projectName: string): string {
-  const imported = card.importedIssue;
-  if (imported !== null) {
-    return `You are the intake for pipeline card ${card.id} in project ${projectName}.
-${WORKFLOW_ACCESS}
-Run \`bb pipeline instructions intake\` first and follow it. This card imports a GitHub issue, so its "Imported issues" section replaces the filing steps.
-${IMPORTED_ISSUE_RULES}
-Source issue #${imported.number}: ${imported.title}
-${imported.url} (${imported.state}; last updated ${imported.updatedAt})
-Labels: ${imported.labels.join(", ") || "none"}. Assignees: ${imported.assignees.join(", ") || "none"}. Mode: ${card.mode ?? "unset"}. Size: ${card.size ?? "unset"} (stored on the card).
---- source issue body ---
-${imported.body}
---- source issue comments ---
-${formatComments(imported.comments)}
---- local notes on the card (not on GitHub) ---
-${card.body.trim() || "(none)"}
-This issue already exists. Do not ask what this is about and do not file a new one. Read the source, the comments, and the local notes, then ask only for what they leave open. Before you hand off, persist the clarified scope with \`bb pipeline report --body-file <path>\`.`;
-  }
-  return `You are the intake for pipeline card ${card.id} in project ${projectName}.
-${WORKFLOW_ACCESS}
-Run \`bb pipeline instructions intake\` first and follow it.
-Mode: ${card.mode ?? "unset"}. Size: ${card.size ?? "unset"}.
-The user's note is below and their files are attached. This is limited information: start by asking the user what this is about.
----
-${card.title}
-
-${card.body}`;
+function values(card: Card, documents: Readonly<Record<string, string>>): Record<string, string> {
+  return {
+    card_id: card.id, card_title: card.title, card_body: card.body,
+    mode: card.mode ?? "unset", size: card.size ?? "unset",
+    local_notes: card.body.trim() || "(none)",
+    workflow_access: workflowAccess(documents),
+    imported_issue_rules: document("imported-issue", documents),
+  };
 }
 
-export function leadPrompt(
-  card: Card,
-  issue: IssueDetails,
-): string {
+export function intakePrompt(card: Card, projectName: string, documents = defaults): string {
   const imported = card.importedIssue;
-  if (imported !== null) {
-    return `You are the lead for pipeline card ${card.id}: ${card.title}.
-Ticket: ${imported.url} (#${imported.number}, ${imported.state}; last updated ${imported.updatedAt}). Source labels: ${issue.labels.join(", ") || "none"}. Mode: ${card.mode ?? "unset"}. Size: ${card.size ?? "unset"}.
-${IMPORTED_ISSUE_RULES}
-Classify before routing: the intake's classification in the local notes below wins, and the source labels are only a fallback, so a missing bug label does not mean feature.
-${WORKFLOW_ACCESS}
-Run \`bb pipeline instructions\` first and follow its routing by kind, mode, and size. Report every column change and every stop for the user with \`bb pipeline report\` before you end the turn.
---- source issue ---
-${issue.title}
+  return renderInstructionTemplate(document(imported === null ? "intake" : "intake-imported", documents), {
+    ...values(card, documents), project_name: projectName,
+    ...(imported === null ? {} : {
+      issue_number: String(imported.number), issue_title: imported.title,
+      issue_url: imported.url, issue_state: imported.state, issue_updated_at: imported.updatedAt,
+      labels: imported.labels.join(", ") || "none", assignees: imported.assignees.join(", ") || "none",
+      issue_body: imported.body, comments: formatComments(imported.comments),
+    }),
+  });
+}
 
-${issue.body}
---- source issue comments ---
-${formatComments(imported.comments)}
---- local notes on the card (not on GitHub) ---
-${card.body.trim() || "(none)"}`;
-  }
-  const kind = issue.labels.some((label) => label.toLowerCase() === "bug")
-    ? "bug"
-    : "feature";
-  return `You are the lead for pipeline card ${card.id}: ${card.title}.
-Ticket: ${card.issueUrl}. Kind: ${kind}. Mode: ${card.mode ?? "unset"}. Size: ${card.size ?? "unset"}.
-${WORKFLOW_ACCESS}
-Run \`bb pipeline instructions\` first and follow its routing by kind, mode, and size. Report every column change and every stop for the user with \`bb pipeline report\` before you end the turn.
----
-${issue.title}
-
-${issue.body}`;
+export function leadPrompt(card: Card, issue: IssueDetails, documents = defaults): string {
+  const imported = card.importedIssue;
+  return renderInstructionTemplate(document(imported === null ? "lead" : "lead-imported", documents), {
+    ...values(card, documents), issue_url: card.issueUrl ?? "null",
+    issue_title: issue.title, issue_body: issue.body,
+    kind: issue.labels.some((label) => label.toLowerCase() === "bug") ? "bug" : "feature",
+    ...(imported === null ? {} : {
+      issue_url: imported.url, issue_number: String(imported.number),
+      issue_state: imported.state, issue_updated_at: imported.updatedAt,
+      labels: issue.labels.join(", ") || "none", comments: formatComments(imported.comments),
+    }),
+  });
 }

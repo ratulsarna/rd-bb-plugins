@@ -8,6 +8,7 @@ import { MODES, RUN_STATES, SIZES } from "./store";
 import { githubStatusSchema } from "./github-types";
 import { githubIssueSummarySchema, importedIssueSchema } from "./issue-types";
 import { settingsViewSchema, settingsUpdateSchema, integrationStatusSchema } from "./settings";
+import { instructionListSchema, instructionReadInputSchema, instructionDocumentSchema, instructionSaveInputSchema, instructionResetInputSchema } from "./instruction-types";
 
 export const columnSchema = z.enum(COLUMNS);
 export const modeSchema = z.enum(MODES);
@@ -95,6 +96,10 @@ export const machineQueueSchema = z.object({
 export type MachineQueue = z.infer<typeof machineQueueSchema>;
 
 export const rpcContract = defineRpcContract({
+  listInstructions: { input: z.null(), output: instructionListSchema },
+  readInstruction: { input: instructionReadInputSchema, output: instructionDocumentSchema },
+  saveInstruction: { input: instructionSaveInputSchema, output: instructionDocumentSchema },
+  resetInstruction: { input: instructionResetInputSchema, output: instructionDocumentSchema },
   getAgentModels: { input: z.null(), output: agentModelSettingsSchema },
   updateAgentModels: {
     input: z.object({ models: agentModelsSchema, expectedRevision: z.string().min(1) }).strict(),

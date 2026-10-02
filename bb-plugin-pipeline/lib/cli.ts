@@ -7,6 +7,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { COLUMNS, isColumn } from "./columns";
 import { executionSelectionSchema, type ExecutionSelection } from "./execution";
+import type { InstructionService } from "./instruction-service";
 import type { PipelineService } from "./service";
 import type { PipelineCapacity } from "./capacity";
 import type { PipelineControls } from "./controls";
@@ -17,11 +18,12 @@ import type { MachineQueue } from "./contract";
 import { MODES, SIZES, type Card, type CardAttachment, type CardMode, type CardSize, type CardStore } from "./store";
 import { readWorkflow } from "./workflow";
 import { readGuidelines, type GuidelinesSettings } from "./guidelines";
-import { USER_HANDOFF } from "./prompts";
+import { USER_HANDOFF, userHandoff } from "./prompts";
 
 const USAGE = `Usage:
-  bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]
-  bb pipeline instructions guidelines [--json]
+  bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--card <id>] [--json]
+  bb pipeline instructions kickoff --file <name.md> [--card <id>] [--json]
+  bb pipeline instructions guidelines [--card <id>] [--json]
   bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--project <id>] [--json]
   bb pipeline start <card-id> [--machine <id-or-name>] [execution options] [--json]
   bb pipeline issues [--project <id>] [--page <number>] [--json]
@@ -261,12 +263,14 @@ export function createPipelineCli(input: {
   github: GithubSync;
   issues: IssueImporter;
   getSettings: () => Promise<GuidelinesSettings>;
+  instructions?: InstructionService;
+  resolveInstructionCard?(threadId: string): Promise<string | null>;
 }): PluginCliRegistration {
   return {
     name: "pipeline",
     summary: "Manage pipeline cards and report delivery progress",
     commands: [
-      { name: "instructions", summary: "Read Pipeline workflow instructions, a phase template, or the guidelines", usage: "bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json] | bb pipeline instructions guidelines [--json]" },
+      { name: "instructions", summary: "Read Pipeline workflow instructions, a phase template, or the guidelines", usage: "bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--card <id>] [--json] | bb pipeline instructions kickoff --file <name.md> [--card <id>] [--json] | bb pipeline instructions guidelines [--card <id>] [--json]" },
       { name: "add", summary: "Add a card", usage: "bb pipeline add --title <text> --machine <id-or-name> [options]" },
       { name: "start", summary: "Start intake for a saved task", usage: "bb pipeline start <card-id> [--machine <id-or-name>] [execution options] [--json]" },
       { name: "issues", summary: "List assigned GitHub issues", usage: "bb pipeline issues [--project <id>] [--page <number>] [--json]" },
@@ -326,15 +330,19 @@ export function createPipelineCli(input: {
       try {
         switch (args.command) {
           case "instructions": {
-            if (args.positionals.length > 1 || [...args.options.keys()].some((name) => name !== "file" && name !== "json")) {
-              return failure("instructions accepts one optional phase, --file, and --json", USAGE);
+            if (args.positionals.length > 1 || [...args.options.keys()].some((name) => name !== "file" && name !== "json" && name !== "card")) {
+              return failure("instructions accepts one optional phase, --file, --card, and --json", USAGE);
             }
+            const cardId = option(args, "card") ?? (context.threadId === undefined ? undefined : (await input.resolveInstructionCard?.(context.threadId)) ?? input.store.getByThread(context.threadId)?.id);
+            if (cardId !== undefined && input.store.get(cardId) === null) return failure(`unknown card ${cardId}`);
             if (args.positionals[0] === "guidelines") {
               if (args.options.has("file")) return failure("guidelines does not accept --file", USAGE);
-              const guidelines = await readGuidelines(await input.getSettings());
+              const guidelines = input.instructions === undefined ? await readGuidelines(await input.getSettings())
+                : await input.instructions.readGuidelines(await input.getSettings(), cardId === undefined || input.store.get(cardId)?.startRequested !== true ? undefined : await input.instructions.pin(cardId));
               return success(args, { phase: "guidelines", ...guidelines }, guidelines.content);
             }
-            const document = await readWorkflow(args.positionals[0], option(args, "file"));
+            const document = cardId !== undefined ? await input.service.readInstructions(cardId, args.positionals[0], option(args, "file"))
+              : await (input.instructions?.readWorkflow(args.positionals[0], option(args, "file")) ?? readWorkflow(args.positionals[0], option(args, "file")));
             return success(args, document, document.content);
           }
           case "add": {
@@ -517,7 +525,7 @@ export function createPipelineCli(input: {
             });
             return success(args, card, option(args, "needs-you") === undefined
               ? formatCard(card)
-              : `${formatCard(card)}\n${USER_HANDOFF}`);
+              : `${formatCard(card)}\n${input.instructions === undefined ? USER_HANDOFF : userHandoff((card.startRequested ? await input.instructions.pin(card.id) : await input.instructions.snapshot()).documents)}`);
           }
           case "github-sync":
           case "review-retry": {

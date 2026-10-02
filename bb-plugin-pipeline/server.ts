@@ -16,9 +16,12 @@ import { createIssueImporter } from "./lib/issue-import";
 import { listProjectMachines } from "./lib/machines";
 import { createAttentionNotifier, userAttentionReason } from "./lib/notifications";
 import { createPipelineService } from "./lib/service";
-import { createTaskThreads } from "./lib/task-threads";
+import { createTaskThreads, isThreadNotFound } from "./lib/task-threads";
 import { createWorktreeCleanup } from "./lib/worktree-cleanup";
 import { createCardStore, MIGRATIONS } from "./lib/store";
+import { createInstructionService } from "./lib/instruction-service";
+import { INSTRUCTIONS_CHANGED } from "./lib/instruction-types";
+import { reviewFeedbackPrompt } from "./lib/prompts";
 
 export { rpcContract } from "./lib/contract";
 export type { Card, CardAttachment, CardHistory } from "./lib/store";
@@ -39,10 +42,15 @@ export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, [...MIGRATIONS]);
   const store = createCardStore(db);
+  const instructions = createInstructionService({ db, getSettings: () => settings.get(), publish: () => bb.realtime.publish(INSTRUCTIONS_CHANGED, {}) });
+  await instructions.pinStarted(currentSettings).catch((cause) => bb.log.warn(`Could not capture task instructions: ${String(cause)}`));
   const worktrees = createWorktreeCleanup(bb, store);
   const notifyAttention = createAttentionNotifier(bb, () => currentSettings);
   const capacity = createPipelineCapacity(bb, store, () => currentSettings.taskLimit);
-  const github = createGithubSync({ bb, store, getSettings: () => settings.get(), notify: notifyAttention });
+  const github = createGithubSync({
+    bb, store, getSettings: () => settings.get(), notify: notifyAttention,
+    reviewPrompt: async (card, batch) => reviewFeedbackPrompt(card, batch, (await instructions.pin(card.id)).documents),
+  });
   const issues = createIssueImporter({ sdk: bb.sdk, store, publish: (projectId) => bb.realtime.publish(CARDS_CHANGED, { projectId }) });
   bb.experimental_hooks.on("message.dispatch", async (context) => {
     const reviewDecision = await github.decide(context);
@@ -56,6 +64,13 @@ export default async function plugin(bb: BbPluginApi) {
     sdk: bb.sdk,
     occupied: (cardId) => tasks.occupied(cardId),
     getSettings: () => settings.get(),
+    getPromptDocuments: async (card) => (await instructions.pin(card.id)).documents,
+    readInstructions: async (card, phase, file) => {
+      const snapshot = card.startRequested ? await instructions.pin(card.id) : undefined;
+      return phase === "guidelines"
+        ? { phase, file: "README.md", ...(await instructions.readGuidelines(undefined, snapshot)) }
+        : instructions.readWorkflow(phase, file, snapshot);
+    },
     rememberExecution({ intake, lead }) {
       return serializeSettings(async () => {
         if (!currentSettings.rememberExecution) return;
@@ -83,10 +98,13 @@ export default async function plugin(bb: BbPluginApi) {
     onAttention: notifyAttention,
     onPrChanged: (card) => { void github.sync(card.id).catch((cause) => bb.log.warn(String(cause))); },
   });
-  const controls = createPipelineControls(bb, store, service);
+  const controls = createPipelineControls(bb, store, service, {
+    getPromptDocuments: async (card) => (await instructions.pin(card.id)).documents,
+  });
 
   settings.onChange((next, previous) => {
     currentSettings = next;
+    void instructions.pinStarted(next).catch((cause) => bb.log.warn(`Could not capture task instructions: ${String(cause)}`));
     bb.realtime.publish("settings:changed", {});
     if (next.taskLimit !== previous.taskLimit || next.autoReviewFollowup !== previous.autoReviewFollowup) {
       bb.realtime.publish(CARDS_CHANGED, {});
@@ -105,6 +123,10 @@ export default async function plugin(bb: BbPluginApi) {
 
   const readThreadPullRequest = createThreadPullRequestReader(bb, store);
   bb.rpc.register(rpcContract, {
+    listInstructions: () => instructions.list(),
+    readInstruction: (input) => instructions.read(input),
+    saveInstruction: (input) => instructions.save(input),
+    resetInstruction: (input) => instructions.reset(input),
     getAgentModels: () => readAgentModels(),
     updateAgentModels: ({ models, expectedRevision }) => writeAgentModels(models, expectedRevision),
     threadPullRequests: ({ threadIds }) => readThreadPullRequest(threadIds),
@@ -179,7 +201,21 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.cli.register(createPipelineCli({ service, store, sdk: bb.sdk, capacity, controls, github, issues, getSettings: () => settings.get() }));
+  bb.cli.register(createPipelineCli({
+    service, store, sdk: bb.sdk, capacity, controls, github, issues, instructions, getSettings: () => settings.get(),
+    async resolveInstructionCard(threadId) {
+      const direct = store.getByThread(threadId);
+      if (direct !== null) return direct.id;
+      try {
+        const thread = await bb.sdk.threads.get({ threadId });
+        const task = await tasks.resolver()(thread);
+        return task !== null && store.get(task.cardId) !== null ? task.cardId : null;
+      } catch (cause) {
+        if (isThreadNotFound(cause)) return null;
+        throw cause;
+      }
+    },
+  }));
 
   bb.events.on("interaction.pending", ({ thread, interaction }) => {
     const card = store.getByThread(thread.id);

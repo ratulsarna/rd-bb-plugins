@@ -1,9 +1,11 @@
 import { AgentModelSettings } from "./agent-model-settings";
+import { InstructionSettings } from "./instruction-settings";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { experimental_ProviderModelPicker as ProviderModelPicker, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "@/lib/contract";
 import { pipelineSettingsSchema, type PipelineSettingsValues } from "@/lib/settings";
 import { Icon } from "./icon";
+import { PipelineSelect } from "./select";
 
 type SettingsView = { values: PipelineSettingsValues; jevApiKeyConfigured: boolean };
 type Machine = { id: string; name: string; status: string };
@@ -140,10 +142,12 @@ export function PipelineSettings() {
           <section className="pipeline-settings-section" aria-labelledby="pipeline-execution-heading">
             <h2 id="pipeline-execution-heading">Execution</h2>
             <label className="pipeline-field"><span className="pipeline-field-label">Model catalog</span>
-              <select className="pipeline-input" value={hostId} disabled={pending || machines.length === 0} onChange={(event) => setHostId(event.target.value)}>
-                <option value="">Choose a connected machine</option>
-                {machines.map((machine) => <option key={machine.id} value={machine.id} disabled={machine.status !== "connected"}>{machine.name}{machine.status === "connected" ? "" : " · Offline"}</option>)}
-              </select>
+              <PipelineSelect aria-label="Model catalog" value={hostId} disabled={pending || machines.length === 0}
+                onValueChange={setHostId} placeholder="Choose a connected machine"
+                options={[{ value: "", label: "Choose a connected machine" }, ...machines.map((machine) => ({
+                  value: machine.id, disabled: machine.status !== "connected",
+                  label: `${machine.name}${machine.status === "connected" ? "" : " · Offline"}`,
+                }))]} />
             </label>
             {machineError === null ? null : <p role="alert" className="pipeline-settings-help">Model catalog unavailable: {machineError}</p>}
             <p className="pipeline-settings-help">Defaults apply to new tasks on all machines. Existing tasks keep their choices.</p>
@@ -164,14 +168,15 @@ export function PipelineSettings() {
             <p className="pipeline-settings-help">A Markdown file on the BB server, absolute or starting with ~/. A section runs to the next unindented # or ## line outside a code fence. What every role builds to; read with <code>bb pipeline instructions guidelines</code>.</p>
           </section>
           <AgentModelSettings catalogHost={catalogHost} />
+          <InstructionSettings guidelinesFile={saved?.values.guidelinesFile} />
           <section className="pipeline-settings-section" aria-labelledby="pipeline-reviews-heading">
             <h2 id="pipeline-reviews-heading">External reviews</h2>
-            <label className="pipeline-field"><span className="pipeline-field-label">Request review</span><select className="pipeline-input" value={mode} disabled={pending} onChange={(event) => {
-              const next = event.target.value as "automatic" | "comment";
+            <label className="pipeline-field"><span className="pipeline-field-label">Request review</span><PipelineSelect aria-label="Request review" value={mode} disabled={pending} onValueChange={(value) => {
+              const next = value as "automatic" | "comment";
               if (next === "automatic") commentDraft.current = values.reviewRequestComment;
               setReviewMode(next);
               edit("reviewRequestComment", next === "automatic" ? "" : commentDraft.current ?? (saved?.values.reviewRequestComment || "@codex review"));
-            }}><option value="automatic">Automatic on GitHub</option><option value="comment">Post a comment</option></select></label>
+            }} options={[{ value: "automatic", label: "Automatic on GitHub" }, { value: "comment", label: "Post a comment" }]} /></label>
             {mode === "comment" ? <label className="pipeline-field"><span className="pipeline-field-label">Review request comment</span><textarea className="pipeline-input" rows={2} value={values.reviewRequestComment} disabled={pending} onChange={(event) => edit("reviewRequestComment", event.target.value)} /></label> : null}
             {toggle("autoReviewFollowup", "Send findings to the lead automatically")}
           </section>
@@ -184,7 +189,9 @@ export function PipelineSettings() {
           </section>
           <details className="pipeline-settings-section pipeline-settings-advanced">
             <summary>Advanced</summary>
-            <label className="pipeline-field"><span className="pipeline-field-label">Permissions</span><select className="pipeline-input" value={values.permissionMode} disabled={pending} onChange={(event) => edit("permissionMode", event.target.value as PipelineSettingsValues["permissionMode"])}><option value="accept-edits">Accept edits</option><option value="auto">Auto</option><option value="full">Full</option></select></label>
+            <label className="pipeline-field"><span className="pipeline-field-label">Permissions</span><PipelineSelect aria-label="Permissions" value={values.permissionMode} disabled={pending}
+              onValueChange={(value) => edit("permissionMode", value as PipelineSettingsValues["permissionMode"])}
+              options={[{ value: "accept-edits", label: "Accept edits" }, { value: "auto", label: "Auto" }, { value: "full", label: "Full" }]} /></label>
             <label className="pipeline-field"><span className="pipeline-field-label">TypeSafe API key <span>{saved?.jevApiKeyConfigured ? "Configured" : "Not configured"}</span></span><input type="password" aria-label="TypeSafe API key" autoComplete="new-password" className="pipeline-input" placeholder="Leave blank to keep current key" value={key} disabled={pending || clearKey} maxLength={4096} onChange={(event) => setKey(event.target.value)} /></label>
             {saved?.jevApiKeyConfigured ? <label className="pipeline-setting-toggle"><span>Clear saved key</span><input type="checkbox" checked={clearKey} disabled={pending} onChange={(event) => { setClearKey(event.target.checked); setKey(""); }} /></label> : null}
             <label className="pipeline-setting-row"><span>Jev confidence threshold</span><input type="number" className="pipeline-input" min={0.5} max={1} step="any" disabled={pending} value={Number.isNaN(values.jevThreshold) ? "" : values.jevThreshold} onChange={(event) => edit("jevThreshold", event.target.valueAsNumber)} /></label>

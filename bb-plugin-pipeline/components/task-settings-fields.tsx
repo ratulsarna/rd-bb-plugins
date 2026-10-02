@@ -1,5 +1,5 @@
 import { MODES, SIZES, type CardMode, type CardSize } from "@/lib/store";
-import { Icon } from "./icon";
+import { PipelineSelect } from "./select";
 
 const LABELS: Record<CardMode | CardSize, string> = {
   manual: "Manual",
@@ -19,19 +19,14 @@ function SettingSelect<T extends CardMode | CardSize>(props: {
   return (
     <label className="pipeline-field">
       <span className="pipeline-field-label">{props.name}</span>
-      <span className="pipeline-select-wrap">
-        <select
-          aria-label={props.label}
-          className="pipeline-select"
-          value={props.value ?? ""}
-          disabled={props.disabled}
-          onChange={(event) => props.onChange(event.target.value as T)}
-        >
-          {props.value === null ? <option value="" disabled>Not set</option> : null}
-          {props.options.map((option) => <option key={option} value={option}>{LABELS[option]}</option>)}
-        </select>
-        <Icon name="ChevronDown" />
-      </span>
+      <PipelineSelect
+        aria-label={props.label}
+        value={props.value ?? ""}
+        disabled={props.disabled}
+        onValueChange={(value) => props.onChange(value as T)}
+        placeholder="Not set"
+        options={props.options.map((value) => ({ value, label: LABELS[value] }))}
+      />
     </label>
   );
 }

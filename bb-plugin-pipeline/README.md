@@ -172,10 +172,15 @@ The Jev key is optional. Without it, an unsignalled lead idle is shown as `Idle 
 The Pipeline workflow lives in plugin-owned documents under `workflows/`, stored on the BB server and read with:
 
 ```text
-bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--json]
+bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--card <id>] [--json]
+bb pipeline instructions kickoff --file <name.md> [--card <id>] [--json]
 ```
 
-With no phase, `instructions` reads the overview (`workflows/README.md`): roles, mode and size, and the phase map. Each phase reads its `workflows/<phase>/README.md`, and `--file <relative-path>` reads a supporting file under that phase, such as a worker template dispatched during implementation. Documents are only read through this command, never from the task's host checkout. The intake kickoff reads `intake`; the lead reads `overview` and then the phase its kind calls for; after the plan it reads `implement`; a review follow-up reads `close-out`. After a phase exit clears, with the user's approval where the card's mode asks for one, the thread reads the next phase and continues.
+With no phase, `instructions` reads the overview (`workflows/README.md`): roles, mode and size, and shared working instructions. Each phase reads its `workflows/<phase>/README.md`, and `--file <relative-path>` reads a supporting file under that phase. A Pipeline thread reads its task's saved instruction snapshot; outside a task, the command reads the current defaults and saved overrides. Pass `--card <id>` to read a particular task's snapshot.
+
+**Instructions** in Settings edits phase documents, role templates, kickoff prompts, shared wording, and Pipeline's guidelines. Each document has its own save, discard, shipped-default preview, and restore action. Switching documents retains unsaved drafts. Concurrent edits require comparing the saved text before keeping a draft. Overrides survive plugin upgrades; restoring a default selects the packaged text. Kickoff fields such as `{{card_title}}` are substituted as task data without interpreting their contents as more template fields.
+
+A task pins its complete instruction snapshot before its first kickoff. Settings edits apply to later tasks; retries, phase reads, and review follow-ups use the same snapshot. An external guidelines file still takes precedence over Pipeline's editable guidelines, and its content is included in the snapshot.
 
 Board operations stay in the general `pipeline` skill, invoked explicitly when a thread works the board.
 

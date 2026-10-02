@@ -17,6 +17,7 @@ import { AddCard } from "./add-card";
 import { ImportIssues } from "./import-issues";
 import { StartSetup } from "./start-setup";
 import { Icon } from "./icon";
+import { PipelineSelect } from "./select";
 import { PipelineCard } from "./card";
 import { taskNeedsAttention } from "./task-state";
 import { MachineQueueStatus } from "./machine-queue";
@@ -340,14 +341,10 @@ function PipelineTasks() {
         machines={machines}
         onSetMachine={(hostId) => void updateCard(card, () => rpc.call("setMachine", { cardId: card.id, hostId }))}
         onSetSettings={(settings) => void updateCard(card, () => rpc.call("setCardSettings", { cardId: card.id, ...settings }))}
-        dragging={draggedCardId === card.id}
+        dragging={draggedCard?.id === card.id}
         pending={pendingCards.has(card.id)}
         queue={queuedCards.get(card.id) ?? null}
         onDragStart={(event) => {
-          if (view !== "board" || card.runState !== "running" || pendingCards.has(card.id)) {
-            event.preventDefault();
-            return;
-          }
           event.dataTransfer.effectAllowed = "move";
           event.dataTransfer.setData(CARD_DRAG_TYPE, card.id);
           setDraggedCardId(card.id);
@@ -381,12 +378,13 @@ function PipelineTasks() {
         <div className="pipeline-heading"><Icon name="Columns2" /><h1>Pipeline</h1></div>
         <label className="pipeline-project">
           <Icon name="Folder" />
-          <select
+          <PipelineSelect
             aria-label="Project"
             value={projectId ?? ""}
             disabled={projects.length === 0}
-            onChange={(event) => {
-              const next = event.target.value;
+            placeholder={loading ? "Loading projects…" : "No projects"}
+            options={projects.map((project) => ({ value: project.id, label: project.name }))}
+            onValueChange={(next) => {
               requestSequence.current += 1;
               projectIdRef.current = next;
               localStorage.setItem(PROJECT_KEY, next);
@@ -403,11 +401,7 @@ function PipelineTasks() {
               clearDrag();
               void load();
             }}
-          >
-            {projects.length === 0 ? <option value="">{loading ? "Loading projects…" : "No projects"}</option> : null}
-            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-          </select>
-          <Icon name="ChevronDown" />
+          />
         </label>
         <div className="pipeline-toolbar-actions">
           <button type="button" className="pipeline-icon-button" aria-label="Settings" onClick={() => navigate.toPluginPanel("board", { subPath: "settings" })}><Icon name="Settings" /></button>
@@ -457,15 +451,11 @@ function PipelineTasks() {
             </button>
           ))}
         </div>
-        <label className="pipeline-stage-filter pipeline-select-wrap">
-          <select className="pipeline-select" aria-label="Filter by stage" value={stage} onChange={(event) => {
-            setStage(event.target.value as Column | "all");
+        <label className="pipeline-stage-filter">
+          <PipelineSelect aria-label="Filter by stage" value={stage} onValueChange={(value) => {
+            setStage(value as Column | "all");
             clearDrag();
-          }}>
-            <option value="all">All stages</option>
-            {stageColumns.map((column) => <option key={column} value={column}>{COLUMN_LABELS[column]}</option>)}
-          </select>
-          <Icon name="ChevronDown" />
+          }} options={[{ value: "all", label: "All stages" }, ...stageColumns.map((column) => ({ value: column, label: COLUMN_LABELS[column] }))]} />
         </label>
       </div>
       {error === null ? null : <div role="alert" className="pipeline-error"><Icon name="AlertCircle" /><span>{error}</span><button type="button" className="pipeline-button pipeline-ghost" disabled={loading} onClick={() => void load()}>Refresh</button></div>}
@@ -507,8 +497,7 @@ function PipelineTasks() {
                       return;
                     }
                     if (draggedCard.startRequested) move(draggedCard, column);
-                    else if (needsExecutionSetup(draggedCard)) setSetupCardId(draggedCard.id);
-                    else void updateCard(draggedCard, () => rpc.call("startCard", { cardId: draggedCard.id }));
+                    else start(draggedCard);
                     clearDrag();
                   }}>
                   <div className="pipeline-column-header"><span className="pipeline-stage" data-stage={column} aria-hidden="true" /><h2>{COLUMN_LABELS[column]}</h2><span className="pipeline-column-count">{columnCards.length}</span></div>

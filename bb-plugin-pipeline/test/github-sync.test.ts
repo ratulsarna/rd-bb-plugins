@@ -21,6 +21,7 @@ function setup() {
     mergeable: "mergeable", reviewDecision: null, feedback: [], fetchedAt: Date.now() };
   const queue: ReturnType<typeof makeQueueEntry>[] = [];
   const events: Awaited<ReturnType<PluginBbSdk["threads"]["events"]["list"]>> = [];
+  const listEvents = vi.fn(async () => events);
   const thread = makeThreadResponse({ id: "lead", status: "idle" });
   const send = vi.fn(async (args: { input: Array<{ type: string; text?: string }> }) => {
     const entry = makeQueueEntry({ id: `q${queue.length}`, threadId: "lead", content: args.input as never });
@@ -28,7 +29,7 @@ function setup() {
     return { delivery: "queued" as const, queuedMessage: entry };
   });
   const host = createFakePluginHost({ pluginId: "pipeline", sdk: { threads: {
-    get: async () => thread, send, events: { list: async () => events },
+    get: async () => thread, send, events: { list: listEvents },
     queuedMessages: { list: async () => queue, delete: async ({ queuedMessageId }) => {
       const index = queue.findIndex((item) => item.id === queuedMessageId);
       if (index >= 0) queue.splice(index, 1);
@@ -46,13 +47,130 @@ function setup() {
   const notify = vi.fn();
   const classify = vi.fn(async (_args: Parameters<typeof classifyReview>[0]): Promise<ReviewClassification> => ({ decision: "feedback", probability: .99 }));
   const settings = { jevApiKey: "test", jevThreshold: "0.7", reviewRequestComment: "@codex review", autoReviewFollowup: true };
-  const makeSync = () => createGithubSync({ bb: host.bb, store, read, post, classify, notify, getSettings: async () => settings });
+  const getSettings = vi.fn(async () => settings);
+  const makeSync = (reviewPrompt?: Parameters<typeof createGithubSync>[0]["reviewPrompt"]) =>
+    createGithubSync({ bb: host.bb, store, read, post, classify, notify, reviewPrompt, getSettings });
   const sync = makeSync();
-  return { host, db, store, send, queue, events, read, post, notify, classify, sync, makeSync, settings, thread,
+  return { host, db, store, send, queue, events, listEvents, read, post, notify, classify, sync, makeSync, settings, getSettings, thread,
     snapshot: () => snapshot, change: (patch: Partial<GithubSnapshot>) => { snapshot = { ...snapshot, ...patch }; }, card: () => store.get("card")! };
 }
 
 describe("GitHub review handoff", () => {
+  it.each(["dispatched", "cancelled"] as const)("preserves %s feedback while a poll awaits settings", async (outcome) => {
+    const s = setup();
+    s.change({ feedback: [feedback()] }); await s.sync.poll();
+    let release!: (settings: typeof s.settings) => void;
+    s.getSettings.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const polling = s.sync.poll();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    s.sync.onMessage(outcome, s.queue.shift()!);
+    s.settings.autoReviewFollowup = false;
+    release(s.settings); await polling;
+    expect(s.store.getGithub("card")!.batch!.state).toBe(outcome === "dispatched" ? "delivered" : "cancelled");
+    expect(s.card().github?.error).toBeNull();
+    expect(s.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a feedback acknowledgement when the send response arrives late", async () => {
+    const s = setup();
+    await s.sync.waitForReview("card", "lead");
+    s.send.mockImplementationOnce(async (args) => {
+      const entry = makeQueueEntry({ id: "late", threadId: "lead", content: args.input as never });
+      s.sync.onMessage("dispatched", entry);
+      const batchId = s.store.getGithub("card")!.batch!.id;
+      await s.makeSync().waitForReview("card", "lead", batchId);
+      return { delivery: "queued", queuedMessage: entry };
+    });
+    s.change({ feedback: [feedback()] }); await s.sync.poll(); await s.sync.poll();
+    expect(s.store.getGithub("card")!.batch).toMatchObject({ state: "handled" });
+    expect(s.store.getGithub("card")!.awaitingReviewRevision).toBe(s.card().revision);
+    expect(s.card().github).toMatchObject({ review: "clear", followup: "handled", error: null });
+    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.post).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["dispatched", "cancelled"] as const)("keeps fresh PR status and a %s callback while held delivery is reconciled", async (outcome) => {
+    const s = setup();
+    s.change({ feedback: [feedback()] }); await s.sync.poll();
+    const entry = s.queue.shift()!;
+    const batchId = s.store.getGithub("card")!.batch!.id;
+    s.settings.autoReviewFollowup = false;
+    const checks = [{ name: "build", state: "failed" as const, url: `${url}/checks` }];
+    s.change({ headSha: "def", checks, mergeable: "conflicting" });
+    s.listEvents.mockImplementationOnce(async () => {
+      s.sync.onMessage(outcome, entry);
+      return [];
+    });
+    await s.makeSync().poll();
+    expect(s.card().github).toMatchObject({ headSha: "def", checks, mergeable: "conflicting", batchId,
+      followup: outcome === "dispatched" ? "delivered" : "cancelled", manualReviewPending: false, error: null });
+    expect(s.store.getGithub("card")!.batch!.queueId).toBeNull();
+    expect(s.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a waiting marker carried by notes during feedback classification", async () => {
+    const s = setup();
+    await s.sync.waitForReview("card", "lead");
+    let release!: (result: ReviewClassification) => void;
+    s.classify.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    s.change({ feedback: [feedback({ kind: "comment", body: "Thanks for the update" })] });
+    const polling = s.sync.poll();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    s.store.update("card", { body: "Verified outcome and PR link" });
+    const revision = s.card().revision;
+    release({ decision: "informational", probability: .99 }); await polling;
+    expect(s.store.getGithub("card")!.awaitingReviewRevision).toBe(revision);
+    expect(s.card().github).toMatchObject({ review: "waiting", error: null });
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("does not send feedback if the PR changes while its pinned prompt is being read", async () => {
+    const s = setup();
+    let release!: (prompt: string) => void;
+    const prompt = vi.fn(() => new Promise<string>((resolve) => { release = resolve; }));
+    const sync = s.makeSync(prompt);
+    s.change({ feedback: [feedback()] });
+    const polling = sync.poll();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+    expect(prompt).toHaveBeenCalledWith(s.card(), s.store.getGithub("card")!.batch);
+    expect(s.store.getGithub("card")!.batch!.state).toBe("pending");
+    s.store.update("card", { prUrl: "https://github.com/example/repo/pull/13" });
+    release("Pinned review instructions"); await polling;
+    expect(s.card().github).toBeNull();
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
+  it("ignores accepted-turn recovery after the lead changes while events are being read", async () => {
+    const s = setup();
+    s.change({ feedback: [feedback()] }); await s.sync.poll();
+    const entry = s.queue.shift()!;
+    s.events.push({ id: "accepted", scope: "client", threadId: "lead", seq: 10, createdAt: Date.now(),
+      type: "client/turn/requested", data: { input: entry.content } } as never);
+    let release!: (events: typeof s.events) => void;
+    s.listEvents.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const polling = s.makeSync().poll();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    const before = s.store.getGithub("card");
+    s.store.update("card", { leadThreadId: "replacement-lead" });
+    release(s.events); await polling;
+    expect(s.store.getGithub("card")).toEqual(before);
+    expect(s.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not establish a review wait after the task is paused during the request", async () => {
+    const s = setup();
+    let release!: () => void;
+    s.post.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    const waiting = s.sync.waitForReview("card", "lead");
+    const rejected = expect(waiting).rejects.toThrow("Task changed during review handoff");
+    await vi.waitFor(() => expect(s.post).toHaveBeenCalledOnce());
+    s.store.update("card", { runState: "paused" });
+    release(); await rejected;
+    expect(s.store.getGithub("card")).toBeNull();
+    expect(s.store.history("card").filter((entry) => entry.kind === "review_waiting")).toHaveLength(0);
+    expect(s.send).not.toHaveBeenCalled();
+  });
+
   it("keeps manual findings pending until Retry review explicitly sends one batch", async () => {
     const s = setup();
     s.settings.autoReviewFollowup = false;
@@ -97,11 +215,19 @@ describe("GitHub review handoff", () => {
       input: { text: reviewFollowup(s.card(), batch), blocks: [] } });
     expect(await s.sync.decide(context)).toBeNull();
     s.settings.autoReviewFollowup = false;
+    const checks = [{ name: "build", state: "failed" as const, url: `${url}/checks` }];
+    s.change({ headSha: "def", draft: false, mergeable: "conflicting", checks, reviewDecision: "CHANGES_REQUESTED", fetchedAt: 123 });
     expect(await s.makeSync().decide(context)).toMatchObject({ action: "wait", reason: expect.stringContaining("triage") });
     await s.makeSync().poll();
-    expect(s.card().github).toMatchObject({ followup: "queued", batchId: batch.id, manualReviewPending: true });
-    expect(taskNeedsAttention(s.card(), false)).toBe(true);
+    expect(s.card().github).toMatchObject({ headSha: "def", draft: false, mergeable: "conflicting", checks,
+      reviewDecision: "CHANGES_REQUESTED", syncedAt: 123, followup: "queued", batchId: batch.id, manualReviewPending: true });
     expect(s.notify).toHaveBeenCalledWith(s.card(), expect.stringContaining("need your triage"), "review");
+    s.change({ checks: [{ ...checks[0]!, state: "passed" }], fetchedAt: 124 });
+    await s.sync.poll();
+    expect(s.card().github).toMatchObject({ headSha: "def", mergeable: "conflicting", checks: [{ state: "passed" }],
+      syncedAt: 124, followup: "queued", batchId: batch.id, manualReviewPending: true });
+    expect(taskNeedsAttention(s.card(), false)).toBe(true);
+    expect(s.notify).toHaveBeenCalledTimes(1);
     expect(s.send).toHaveBeenCalledTimes(1);
     expect(s.queue).toHaveLength(1);
     s.settings.autoReviewFollowup = true;
@@ -289,15 +415,16 @@ describe("GitHub review handoff", () => {
     expect(s.post).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a settled review and a later user question when the same handoff is repeated", async () => {
+  it("keeps a settled review and the current waiting marker when the same handoff is repeated", async () => {
     const s = setup();
     await s.sync.waitForReview("card", "lead");
     s.classify.mockResolvedValue({ decision: "clear", probability: .99 });
     s.change({ feedback: [feedback({ kind: "review", body: "No findings" })] });
     await s.sync.poll();
-    s.store.update("card", { needsUser: true, attentionReason: "Which release?", reportSignal: "needs_you" });
+    const revision = s.card().revision;
     await s.sync.waitForReview("card", "lead");
-    expect(s.card()).toMatchObject({ needsUser: true, attentionReason: "Which release?", github: { review: "clear" } });
+    expect(s.card()).toMatchObject({ revision, needsUser: false, github: { review: "clear" } });
+    expect(s.store.getGithub("card")!.awaitingReviewRevision).toBe(revision);
     expect(s.post).toHaveBeenCalledTimes(1);
     expect(s.classify).toHaveBeenCalledTimes(1);
     expect(s.store.history("card").filter((entry) => entry.kind === "review_waiting")).toHaveLength(1);
@@ -364,8 +491,12 @@ describe("GitHub review handoff", () => {
     const entry = s.queue.shift()!;
     s.events.push({ id: "accepted", scope: "client", threadId: "lead", seq: 10, createdAt: Date.now(),
       type: "client/turn/requested", data: { input: entry.content } } as never);
+    const checks = [{ name: "build", state: "failed" as const, url: `${url}/checks` }];
+    s.change({ headSha: "def", checks, mergeable: "conflicting" });
     await s.makeSync().poll();
-    expect(s.card().github).toMatchObject({ followup: "delivered", error: null, manualReviewPending: false });
+    expect(s.card().github).toMatchObject({ headSha: "def", checks, mergeable: "conflicting",
+      followup: "delivered", error: null, manualReviewPending: false });
+    expect(s.store.getGithub("card")!.batch).toMatchObject({ state: "delivered", headSha: "abc", queueId: null });
     expect(s.send).toHaveBeenCalledTimes(1);
     expect(s.notify).not.toHaveBeenCalled();
     await expect(s.sync.retry("card")).rejects.toThrow("already received");
@@ -397,6 +528,24 @@ describe("GitHub review handoff", () => {
     await service.onThreadIdle(s.thread, "External review pending. Nothing needed from you.");
     expect(classify).not.toHaveBeenCalled();
     expect(s.card().needsUser).toBe(false);
+    s.classify.mockResolvedValueOnce({ decision: "clear", probability: .99 });
+    s.change({ feedback: [feedback({ kind: "review", body: "No findings" })] });
+    await s.sync.poll();
+    expect(s.card().github?.review).toBe("clear");
+    await service.onThreadActive({ ...s.thread, status: "active" });
+    await service.report({ cardId: "card", threadId: "lead", working: true });
+    expect(s.store.getGithub("card")!.awaitingReviewRevision).not.toBe(s.card().revision);
+    await s.sync.waitForReview("card", "lead");
+    expect(s.store.getGithub("card")!.awaitingReviewRevision).toBe(s.card().revision);
+    expect(s.card().reportSignal).toBeNull();
+    expect(s.post).toHaveBeenCalledTimes(1);
+    await s.sync.poll();
+    await s.sync.poll();
+    expect(s.card().github?.review).toBe("clear");
+    expect(s.classify).toHaveBeenCalledTimes(1);
+    await service.onThreadIdle(s.thread, "External review pending. Nothing needed from you.");
+    expect(classify).not.toHaveBeenCalled();
+    expect(s.card()).toMatchObject({ attentionUnknown: false, needsUser: false });
     await service.onThreadActive({ ...s.thread, status: "active" });
     await service.onThreadIdle(s.thread, "Which behavior should this use?");
     expect(classify).toHaveBeenCalledTimes(1);
@@ -575,10 +724,24 @@ describe("GitHub review handoff", () => {
     expect(s.send).toHaveBeenCalledTimes(1); expect(s.card().github?.followup).toBe("queued");
   });
 
-  it("keeps a user-cancelled follow-up cancelled until explicit retry", async () => {
+  it("retains cancelled feedback through a new revision and comments until retry and acknowledgement", async () => {
     const s = setup(); s.change({ feedback: [feedback()] }); await s.sync.poll();
+    const first = s.store.getGithub("card")!.batch!;
     s.sync.onMessage("cancelled", s.queue.shift()!);
-    await s.sync.poll(); expect(s.send).toHaveBeenCalledTimes(1);
-    await s.sync.retry("card"); expect(s.send).toHaveBeenCalledTimes(2);
+    const next = feedback({ id: "inline:2", commitSha: "def", body: "Another finding" });
+    s.change({ headSha: "def", feedback: [feedback(), next] });
+    await s.makeSync().poll();
+    expect(s.store.getGithub("card")!.batch).toMatchObject({ id: first.id, state: "cancelled", feedback: first.feedback });
+    expect(s.send).toHaveBeenCalledTimes(1);
+    expect(s.classify).toHaveBeenCalledTimes(1);
+    await s.sync.retry("card");
+    expect(s.send).toHaveBeenCalledTimes(2);
+    s.sync.onMessage("dispatched", s.queue.shift()!);
+    await s.sync.waitForReview("card", "lead", first.id);
+    const second = s.store.getGithub("card")!.batch!;
+    expect(second.id).not.toBe(first.id);
+    expect(second.feedback).toEqual([next]);
+    expect(s.send).toHaveBeenCalledTimes(3);
+    expect(s.card().github?.error).toBeNull();
   });
 });

@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
@@ -11,13 +14,16 @@ import plugin from "../server";
 import { createCardStore, type Card } from "../lib/store";
 import * as issueReader from "../lib/issue";
 import { makeCheckoutEnvironment, makeImportedIssue, testCatalogProviders, testProviderModels } from "./sdk-fake";
+import { instructionDocumentSchema, type InstructionId } from "../lib/instruction-types";
 
 const skillIds = ["pipeline"];
 
 const hosts: Array<ReturnType<typeof createFakePluginHost>> = [];
+const directories: string[] = [];
 
 afterEach(async () => {
   while (hosts.length > 0) await hosts.pop()!.harness.lifecycle.dispose();
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
   vi.restoreAllMocks();
 });
 
@@ -95,6 +101,7 @@ async function setup(options?: {
         })],
       },
       threads: {
+        list: async () => [],
         listRunning: async () => [],
         spawn: async () => makeThreadResponse({ id: "intake" }),
         queue: { list: async () => [] },
@@ -118,6 +125,193 @@ function seedLegacyCard(db: Database, id = "card_legacy"): void {
 }
 
 describe("plugin wiring", () => {
+  it("keeps settings repair available when existing task instructions cannot be captured", async () => {
+    let { host, db } = await setup();
+    const directory = await mkdtemp(join(tmpdir(), "pipeline-missing-guidelines-"));
+    directories.push(directory);
+    const guidelinesFile = join(directory, "missing.md");
+    await host.harness.behavior.setSettings({ guidelinesFile });
+    createCardStore(db).create({ id: "existing", projectId: "proj_1", hostId: null, title: "Existing task", body: "", attachments: [], source: "test", startRequested: true });
+    host = await host.harness.lifecycle.reload(plugin);
+    hosts.push(host);
+    const original = instructionDocumentSchema.parse(await host.harness.behavior.callRpc("readInstruction", { id: "plan/README.md" }));
+    const edit = { id: original.id, content: "Planning for new tasks\n", expectedRevision: original.revision };
+    await expect(host.harness.behavior.callRpc("saveInstruction", edit)).rejects.toThrow("unreadable");
+    expect(await host.harness.behavior.callRpc("readInstruction", { id: original.id })).toMatchObject({ content: original.content });
+
+    await writeFile(guidelinesFile, "Repaired guidelines\n");
+    await host.harness.behavior.callRpc("updateSettings", { values: { guidelinesFile } });
+    await host.harness.behavior.callRpc("saveInstruction", edit);
+    for (const [phase, expected] of [["plan", original.content], ["guidelines", "Repaired guidelines\n"]]) {
+      const result = await host.harness.behavior.runCli(["instructions", phase!, "--card", "existing", "--json"]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout!).content).toBe(expected);
+    }
+    expect(await host.harness.behavior.callRpc("readInstruction", { id: original.id })).toMatchObject({ content: edit.content });
+  });
+
+  it("captures existing tasks before instruction edits and leaves saved tasks on the latest instructions", async () => {
+    let { host, db } = await setup();
+    const directory = await mkdtemp(join(tmpdir(), "pipeline-existing-instructions-"));
+    directories.push(directory);
+    const guidelinesFile = join(directory, "guidelines.md");
+    await writeFile(guidelinesFile, "Existing guidelines\n");
+    await host.harness.behavior.setSettings({ guidelinesFile });
+    const original = instructionDocumentSchema.parse(await host.harness.behavior.callRpc("readInstruction", { id: "plan/README.md" }));
+    const store = createCardStore(db);
+    for (const id of ["running", "paused", "saved"]) {
+      store.create({ id, projectId: "proj_1", hostId: null, title: id, body: "", attachments: [], source: "test", startRequested: id !== "saved" });
+    }
+    store.update("paused", { runState: "paused" });
+
+    host = await host.harness.lifecycle.reload(plugin);
+    hosts.push(host);
+    await host.harness.behavior.callRpc("saveInstruction", {
+      id: original.id, content: "Planning for new tasks\n", expectedRevision: original.revision,
+    });
+    await writeFile(guidelinesFile, "New guidelines\n");
+    const read = async (id: string, phase: string) => {
+      const result = await host.harness.behavior.runCli(["instructions", phase, "--card", id, "--json"]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      return JSON.parse(result.stdout!).content;
+    };
+    for (const id of ["running", "paused"]) {
+      expect(await read(id, "plan")).toBe(original.content);
+      expect(await read(id, "guidelines")).toBe("Existing guidelines\n");
+    }
+    expect(await read("saved", "plan")).toBe("Planning for new tasks\n");
+    expect(await read("saved", "guidelines")).toBe("New guidelines\n");
+    host = await host.harness.lifecycle.reload(plugin);
+    hosts.push(host);
+    expect(await read("running", "plan")).toBe(original.content);
+    expect(await read("paused", "guidelines")).toBe("Existing guidelines\n");
+  });
+
+  it("pins editable instructions through intake-to-lead handoff, reload and guidelines settings changes", async () => {
+    vi.spyOn(issueReader, "readIssue").mockResolvedValue({ title: "Feature", body: "Details", labels: [] });
+    let { host } = await setup();
+    const directory = await mkdtemp(join(tmpdir(), "pipeline-server-instructions-"));
+    directories.push(directory);
+    const guidelinesFile = join(directory, "guidelines.md");
+    await writeFile(guidelinesFile, "## Original\nOriginal guidelines\n\n## Updated\nUpdated guidelines\n");
+    await host.harness.behavior.setSettings({ guidelinesFile, guidelinesSection: "Original" });
+    const save = async (id: InstructionId, content: string) => {
+      const document = instructionDocumentSchema.parse(await host.harness.behavior.callRpc("readInstruction", { id }));
+      await host.harness.behavior.callRpc("saveInstruction", { id, content, expectedRevision: document.revision });
+    };
+    const read = async (phase: string, options: { threadId?: string; cardId?: string; file?: string } = {}) => {
+      const result = await host.harness.behavior.runCli([
+        "instructions", phase, ...(options.cardId ? ["--card", options.cardId] : []),
+        ...(options.file ? ["--file", options.file] : []), "--json",
+      ], options.threadId ? { threadId: options.threadId } : {});
+      expect(result.exitCode, result.stderr).toBe(0);
+      return JSON.parse(result.stdout!).content;
+    };
+    const card = await host.harness.behavior.callRpc("addCard", {
+      projectId: "proj_1", hostId: "host_wt5difpwsy", title: "Team task", body: "", attachments: [], start: false,
+    }) as Card;
+    const preview = await read("intake", { cardId: card.id });
+    await save("intake/README.md", "Team intake v1\n");
+    await save("plan/README.md", "Team plan v1\n");
+    await save("plan/templates/oracle.md", "Team oracle v1\n");
+    await save("kickoff/intake.md", "Team intake kickoff: {{card_title}}. {{workflow_access}}");
+    await save("kickoff/lead.md", "Team lead kickoff: {{issue_title}}. {{workflow_access}}");
+    await save("kickoff/user-handoff.md", "Team handoff v1.");
+    expect(await read("intake", { cardId: card.id })).toBe("Team intake v1\n");
+    expect(preview).not.toBe("Team intake v1\n");
+    expect(await host.harness.behavior.callRpc("startCard", { cardId: card.id })).toMatchObject({ intakeThreadId: "intake" });
+    const intakeLaunch = JSON.stringify(host.harness.inspection.sdk.callsTo("threads.spawn")[0]);
+    expect(intakeLaunch).toContain("Team intake kickoff: Team task.");
+    expect(intakeLaunch).toContain("Team handoff v1.");
+
+    await save("intake/README.md", "Team intake v2\n");
+    await save("plan/README.md", "Team plan v2\n");
+    await save("plan/templates/oracle.md", "Team oracle v2\n");
+    await save("kickoff/lead.md", "Updated lead kickoff: {{issue_title}}. {{workflow_access}}");
+    await save("kickoff/user-handoff.md", "Team handoff v2.");
+    await writeFile(guidelinesFile, "## Original\nChanged original guidelines\n\n## Updated\nUpdated guidelines\n");
+    await host.harness.behavior.setSettings({ guidelinesSection: "Updated" });
+    const stubThreads = () => host.harness.inspection.sdk.stub("threads.get", async ({ threadId }) => makeThreadResponse({
+      id: threadId, projectId: "proj_1",
+      parentThreadId: threadId === "worker" ? "intake" : threadId === "lead-worker" ? "lead" : threadId === "grandchild" ? "lead-worker" : null,
+    }));
+    stubThreads();
+    expect(await read("intake", { threadId: "intake" })).toBe("Team intake v1\n");
+    expect(await read("intake", { threadId: "worker" })).toBe("Team intake v1\n");
+    expect(await read("intake")).toBe("Team intake v2\n");
+    expect(await read("guidelines", { threadId: "worker" })).toBe("## Original\n\nOriginal guidelines\n");
+    expect(await read("guidelines")).toBe("## Updated\n\nUpdated guidelines\n");
+
+    host = await host.harness.lifecycle.reload(plugin);
+    hosts.push(host);
+    stubThreads();
+    expect(await read("intake", { threadId: "worker" })).toBe("Team intake v1\n");
+    host.harness.inspection.sdk.stub("threads.spawn", async () => makeThreadResponse({ id: "lead" }));
+    const handoff = await host.harness.behavior.runCli([
+      "report", "--column", "planning", "--issue", "https://github.com/example/repo/issues/1", "--working", "--json",
+    ], { threadId: "intake" });
+    expect(handoff.exitCode, handoff.stderr).toBe(0);
+    expect(JSON.parse(handoff.stdout!)).toMatchObject({
+      column: "planning", ownerRole: "lead", intakeThreadId: "intake", leadThreadId: "lead",
+      issueUrl: "https://github.com/example/repo/issues/1", needsUser: false, launchError: null,
+    });
+    const leadLaunches = host.harness.inspection.sdk.callsTo("threads.spawn");
+    expect(leadLaunches).toHaveLength(1);
+    const leadLaunch = JSON.stringify(leadLaunches[0]);
+    expect(leadLaunch).toContain("Team lead kickoff: Feature.");
+    expect(leadLaunch).toContain("Team handoff v1.");
+    const attention = await host.harness.behavior.runCli(["report", "--needs-you", "Review the plan"], { threadId: "lead" });
+    expect(attention.exitCode, attention.stderr).toBe(0);
+    expect(attention.stdout).toContain("Team handoff v1.");
+
+    host = await host.harness.lifecycle.reload(plugin);
+    hosts.push(host);
+    stubThreads();
+    for (const threadId of ["intake", "worker", "lead", "lead-worker", "grandchild"]) {
+      expect(await read("plan", { threadId })).toBe("Team plan v1\n");
+    }
+    expect(await read("plan", { cardId: card.id, threadId: "unrelated" })).toBe("Team plan v1\n");
+    expect(await read("plan", { threadId: "grandchild", file: "templates/oracle.md" })).toBe("Team oracle v1\n");
+    expect(await read("guidelines", { cardId: card.id })).toBe("## Original\n\nOriginal guidelines\n");
+    expect(await read("plan")).toBe("Team plan v2\n");
+    expect(await read("plan", { file: "templates/oracle.md" })).toBe("Team oracle v2\n");
+    expect(await read("guidelines")).toBe("## Updated\n\nUpdated guidelines\n");
+  });
+
+  it("preserves a reported intake handoff after lead launch failure and retries it after reload", async () => {
+    vi.spyOn(issueReader, "readIssue").mockResolvedValue({ title: "Feature", body: "Details", labels: [] });
+    let { host } = await setup();
+    const card = await host.harness.behavior.callRpc("addCard", {
+      projectId: "proj_1", hostId: "host_wt5difpwsy", title: "Launch recovery", body: "", attachments: [], start: true,
+    }) as Card;
+    host.harness.inspection.sdk.stub("threads.spawn", async () => { throw new Error("lead provider unavailable"); });
+    const handoff = await host.harness.behavior.runCli([
+      "report", "--column", "planning", "--issue", "https://github.com/example/repo/issues/1", "--working", "--json",
+    ], { threadId: "intake" });
+    expect(handoff.exitCode, handoff.stderr).toBe(0);
+    expect(JSON.parse(handoff.stdout!)).toMatchObject({
+      column: "planning", ownerRole: "lead", intakeThreadId: "intake", leadThreadId: null,
+      issueUrl: "https://github.com/example/repo/issues/1", launchError: "lead: lead provider unavailable",
+    });
+    host = await host.harness.lifecycle.reload(plugin);
+    hosts.push(host);
+    expect(await host.harness.behavior.callRpc("showCard", { cardId: card.id })).toMatchObject({
+      card: { ownerRole: "lead", leadThreadId: null, launchError: "lead: lead provider unavailable" },
+      history: expect.arrayContaining([expect.objectContaining({ kind: "launch_failed", note: "lead: lead provider unavailable" })]),
+    });
+    host.harness.inspection.sdk.stub("threads.spawn", async () => makeThreadResponse({ id: "lead", status: "pending" }));
+    const retry = await host.harness.behavior.runCli(["retry", card.id, "--json"]);
+    expect(retry.exitCode, retry.stderr).toBe(0);
+    expect(JSON.parse(retry.stdout!)).toMatchObject({ ownerRole: "lead", leadThreadId: "lead", launchError: null });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")[0]![0]).toMatchObject({
+      pluginMetadata: { cardId: card.id, role: "lead", hostId: card.hostId },
+    });
+    expect(await host.harness.behavior.callRpc("showCard", { cardId: card.id })).toMatchObject({
+      card: { ownerRole: "lead", intakeThreadId: "intake", leadThreadId: "lead", launchError: null },
+    });
+  });
+
   it("links task threads and descendants without sharing PRs through their checkout", async () => {
     const { host, db } = await setup();
     seedLegacyCard(db, "card_a");

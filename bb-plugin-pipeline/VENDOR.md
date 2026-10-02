@@ -76,3 +76,7 @@ One line per site, in the phase document the moment belongs to; the full table a
 - `lib/control-prompts.ts` `settingsChangeInstruction` — the message Pipeline sends the owner when the user changes mode or size.
 
 No symlinks anywhere under `skills/` or `workflows/`.
+
+## Editable defaults
+
+Settings saves overrides for workflow documents, role templates, kickoff prompts, and guidelines. Each task uses a snapshot captured before kickoff. Kickoff templates and shared prompt fragments live under `workflows/kickoff/` and are rendered by `lib/prompts.ts`.

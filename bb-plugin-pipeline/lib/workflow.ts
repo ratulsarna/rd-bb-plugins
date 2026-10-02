@@ -1,31 +1,22 @@
-import { readFile } from "node:fs/promises";
+import { readPackagedInstruction } from "./instruction-default";
+import { INSTRUCTION_DOCUMENTS, type InstructionReader } from "./instruction-types";
 
-const DOCUMENTS: Record<string, readonly string[]> = {
-  overview: ["README.md"],
-  intake: ["README.md"],
-  plan: ["README.md", "templates/oracle.md"],
-  implement: ["README.md", "templates/developer.md", "templates/oracle.md", "templates/qa.md"],
-  debug: ["README.md", "templates/debugger.md"],
-  "close-out": ["README.md"],
-};
+const DOCUMENTS = INSTRUCTION_DOCUMENTS.filter(({ group }) => group !== "guidelines");
+const PHASES = [...new Set(DOCUMENTS.map(({ phase }) => phase))];
 
-export async function readWorkflow(phase = "overview", requestedFile?: string) {
-  if (!Object.hasOwn(DOCUMENTS, phase)) {
-    throw new Error(`unknown workflow phase ${phase}; choose ${Object.keys(DOCUMENTS).join(", ")}, or guidelines`);
+export async function readWorkflow(phase = "overview", requestedFile?: string, instructions?: InstructionReader) {
+  const available = DOCUMENTS.filter((entry) => entry.phase === phase);
+  if (available.length === 0) {
+    throw new Error(`unknown workflow phase ${phase}; choose ${PHASES.join(", ")}, or guidelines`);
   }
   if (phase === "overview" && requestedFile !== undefined) {
     throw new Error("overview does not accept --file");
   }
   const file = requestedFile ?? "README.md";
-  if (!DOCUMENTS[phase]!.includes(file)) {
-    throw new Error(`unknown ${phase} document ${file}; choose ${DOCUMENTS[phase]!.join(", ")}`);
+  const entry = available.find((entry) => entry.file === file);
+  if (!entry) {
+    throw new Error(`unknown ${phase} document ${file}; choose ${available.map(({ file }) => file).join(", ")}`);
   }
-  const path = phase === "overview" ? file : `${phase}/${file}`;
-  // Both lib/workflow.ts and the bundled dist/server.js sit one level below the plugin root.
-  const url = new URL(`../workflows/${path}`, import.meta.url);
-  try {
-    return { phase, file, content: await readFile(url, "utf8") };
-  } catch {
-    throw new Error(`Pipeline workflow document ${path} is unavailable; check the plugin installation`);
-  }
+  if (instructions) return { phase, file, content: await instructions.readContent(entry.id) };
+  return { phase, file, content: await readPackagedInstruction(entry.id) };
 }

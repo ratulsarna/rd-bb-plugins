@@ -43,7 +43,7 @@ function stateClass(kind: ReturnType<typeof taskPresentationState>["kind"]): str
 export function PipelineCard(props: PipelineCardProps) {
   const { card } = props;
   const owner = ownerThread(card);
-  const running = card.runState === "running";
+  const canDrag = props.layout === "board" && card.runState === "running" && !props.pending;
   const dragAllowed = useRef(true);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -60,13 +60,13 @@ export function PipelineCard(props: PipelineCardProps) {
       <article
         aria-label={card.title}
         aria-busy={props.pending}
-        draggable={props.layout === "board" && running && !props.pending}
+        draggable={canDrag}
         data-dragging={props.dragging}
         onPointerDownCapture={(event) => {
           dragAllowed.current = !(event.target as Element).closest("[data-card-control]");
         }}
         onDragStart={(event) => {
-          if (props.layout !== "board" || !dragAllowed.current) {
+          if (!canDrag || !dragAllowed.current) {
             event.preventDefault();
             return;
           }

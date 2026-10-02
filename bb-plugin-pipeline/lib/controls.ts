@@ -15,6 +15,7 @@ export function createPipelineControls(
   bb: BbPluginApi,
   store: CardStore,
   service: Pick<PipelineService, "launch" | "retry" | "onThreadQueueChanged">,
+  options: { getPromptDocuments?(card: Card): Promise<Record<string, string>> } = {},
 ) {
   const tasks = createTaskThreads(bb, store);
   const operations = new Map<string, Promise<Card>>();
@@ -183,7 +184,8 @@ export function createPipelineControls(
           await service.onThreadQueueChanged(thread);
           if (required(id).launchError !== null) await service.retry(id);
         } else {
-          await bb.sdk.threads.send({ threadId: thread.id, mode: "auto", input: [{ type: "text", text: resumeInstruction(card), mentions: [] }] });
+          const documents = await options.getPromptDocuments?.(card);
+          await bb.sdk.threads.send({ threadId: thread.id, mode: "auto", input: [{ type: "text", text: resumeInstruction(card, documents), mentions: [] }] });
         }
         update(id, { pauseRequestId: null });
         await bb.experimental_hooks.recheck("message.dispatch");

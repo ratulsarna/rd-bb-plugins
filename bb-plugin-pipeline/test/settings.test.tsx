@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { PipelineSettingsValues } from "../lib/settings";
+import type { PipelineMachine } from "../lib/machines";
+import { chooseSelectOption, openSelect } from "./select";
 
 const app = await loadPluginApp(() => import("../app"));
 const mounted: Array<ReturnType<typeof renderSlot>> = [];
@@ -23,7 +25,7 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-async function setup(options: { machinesFail?: boolean; integrationsFail?: boolean } = {}) {
+async function setup(options: { machinesFail?: boolean; integrationsFail?: boolean; secondMachineOffline?: boolean; machinesLoad?: Promise<{ machines: PipelineMachine[] }> } = {}) {
   let view: View = { values: structuredClone(defaults), jevApiKeyConfigured: true };
   const get = vi.fn(async () => structuredClone(view));
   const update = vi.fn(async (input: Update) => {
@@ -42,7 +44,8 @@ async function setup(options: { machinesFail?: boolean; integrationsFail?: boole
     getSettings: get, updateSettings: (input) => update(input as Update),
     settingsMachines: async () => {
       if (options.machinesFail) throw new Error("Machine catalog offline");
-      return { machines: [{ id: "first", name: "First machine", status: "connected" }, { id: "second", name: "Second machine", status: "connected" }] };
+      if (options.machinesLoad) return options.machinesLoad;
+      return { machines: [{ id: "first", name: "First machine", status: "connected" }, { id: "second", name: "Second machine", status: options.secondMachineOffline ? "disconnected" : "connected" }] };
     },
     integrationStatus: async () => {
       if (options.integrationsFail) throw new Error("Status unavailable");
@@ -112,15 +115,79 @@ describe("Pipeline settings page", () => {
     const s = await setup();
     const lead = within(screen.getByRole("group", { name: "Lead" }));
     expect(lead.getByTestId("bb-provider-model-picker").getAttribute("data-routing-id")).toBe("first");
-    fireEvent.change(screen.getByRole("combobox", { name: "Model catalog" }), { target: { value: "second" } });
+    await chooseSelectOption(screen.getByRole("combobox", { name: "Model catalog" }), "Second machine");
     expect(lead.getByTestId("bb-provider-model-picker").getAttribute("data-routing-id")).toBe("second");
     fireEvent.change(lead.getByLabelText("Model"), { target: { value: "chosen-model" } });
     fireEvent.change(lead.getByLabelText("Reasoning level"), { target: { value: "max" } });
     fireEvent.change(lead.getByLabelText("Service tier"), { target: { value: "fast" } });
     fireEvent.click(lead.getByRole("button", { name: "Apply execution selection" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Request review" }), { target: { value: "automatic" } });
+    await chooseSelectOption(screen.getByRole("combobox", { name: "Request review" }), "Automatic on GitHub");
     fireEvent.click(saveButton());
     await waitFor(() => expect(s.update).toHaveBeenCalledExactlyOnceWith({ values: { lead: { ...defaults.lead, model: "chosen-model", reasoningLevel: "max", serviceTier: "fast" }, reviewRequestComment: "" } }));
+  });
+
+  it("selects the first connected catalog after delayed discovery and clears it only through an explicit menu choice", async () => {
+    const machines = deferred<{ machines: PipelineMachine[] }>();
+    const s = await setup({ machinesLoad: machines.promise });
+    const catalog = screen.getByRole("combobox", { name: "Model catalog" });
+    const lead = within(screen.getByRole("group", { name: "Lead" }));
+    expect(catalog.textContent).toContain("Choose a connected machine");
+    expect(catalog).toHaveProperty("disabled", true);
+    expect(screen.queryByTestId("bb-provider-model-picker")).toBeNull();
+    await act(async () => machines.resolve({ machines: [
+      { id: "offline", name: "Offline machine", status: "disconnected" },
+      { id: "first", name: "First machine", status: "connected" },
+      { id: "second", name: "Second machine", status: "connected" },
+    ] }));
+    await waitFor(() => expect(catalog.textContent).toContain("First machine"));
+    expect(lead.getByTestId("bb-provider-model-picker").getAttribute("data-routing-id")).toBe("first");
+    expect(saveButton().disabled).toBe(true);
+    const menu = await openSelect(catalog);
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+    expect(catalog.textContent).toContain("First machine");
+    await chooseSelectOption(catalog, "Choose a connected machine");
+    expect(catalog.textContent).toContain("Choose a connected machine");
+    expect(screen.queryByTestId("bb-provider-model-picker")).toBeNull();
+    expect(saveButton().disabled).toBe(true);
+    await chooseSelectOption(catalog, "First machine");
+    expect(lead.getByLabelText("Model")).toHaveProperty("value", defaults.lead.model);
+    expect(lead.getByTestId("bb-provider-model-picker").getAttribute("data-routing-id")).toBe("first");
+    expect(s.update).not.toHaveBeenCalled();
+    expect(s.updateReview).not.toHaveBeenCalled();
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it("cannot route model pickers through a disabled offline catalog option", async () => {
+    const s = await setup({ secondMachineOffline: true });
+    const catalog = screen.getByRole("combobox", { name: "Model catalog" });
+    const lead = within(screen.getByRole("group", { name: "Lead" }));
+    const menu = await openSelect(catalog);
+    const offline = within(menu).getByRole("option", { name: "Second machine · Offline" });
+    expect(offline.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(offline);
+    expect(catalog.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+    expect(catalog.textContent).toContain("First machine");
+    expect(lead.getByTestId("bb-provider-model-picker").getAttribute("data-routing-id")).toBe("first");
+    expect(s.update).not.toHaveBeenCalled();
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it("dismisses keyboard navigation with Escape without changing or saving the review preference", async () => {
+    const s = await setup();
+    const request = screen.getByRole("combobox", { name: "Request review" });
+    const menu = await openSelect(request);
+    const automatic = within(menu).getByRole("option", { name: "Automatic on GitHub" });
+    fireEvent.keyDown(menu, { key: "Home" });
+    await waitFor(() => expect(document.activeElement).toBe(automatic));
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+    expect(request.textContent).toContain("Post a comment");
+    expect(screen.getByRole("textbox", { name: "Review request comment" })).toHaveProperty("value", defaults.reviewRequestComment);
+    expect(s.update).not.toHaveBeenCalled();
+    expect(saveButton().disabled).toBe(true);
   });
 
   it("allows other preferences when discovery fails, rejects invalid numbers and blank review requests", async () => {
@@ -143,18 +210,18 @@ describe("Pipeline settings page", () => {
     const request = screen.getByRole("combobox", { name: "Request review" });
     const comment = () => screen.getByRole("textbox", { name: "Review request comment" });
     fireEvent.change(comment(), { target: { value: "please review v2" } });
-    fireEvent.change(request, { target: { value: "automatic" } });
+    await chooseSelectOption(request, "Automatic on GitHub");
     expect(screen.queryByRole("textbox", { name: "Review request comment" })).toBeNull();
-    fireEvent.change(request, { target: { value: "comment" } });
+    await chooseSelectOption(request, "Post a comment");
     expect(comment()).toHaveProperty("value", "please review v2");
     fireEvent.click(saveButton());
     await waitFor(() => expect(s.update).toHaveBeenCalledExactlyOnceWith({ values: { reviewRequestComment: "please review v2" } }));
     await waitFor(() => expect(saveButton().disabled).toBe(true));
     fireEvent.change(comment(), { target: { value: "discard this draft" } });
-    fireEvent.change(request, { target: { value: "automatic" } });
+    await chooseSelectOption(request, "Automatic on GitHub");
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    fireEvent.change(request, { target: { value: "automatic" } });
-    fireEvent.change(request, { target: { value: "comment" } });
+    await chooseSelectOption(request, "Automatic on GitHub");
+    await chooseSelectOption(request, "Post a comment");
     expect(comment()).toHaveProperty("value", "please review v2");
     expect(saveButton().disabled).toBe(true);
   });

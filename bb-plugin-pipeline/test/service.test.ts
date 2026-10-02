@@ -163,9 +163,7 @@ function setup(options?: {
         ...(options?.getThreadOutput === undefined
           ? {}
           : { output: options.getThreadOutput as never }),
-        ...(options?.listThreads === undefined
-          ? {}
-          : { list: options.listThreads as never }),
+        list: (options?.listThreads ?? (async () => [])) as never,
         ...(options?.getThreadMetadata === undefined
           ? {}
           : { getPluginMetadata: options.getThreadMetadata as never }),
@@ -546,29 +544,13 @@ describe("owner rules", () => {
     expect(store.get("card_1")).toMatchObject({ needsUser: true, attentionReason: "thread failed: boom" });
   });
 
-  it("allows unrelated explicit-card reports to hand off planning", async () => {
+  it("rejects unrelated explicit-card reports before changing ownership", async () => {
     const { store, service, spawn } = setup();
     seed(store);
-    store.update("card_1", { intakeThreadId: "intake" });
-
-    await service.report({
-      cardId: "card_1",
-      threadId: "unrelated",
-      column: "planning",
-      issueUrl: "https://github.com/o/r/issues/2",
-      working: true,
-    });
-
-    expect(store.get("card_1")).toMatchObject({
-      column: "planning",
-      ownerRole: "lead",
-      leadThreadId: "thr_1",
-      issueUrl: "https://github.com/o/r/issues/2",
-    });
-    expect(spawn).toHaveBeenCalledOnce();
-    expect(store.history("card_1")).toContainEqual(
-      expect.objectContaining({ kind: "attention", threadId: "unrelated" }),
-    );
+    const before = store.update("card_1", { intakeThreadId: "intake" });
+    await expect(service.report({ cardId: "card_1", threadId: "unrelated", column: "planning", issueUrl: "https://github.com/o/r/issues/2", working: true })).rejects.toThrow("now led by intake");
+    expect(store.get("card_1")).toEqual(before);
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it("rejects reports from a former owner resolving by thread", async () => {
@@ -860,6 +842,168 @@ describe("launch", () => {
       leadThreadId: "lead-retry",
       launchError: null,
     });
+  });
+
+  it("recovers a persisted handoff whose lead was spawned before its link was saved", async () => {
+    const remote = thread("thr_1", 0, { status: "active" });
+    const s = setup({
+      listThreads: async ({ archived }) => archived ? [] : [listedThread(remote.id)],
+      getThreadMetadata: async () => ({ cardId: "card_1", role: "lead" }),
+      getThread: async () => remote,
+    });
+    seed(s.store); s.store.update("card_1", { intakeThreadId: "intake" });
+    await s.service.report({ cardId: "card_1", column: "planning", issueUrl: "https://github.com/o/r/issues/1" });
+    s.store.update("card_1", { leadThreadId: null });
+    await s.service.startupPass();
+    expect(s.store.get("card_1")).toMatchObject({ leadThreadId: "thr_1", ownerRole: "lead", launchError: null });
+    expect(s.spawn).toHaveBeenCalledOnce();
+  });
+
+  it.each(["startup", "retry"])("restores an idle lead's question when recovering its missing link through %s", async (action) => {
+    const question = "May I proceed with the proposed implementation?";
+    const remote = thread("remote-lead", 0, { status: "idle" });
+    const s = setup({
+      listThreads: async ({ archived }) => archived ? [] : [listedThread(remote.id)],
+      getThreadMetadata: async () => ({ cardId: "card_1", role: "lead" }),
+      getThread: async () => remote,
+      getThreadOutput: async () => ({ output: question }),
+      classify: async () => ({ decision: "needs", probability: 0.9 }),
+    });
+    seed(s.store);
+    s.store.update("card_1", {
+      ownerRole: "lead", intakeThreadId: "intake", issueUrl: "https://github.com/o/r/issues/1",
+      launchError: action === "retry" ? "lead: connection reset before response" : null,
+    });
+
+    if (action === "startup") await s.service.startupPass();
+    else await s.service.retry("card_1");
+    await s.service.startupPass();
+
+    expect(s.store.get("card_1")).toMatchObject({
+      leadThreadId: remote.id, launchError: null, needsUser: true,
+      attentionReason: question, attentionSource: "jev", attentionUnknown: false,
+    });
+    expect(s.classify).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ lastText: question }));
+    expect(s.onAttention).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "card_1" }), question, "questions");
+    expect(s.spawn).not.toHaveBeenCalled();
+  });
+
+  it("keeps a recovered lead eligible for attention after an output read failure", async () => {
+    let outputUnavailable = true;
+    const question = "Approve the implementation plan?";
+    const remote = thread("remote-lead", 0, { status: "idle" });
+    const s = setup({
+      listThreads: async ({ archived }) => archived ? [] : [listedThread(remote.id)],
+      getThreadMetadata: async () => ({ cardId: "card_1", role: "lead" }),
+      getThread: async () => remote,
+      getThreadOutput: async () => {
+        if (outputUnavailable) throw new Error("temporary output failure");
+        return { output: question };
+      },
+      classify: async () => ({ decision: "needs", probability: 0.9 }),
+    });
+    seed(s.store);
+    s.store.update("card_1", { ownerRole: "lead", launchError: "lead: connection reset before response" });
+
+    await s.service.retry("card_1");
+
+    expect(s.store.get("card_1")).toMatchObject({ leadThreadId: remote.id, launchError: null, attentionUnknown: false });
+    expect(s.classify).not.toHaveBeenCalled();
+    expect(s.onAttention).not.toHaveBeenCalled();
+    expect(s.log).toHaveBeenCalledWith("startup pass failed for thread remote-lead: temporary output failure");
+
+    outputUnavailable = false;
+    await s.service.startupPass();
+
+    expect(s.store.get("card_1")).toMatchObject({ needsUser: true, attentionReason: question, attentionUnknown: false });
+    expect(s.onAttention).toHaveBeenCalledOnce();
+    expect(s.spawn).not.toHaveBeenCalled();
+  });
+
+  it("discards recovered output when a new lead takes ownership during the read", async () => {
+    let finishOutput!: (value: { output: string }) => void;
+    const output = new Promise<{ output: string }>((resolve) => { finishOutput = resolve; });
+    const getThreadOutput = vi.fn(async () => output);
+    const remote = thread("remote-lead", 0, { status: "idle" });
+    const s = setup({
+      listThreads: async ({ archived }) => archived ? [] : [listedThread(remote.id)],
+      getThreadMetadata: async () => ({ cardId: "card_1", role: "lead" }),
+      getThread: async () => remote,
+      getThreadOutput,
+      classify: async () => ({ decision: "needs", probability: 0.9 }),
+    });
+    seed(s.store);
+    s.store.update("card_1", { ownerRole: "lead", launchError: "lead: connection reset before response" });
+
+    const recovery = s.service.retry("card_1");
+    await vi.waitFor(() => expect(getThreadOutput).toHaveBeenCalledOnce());
+    const replacement = s.store.update("card_1", { leadThreadId: "replacement-lead", reportSignal: "working" });
+    finishOutput({ output: "A stale approval question" });
+    await recovery;
+
+    expect(s.store.get("card_1")).toEqual(replacement);
+    expect(s.classify).not.toHaveBeenCalled();
+    expect(s.onAttention).not.toHaveBeenCalled();
+    expect(s.spawn).not.toHaveBeenCalled();
+  });
+
+  it("recovers a late lead before Retry creates a duplicate after interrupted handoff", async () => {
+    let visible = false;
+    const remote = thread("thr_1", 0, { status: "active" });
+    const s = setup({
+      listThreads: async ({ archived }) => visible && !archived ? [listedThread(remote.id)] : [],
+      getThreadMetadata: async () => ({ cardId: "card_1", role: "lead" }),
+      getThread: async () => remote,
+    });
+    seed(s.store); s.store.update("card_1", { intakeThreadId: "intake" });
+    await s.service.report({ cardId: "card_1", column: "planning", issueUrl: "https://github.com/o/r/issues/1" });
+    s.store.update("card_1", { leadThreadId: null });
+    await s.service.startupPass();
+    expect(s.store.get("card_1")?.launchError).toBe("lead: start interrupted before its thread was linked");
+    visible = true;
+    await s.service.retry("card_1");
+    expect(s.store.get("card_1")?.leadThreadId).toBe("thr_1");
+    expect(s.spawn).toHaveBeenCalledOnce();
+  });
+
+  it.each(["retry", "planning report"])("recovers a remotely spawned lead after a lost response through %s", async (action) => {
+    let spawned = false;
+    const remote = thread("remote-lead", 0, { status: "active" });
+    const s = setup({
+      spawn: async () => { spawned = true; throw new Error("connection reset before response"); },
+      listThreads: async ({ archived }) => spawned && !archived ? [listedThread(remote.id)] : [],
+      getThreadMetadata: async () => ({ cardId: "card_1", role: "lead" }),
+      getThread: async () => remote,
+    });
+    seed(s.store); s.store.update("card_1", { intakeThreadId: "intake" });
+    await s.service.report({ cardId: "card_1", column: "planning", issueUrl: "https://github.com/o/r/issues/1" });
+    expect(s.store.get("card_1")).toMatchObject({ leadThreadId: null, launchError: "lead: connection reset before response" });
+    if (action === "retry") await s.service.retry("card_1");
+    else await s.service.report({ cardId: "card_1", column: "planning", issueUrl: "https://github.com/o/r/issues/1" });
+    expect(s.store.get("card_1")).toMatchObject({ leadThreadId: remote.id, launchError: null });
+    expect(s.spawn).toHaveBeenCalledOnce();
+  });
+
+  it("recovers an intake after an ordinary spawn response is lost", async () => {
+    let spawned = false;
+    const remote = thread("remote-intake", 0, { status: "active" });
+    const s = setup({
+      spawn: async () => { spawned = true; throw new Error("connection reset before response"); },
+      listThreads: async ({ archived }) => spawned && !archived ? [listedThread(remote.id)] : [],
+      getThreadMetadata: async () => ({ cardId: "card_1", role: "intake" }),
+      getThread: async () => remote,
+    });
+    seed(s.store);
+    await s.service.launch("card_1", "intake");
+    expect(s.store.get("card_1")).toMatchObject({
+      intakeThreadId: null,
+      launchError: "intake: connection reset before response",
+    });
+
+    await s.service.retry("card_1");
+
+    expect(s.store.get("card_1")).toMatchObject({ intakeThreadId: remote.id, launchError: null });
+    expect(s.spawn).toHaveBeenCalledOnce();
   });
 
   it("relaunches a deleted lead on retry", async () => {
@@ -1473,6 +1617,23 @@ describe("startup pass", () => {
       ownerRole: "lead",
       leadThreadId: "thr_1",
     });
+  });
+
+  it("discards an intake idle callback when ownership changes during occupancy lookup", async () => {
+    let finishOccupancy!: (value: Array<{ id: string }>) => void;
+    const pending = new Promise<Array<{ id: string }>>((resolve) => { finishOccupancy = resolve; });
+    const occupied = vi.fn(async () => pending);
+    const s = setup({ occupied });
+    seed(s.store); s.store.update("card_1", { intakeThreadId: "intake" });
+    const idle = s.service.onThreadIdle(thread("intake", 0, { status: "idle" }), "Old intake question");
+    await vi.waitFor(() => expect(occupied).toHaveBeenCalledOnce());
+    await s.service.report({ cardId: "card_1", column: "planning", issueUrl: "https://github.com/o/r/issues/1" });
+    const lead = s.store.get("card_1")!;
+    expect(lead).toMatchObject({ ownerRole: "lead", needsUser: false, leadThreadId: "thr_1" });
+    finishOccupancy([]);
+    await idle;
+    expect(s.store.get("card_1")).toEqual(lead);
+    expect(s.classify).not.toHaveBeenCalled();
   });
 
   it("leaves a live card unchanged when reading idle output fails", async () => {

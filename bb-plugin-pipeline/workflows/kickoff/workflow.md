@@ -1,0 +1,2 @@
+This task follows the Pipeline workflow. Read its instructions with `bb pipeline instructions <phase>` and its templates with `bb pipeline instructions <phase> --file <relative-path>`. Load each phase when you reach it and follow its exit instructions. Intake ends with the documented report that hands off to a separate lead. The lead continues between phases in its own thread, after the user's approval where the card's mode asks for one. Keep every user-approval gate in those instructions that the card's mode calls for.
+{{user_handoff}}

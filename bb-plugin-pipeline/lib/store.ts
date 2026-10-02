@@ -204,6 +204,16 @@ export const MIGRATIONS = [
    UPDATE cards SET mode = 'manual',
      size = CASE WHEN tier IS NULL THEN NULL WHEN tier = 'standard' THEN 'standard' ELSE 'small' END;
    ALTER TABLE cards DROP COLUMN tier;`,
+  `CREATE TABLE instruction_overrides (
+    id TEXT PRIMARY KEY,
+    content TEXT,
+    version INTEGER NOT NULL CHECK (version > 0),
+    updated_at INTEGER NOT NULL
+  );`,
+  `CREATE TABLE instruction_snapshots (
+    card_id TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+    snapshot TEXT NOT NULL
+  );`,
 ] as const;
 
 function parseAttachments(value: string): CardAttachment[] {
@@ -299,6 +309,7 @@ export interface CardStore {
   getByThread(threadId: string): Card | null;
   getIncompleteStart(id: string): Card | null;
   listIncompleteStarts(): Card[];
+  listIncompleteHandoffs(): Card[];
   list(projectId: string, includeDone?: boolean): Card[];
   listIssueLinks(projectId: string): Array<{ id: string; issueUrl: string }>;
   listActiveWithOwner(): Card[];
@@ -409,6 +420,12 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       if (current.prUrl !== next.prUrl) {
         db.prepare("UPDATE cards SET github_state = NULL WHERE id = ?").run(id);
       }
+      if (patch.body !== undefined && Object.keys(patch).length === 1) {
+        // Closeout notes preserve an existing review wait without establishing one.
+        db.prepare(`UPDATE cards SET github_state = json_set(github_state, '$.awaitingReviewRevision', ?)
+          WHERE id = ? AND json_extract(github_state, '$.awaitingReviewRevision') = ?`)
+          .run(current.revision + 1, id, current.revision);
+      }
       if (history !== undefined) addHistory(id, history);
       return read(id)!;
     },
@@ -506,6 +523,11 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         .prepare(`SELECT * FROM cards WHERE id = ? AND ${incompleteStartWhere}`)
         .get(id) as CardRow | undefined;
       return row === undefined ? null : cardFromRow(row);
+    },
+    listIncompleteHandoffs() {
+      return (db.prepare(`SELECT * FROM cards
+        WHERE start_requested = 1 AND run_state = 'running' AND "column" <> 'done'
+          AND owner_role = 'lead' AND lead_thread_id IS NULL AND launch_error IS NULL`).all() as CardRow[]).map(cardFromRow);
     },
     listIncompleteStarts() {
       return (
