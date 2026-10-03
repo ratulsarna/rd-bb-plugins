@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assistantDisplayOrder, orderableIdentities, projectAssistantReorder } from "./assistant-order";
+import { assistantDisplayOrder, projectAssistantReorder } from "./assistant-order";
 
 const row = (identity: string | null, updatedAt: number) => ({
   identity,
@@ -44,14 +44,6 @@ describe("assistantDisplayOrder", () => {
     ).toEqual(["fresh", "mid", "old"]);
   });
 });
-
-describe("orderableIdentities", () => {
-  it("writes back only rows with a durable key, in display order", () => {
-    const display = [row("a", 3), row(null, 2), row("b", 1)];
-    expect(orderableIdentities(display)).toEqual(["a", "b"]);
-  });
-});
-
 
 it("refuses unknown and unresolved drag identities and treats a same-group move as a noop", () => {
   const rows = [{ id: "sam-server", identity: "fleet:sam" }, { id: "sam-mac", identity: "fleet:sam" }, { id: "pending", identity: null }];

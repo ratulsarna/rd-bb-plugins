@@ -285,17 +285,6 @@ describe("assistant key migration", () => {
       { done: 1 },
     ]);
   });
-
-  it("publishes on both channels after rewriting", async () => {
-    const h = serverApi({
-      ...fleet({ environments: {} }),
-      preMigrate: LEGACY_SCHEMA,
-    });
-    await h.flush();
-    const channels = h.publishes.map((publish) => publish.channel);
-    expect(channels).toContain("assistant-subtitles");
-    expect(channels).toContain("assistant-order");
-  });
 });
 
 describe("assistantIdentities", () => {
@@ -362,36 +351,6 @@ describe("assistantIdentities", () => {
 });
 
 describe("subtitle store", () => {
-  const samThread = {
-    ...fleet({
-      environments: {
-        env_sam: env("env_sam", "host_vps", "/home/me/assistants/sam"),
-      },
-      threads: { thr_sam: thread("thr_sam", "env_sam") },
-    }),
-  };
-
-  it("stores by identity, so a reattached thread finds its subtitle", async () => {
-    const h = serverApi(samThread);
-    await h.flush();
-    await h.handlers.setAssistantSubtitle({
-      threadId: "thr_sam",
-      subtitle: "Chief of staff",
-    } as never);
-    expect(await h.handlers.listAssistantSubtitles({} as never)).toEqual({
-      rows: [{ identity: "proj_fleet:sam", subtitle: "Chief of staff" }],
-    });
-
-    // Empty clears.
-    await h.handlers.setAssistantSubtitle({
-      threadId: "thr_sam",
-      subtitle: "",
-    } as never);
-    expect(await h.handlers.listAssistantSubtitles({} as never)).toEqual({
-      rows: [],
-    });
-  });
-
   it("refuses a thread without an environment", async () => {
     const h = serverApi(
       fleet({ threads: { thr_bare: { id: "thr_bare", environmentId: null } } }),

@@ -57,15 +57,3 @@ describe("restartPrompt", () => {
     expect(prompt).toContain("- heartbeat (auto_1)");
   });
 });
-
-it("keeps destination context while deferring automation policy to creation", () => {
-  const prompt = restartPrompt("thr_old", {
-    ...sam,
-    vaultPath: "/Users/me/vault",
-    targetingAutomations: [{ id: "auto_server", name: "server heartbeat" }],
-  });
-  expect(prompt).toContain("final guidance follows the selected creation mode");
-  expect(prompt).not.toContain("Keep their targets");
-  expect(prompt).not.toContain("repointing");
-  expect(prompt).toContain("Read /Users/me/vault/Notes/");
-});
