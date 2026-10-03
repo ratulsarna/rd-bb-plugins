@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type PointerEvent,
+  type SyntheticEvent,
+} from "react";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
   useSidebarSplitLayout,
@@ -59,6 +68,7 @@ export function BoardSidebar({
   );
 
   const isSearching = searchQuery.trim().length > 0;
+  const menuShield = useOpenMenuShield();
 
   const view = useMemo(
     () =>
@@ -259,7 +269,7 @@ export function BoardSidebar({
     0;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col" {...menuShield}>
       <div className="flex shrink-0 items-center px-2 pb-1">
         <ProjectSelect
           projects={state.projects}
@@ -371,6 +381,49 @@ export function BoardSidebar({
       </div>
     </div>
   );
+}
+
+const openMenu = () =>
+  document.querySelector<HTMLElement>('[role="menu"][data-state="open"]');
+
+/**
+ * While a context menu is open, a press on the list only dismisses it, as on
+ * any desktop. Radix's modal menu means to do this by shutting off pointer
+ * events page-wide, but the rows' labels and controls opt back in, so without
+ * this a phone long-press releases into a click that opens the row, and the
+ * tap that dismisses the menu activates whatever it lands on.
+ *
+ * It reads the open menu from the DOM instead of tracking it, so a row that
+ * unmounts with its menu open cannot leave the list blocked.
+ */
+function useOpenMenuShield() {
+  const pressBeganInMenu = useRef(false);
+  // React delivers events from portaled menu content through this element
+  // too; those are the menu's own and must be left alone.
+  const fromList = (event: SyntheticEvent<HTMLDivElement>) =>
+    event.currentTarget.contains(event.target as Node);
+  return {
+    onPointerDownCapture: (event: PointerEvent<HTMLDivElement>) => {
+      if (!fromList(event)) return;
+      const menu = openMenu();
+      pressBeganInMenu.current = menu !== null;
+      // Isolated controls stop this press before Radix's document listener
+      // sees it, so dismiss the menu here the way Escape would.
+      menu?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    },
+    onClickCapture: (event: MouseEvent<HTMLDivElement>) => {
+      const began = pressBeganInMenu.current;
+      pressBeganInMenu.current = false;
+      // A keyboard activation (detail 0) is never a stray tap.
+      if (!fromList(event) || event.detail === 0) return;
+      if (began || openMenu() !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+  };
 }
 
 function treeContains(item: BoardItem, threadId: string): boolean {

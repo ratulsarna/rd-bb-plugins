@@ -1387,38 +1387,89 @@ describe("row context menu", () => {
     expect(sidebarActionCalls.some((c) => c.method === "open")).toBe(false);
   });
 
-  // A touch long-press opens the menu (Radix, after 700 ms) and then releases
-  // into a click on the row; that click must not open the thread and close
-  // the drawer. Once the menu is gone, a click opens the row again.
-  it("ignores the click that lands on a row while its menu is open", async () => {
-    configureFakeSdk({
-      projects: [sidebarProject("assist-1", "assistants"), sidebarProject("project-1", "bb")],
-      threads: [
-        thread("thr_hold", { title: "Hold me" }),
-        thread("thr_bot", { title: "Sam", projectId: "assist-1" }),
-      ],
-    });
-    renderList({ isCompactViewport: true });
+  // While a row menu is open, a press on the list only dismisses it. On a
+  // phone the long-press that opened the menu releases into a click on the
+  // row, and the next tap usually lands on another row; neither may open a
+  // thread (closing the drawer) or run a row control.
+  describe("while a row menu is open", () => {
+    // fireEvent.click defaults to detail 0, which is what keyboard
+    // activation sends; a finger or mouse sends detail >= 1.
+    const tap = (target: HTMLElement) => {
+      fireEvent.pointerDown(target);
+      fireEvent.click(target, { detail: 1 });
+    };
     const opens = () =>
       sidebarActionCalls.filter((c) => c.method === "open").map((c) => c.threadId);
+    const openMenuOn = async (target: HTMLElement) => {
+      fireEvent.contextMenu(target);
+      return screen.findByRole("menu");
+    };
 
-    for (const anchor of [
-      await screen.findByRole("link", { name: "Hold me" }),
-      within(await screen.findByRole("region", { name: "Bots" })).getByRole("link", { name: /^Sam/ }),
-    ]) {
-      fireEvent.contextMenu(anchor);
-      const menu = await screen.findByRole("menu");
-      fireEvent.click(anchor);
+    it("ignores the long-press release on the title, and leaves the menu up", async () => {
+      configureFakeSdk({ threads: [thread("thr_a", { title: "Row A" })] });
+      renderList({ isCompactViewport: true });
+      const title = await screen.findByText("Row A");
+
+      await openMenuOn(title);
+      fireEvent.click(title, { detail: 1 });
+      await passDoubleClickWindow();
+
       expect(opens()).toEqual([]);
-      fireEvent.keyDown(menu, { key: "Escape" });
-      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
-    }
+      expect(screen.getByRole("menu")).toBeDefined();
+    });
 
-    fireEvent.click(screen.getByRole("link", { name: "Hold me" }));
-    fireEvent.click(
-      within(screen.getByRole("region", { name: "Bots" })).getByRole("link", { name: /^Sam/ }),
-    );
-    expect(opens()).toEqual(["thr_hold", "thr_bot"]);
+    it("lets the dismissing tap only dismiss, on another row's title or control", async () => {
+      configureFakeSdk({
+        threads: [thread("thr_a", { title: "Row A" }), thread("thr_b", { title: "Row B" })],
+      });
+      renderList({ isCompactViewport: true });
+      const rowB = (await screen.findByText("Row B")).closest("li")!;
+
+      await openMenuOn(screen.getByText("Row A"));
+      tap(within(rowB).getByText("Row B"));
+      await passDoubleClickWindow();
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(opens()).toEqual([]);
+
+      // Settle stops the press itself, so Radix never hears it; the menu
+      // must still close and Settle must not run.
+      await openMenuOn(screen.getByText("Row A"));
+      // The open modal menu hides the rest of the page from the a11y tree.
+      tap(within(rowB).getByRole("button", { name: "Settle", hidden: true }));
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+      expect(rpcCalls.some((c) => c.method === "settle")).toBe(false);
+
+      // With the menu gone, the next tap and a keyboard activation open rows.
+      tap(screen.getByRole("link", { name: "Row B" }));
+      fireEvent.click(screen.getByRole("link", { name: "Row A" }));
+      expect(opens()).toEqual(["thr_b", "thr_a"]);
+    });
+
+    it("still runs the menu's own items, and guards Bots rows the same way", async () => {
+      configureFakeSdk({
+        projects: [sidebarProject("assist-1", "assistants"), sidebarProject("project-1", "bb")],
+        threads: [
+          thread("thr_a", { title: "Row A" }),
+          thread("thr_bot", { title: "Sam", projectId: "assist-1" }),
+        ],
+      });
+      renderList({ isCompactViewport: true });
+      const bot = within(await screen.findByRole("region", { name: "Bots" })).getByRole("link", {
+        name: /^Sam/,
+      });
+
+      await openMenuOn(bot);
+      fireEvent.click(bot, { detail: 1 });
+      expect(opens()).toEqual([]);
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+      const menu = await openMenuOn(screen.getByText("Row A"));
+      tap(within(menu).getByText("Settle"));
+      await waitFor(() =>
+        expect(rpcCalls).toContainEqual({ method: "settle", input: { threadId: "thr_a" } }),
+      );
+    });
   });
 
   it("settles from the menu without opening the thread", async () => {

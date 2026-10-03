@@ -118,12 +118,6 @@ export function SidebarRow({
   const { splitProps } = experimental_useSidebarThreadSplit(item.thread.id);
   const isRenaming = renamingThreadId === item.thread.id;
   const pendingTapRef = useRef<number | null>(null);
-  // A touch long-press opens the row menu and then releases into a click on
-  // the row; that click must not also open the thread and shut the drawer.
-  const menuOpenRef = useRef(false);
-  const openFromClick = () => {
-    if (!menuOpenRef.current) openThread();
-  };
 
   const startRename = () => {
     if (pendingTapRef.current !== null) {
@@ -134,7 +128,6 @@ export function SidebarRow({
   };
 
   const handleTitleClick = () => {
-    if (menuOpenRef.current) return;
     if (pendingTapRef.current !== null) {
       startRename();
       return;
@@ -187,9 +180,6 @@ export function SidebarRow({
         action={action}
         onSnooze={onSnooze && (() => setSnoozeOpen(true))}
         onRename={startRename}
-        onOpenChange={(open) => {
-          menuOpenRef.current = open;
-        }}
       >
         <SnoozeAnchor asChild>
         <div
@@ -214,7 +204,7 @@ export function SidebarRow({
             draggable={false}
             onClick={(event) => {
               event.preventDefault();
-              openFromClick();
+              openThread();
             }}
             className="absolute inset-0 cursor-pointer rounded-md"
           />
@@ -277,14 +267,14 @@ export function SidebarRow({
             <span
               className="pointer-events-auto max-w-[45%] min-w-0 shrink cursor-pointer truncate rounded bg-foreground/[0.07] px-1.5 py-px font-medium text-muted-foreground"
               title={`Project: ${projectName}`}
-              onClick={openFromClick}
+              onClick={openThread}
             >
               {projectName}
             </span>
             <span
               className="pointer-events-auto min-w-0 flex-1 cursor-pointer truncate text-muted-foreground/70"
               title={`Machine: ${machineName}`}
-              onClick={openFromClick}
+              onClick={openThread}
             >
               {machineName}
             </span>
