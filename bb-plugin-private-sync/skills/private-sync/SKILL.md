@@ -53,6 +53,8 @@ explains these locations in optional details.
 | --- | --- |
 | `bb private-sync status [--json]` | Folders, each machine's phase, lag, open conflicts, errors. |
 | `bb private-sync configure --file <path> [--host <id>] [--json]` | Replace the folder config from a JSON file on the calling machine. |
+| `bb private-sync enable` / `disable` | Enable after validating the saved map, or disable without changing it. Disabling works with removed machines or invalid saved settings. Pause stays independent. |
+| `bb private-sync resolve --folder <id> --id <conflict-id> [--json]` | Acknowledge a conflict without changing files; IDs are shown in status. Repeated or unknown IDs are harmless. |
 | `bb private-sync pause` / `resume` | Stop or restart all syncing. The choice survives restarts. |
 | `bb private-sync sync --folder <id> [--host <id> ...] [--timeout 10m] [--json]` | Wait until the named machines (default all) finish a fresh full pass and match the hub. |
 
@@ -114,7 +116,8 @@ special files are skipped. Sync never follows a symlink.
   conflict.
 - An edit beats a delete: an edited file that was deleted elsewhere comes
   back as a conflict copy, and a deleted file that was edited elsewhere is
-  restored.
+  restored. Use **Mark resolved** or `resolve` to acknowledge the kept edit
+  without deleting it. Deleting that original also closes its no-copy conflict.
 - Deletes are kept as tombstones, so a machine that was offline cannot bring
   a deleted file back unless it edited that file.
 - A new machine never loses its files. Files it has that the hub lacks are

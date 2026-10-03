@@ -167,7 +167,7 @@ export function ComposeDialog({
               ) : seeds && destination?.ready ? (
                 <NewThreadComposer
                   defaultProjectId={seeds.projectId}
-                  key={`${replaceThreadId}:${hostId}:${shouldArchive}`}
+                  key={`${replaceThreadId}:${hostId}`}
                   defaultProviderId={destination.providerAvailable ? seeds.providerId : undefined}
                   defaultModel={destination.providerAvailable ? seeds.model : undefined}
                   defaultReasoningLevel={
@@ -185,7 +185,7 @@ export function ComposeDialog({
                     workspace: { type: "unmanaged", path: destination.homePath },
                   }}
                   initialPrompt={restartPrompt(replaceThreadId, { ...seeds, identity: destination.identity, vaultPath: destination.vaultPath, archiveSource: shouldArchive, crossMachine: !sameHost })}
-                  draftKey={`restart-${replaceThreadId}-${hostId}-${shouldArchive ? "replace" : "new"}`}
+                  draftKey={`restart-${replaceThreadId}-${hostId}-new`}
                   placeholder={`Message ${name}…`}
                   onSubmit={async (request) => {
                     if (!replaceThreadId || !hostId || !homePath || !destination.ready || submitting) return;

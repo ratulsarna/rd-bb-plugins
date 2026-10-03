@@ -34,11 +34,12 @@ function configuration(status: SyncStatus): FolderConfig[] {
   }));
 }
 
-function FolderCard({ folder, machines, status, sync, busy }: {
+function FolderCard({ folder, machines, status, sync, resolve, busy }: {
   folder: FolderStatus;
   machines: Machine[];
   status: SyncStatus;
   sync(): void;
+  resolve(id: number): void;
   busy: boolean;
 }) {
   const machineName = (id: string) => machines.find((machine) => machine.hostId === id)?.name ?? id;
@@ -96,7 +97,7 @@ function FolderCard({ folder, machines, status, sync, busy }: {
           <summary className="cursor-pointer">
             {folder.openConflicts} conflicting {folder.openConflicts === 1 ? "change" : "changes"} preserved
           </summary>
-          <p className="mt-2 text-muted-foreground">Review and merge the preserved files, then delete the conflict copies you have resolved. Up to date can still include conflicts.</p>
+          <p className="mt-2 text-muted-foreground">Review and merge the preserved files, then delete the conflict copies you have resolved. Mark resolved acknowledges a reviewed conflict without changing files. Up to date can still include conflicts.</p>
           <ul className="mt-2 space-y-2">
             {folder.conflicts.map((conflict) => (
               <li key={conflict.id} className="break-all">
@@ -104,6 +105,7 @@ function FolderCard({ folder, machines, status, sync, busy }: {
                 <p className="text-xs text-muted-foreground">
                   {conflict.conflictPath ?? "A deletion conflicted with an edit; the edited file was kept."}
                 </p>
+                <Button variant="outline" size="sm" disabled={busy} onClick={() => resolve(conflict.id)}>Mark resolved</Button>
               </li>
             ))}
           </ul>
@@ -282,7 +284,7 @@ function SyncPage() {
                 {!status.enabled && status.paused && " Pause is also set. After enabling, choose Resume to start."}
               </p>
               <div className="flex flex-wrap gap-2">
-                <Button disabled={controlsBlocked || (!status.enabled && status.folders.length === 0)} onClick={() => void act("enabled", () => rpc.call("configure", { folders: configuration(status), enabled: !status.enabled }), status.enabled ? "Sync disabled." : status.paused ? "Sync enabled; still paused. Choose Resume to start." : "Sync enabled. Connected machines will begin syncing.")}>{status.enabled ? "Disable sync" : "Enable sync"}</Button>
+                <Button disabled={busy || editing !== null || !!readError || (!status.enabled && (!!status.configError || status.folders.length === 0))} onClick={() => void act("enabled", () => rpc.call("setEnabled", { enabled: !status.enabled }), status.enabled ? "Sync disabled." : status.paused ? "Sync enabled; still paused. Choose Resume to start." : "Sync enabled. Connected machines will begin syncing.")}>{status.enabled ? "Disable sync" : "Enable sync"}</Button>
                 {status.enabled && <Button variant="outline" disabled={controlsBlocked} onClick={() => void act("pause", () => rpc.call(status.paused ? "resume" : "pause"), status.paused ? "Sync resumed." : "Sync paused.")}>{status.paused ? "Resume" : "Pause"}</Button>}
                 <Button variant="outline" disabled={controlsBlocked} onClick={() => { setError(""); setNotice(""); setEditing(configuration(status)); }}>Edit folder mapping</Button>
               </div>
@@ -295,7 +297,7 @@ function SyncPage() {
             {editing && <MappingEditor initial={editing} machines={machines} busy={busy} saving={pending === "configure"} cancel={() => setEditing(null)} save={(folders) => void act("configure", () => rpc.call("configure", { folders }), "Mapping saved. The enabled and paused settings were kept.", true)} />}
             {status.configError && <p className="text-sm text-muted-foreground">The saved map could not be read. Repair it in BB plugin settings before editing or enabling sync.</p>}
             {!status.configError && status.folders.length === 0 && <p className="text-sm text-muted-foreground">No folders mapped. Choose Edit folder mapping to add your folders and machines.</p>}
-            {status.folders.map((folder) => <FolderCard key={folder.id} folder={folder} machines={machines} status={status} busy={controlsBlocked} sync={() => void act(folder.id, async () => {
+            {status.folders.map((folder) => <FolderCard key={folder.id} folder={folder} machines={machines} status={status} busy={controlsBlocked} resolve={(id) => void act("resolve", () => rpc.call("resolveConflict", { folderId: folder.id, id }), "Conflict marked resolved. Files were kept.")} sync={() => void act(folder.id, async () => {
               await rpc.call("sync", { folderId: folder.id, timeoutMs: 120_000 });
               return rpc.call("status");
             }, `${folder.label}: all mapped machines finished a fresh sync pass.`)} />)}

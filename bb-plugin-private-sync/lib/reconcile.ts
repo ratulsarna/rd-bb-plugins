@@ -37,6 +37,7 @@ export interface PassRequest {
   folder: FolderConfig;
   hostId: string;
   root: string;
+  otherRoots?: readonly string[];
   /** "all" scans the whole root, a list scans those paths, null only applies hub changes. */
   scope: "all" | readonly string[] | null;
   signal: AbortSignal;
@@ -143,6 +144,7 @@ async function scanAll(
     {
       root,
       ignorePaths: folder.ignorePaths,
+      otherRoots: [...(request.otherRoots ?? [])],
       ...(paths ? { paths: [...paths] } : {}),
     },
     { hostId, signal, timeoutMs: SCAN_TIMEOUT_MS },
@@ -151,7 +153,11 @@ async function scanAll(
     throw new NodeError(
       first.reason === "root-missing"
         ? "The folder root is missing on this machine. Nothing was changed."
-        : "The folder root contains the plugin's own data directory.",
+        : first.reason === "root-changed"
+          ? "A configured folder root changed during the scan. Nothing was changed."
+          : first.reason === "overlapping-roots"
+            ? "Configured folder roots overlap on this machine. Nothing was changed."
+            : "The folder root contains the plugin's own data directory.",
     );
   const entries = [...first.entries];
   for (let page = 1; page < first.pages; page += 1) {

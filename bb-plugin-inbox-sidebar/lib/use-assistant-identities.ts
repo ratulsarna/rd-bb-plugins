@@ -22,8 +22,8 @@ export interface AssistantIdentitiesApi {
 
 /**
  * environmentId → stable assistant identity for each of the board's rows.
- * Read-only and best-effort: an environment whose identity cannot be derived
- * falls back to its own id, the same key the subtitle and order stores use.
+ * Final non-home answers use their environment id. Unresolved lookups reject
+ * so transient fallback keys never enable reordering.
  */
 export function useAssistantIdentities(
   environmentIds: readonly string[],
@@ -51,8 +51,8 @@ export function useAssistantIdentities(
   );
 
   useEffect(() => {
+    setIdentities(new Map());
     if (key === "") {
-      setIdentities(new Map());
       return;
     }
     const ids = key.split(",");

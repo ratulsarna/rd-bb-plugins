@@ -76,11 +76,12 @@ export function createHostEntry() {
     contract: hostContract,
     experimental_signals: hostSignals,
     handlers: {
-      scan: async ({ root, ignorePaths, paths }, context) => {
+      scan: async ({ root, ignorePaths, paths, otherRoots }, context) => {
         const outcome = await scanRoot(cacheFor(context, root), {
           root,
           ignorePaths,
           paths,
+          otherRoots,
           ownDirs: [
             context.experimental_paths.dataDir,
             context.experimental_paths.tempDir,
@@ -119,23 +120,24 @@ export function createHostEntry() {
       write: async ({ root, items }, context) => {
         const results = [];
         for (const { commit, ...chunk } of items) {
+          context.signal.throwIfAborted();
           const written = await writeChunk({ root, ...chunk });
           results.push(
             written.ok && commit
-              ? await commitFile(cacheFor(context, root), {
-                  root,
-                  ...chunk,
-                  ...commit,
-                })
+              ? await commitFile(
+                  cacheFor(context, root),
+                  { root, ...chunk, ...commit },
+                  context.signal,
+                )
               : written,
           );
         }
         return { results };
       },
       link: (request, context) =>
-        writeLink(cacheFor(context, request.root), request),
+        writeLink(cacheFor(context, request.root), request, context.signal),
       remove: (request, context) =>
-        removePath(cacheFor(context, request.root), request),
+        removePath(cacheFor(context, request.root), request, context.signal),
       watch: ({ folders }, context) => {
         const update = watchQueue.then(async () => {
           if (disposed || context.signal.aborted)

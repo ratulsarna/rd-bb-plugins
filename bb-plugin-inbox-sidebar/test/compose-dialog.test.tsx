@@ -24,6 +24,59 @@ beforeEach(() => configureFakeSdk({
 }));
 afterEach(cleanup);
 
+it.each([true, false])("retains edited composition through archive toggles and submits archiveSource=%s", async (archiveSource) => {
+  const onClose = vi.fn();
+  render(<ComposeDialog replaceThreadId="old" onClose={onClose} onNavigate={() => {}} />);
+  const prompt = await screen.findByRole("textbox", { name: "Prompt" });
+  const draftKey = lastComposerProps!.draftKey;
+  fireEvent.change(prompt, { target: { value: "Use my edited context, not the initial prompt" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Provider" }), { target: { value: "pi" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Model" }), { target: { value: "edited-model" } });
+  const checkbox = screen.getByRole("checkbox");
+  for (const checked of [true, false, archiveSource]) {
+    if ((checkbox as HTMLInputElement).checked !== checked) fireEvent.click(checkbox);
+    expect(screen.getByRole("textbox", { name: "Prompt" })).toBe(prompt);
+    expect((prompt as HTMLTextAreaElement).value).toBe("Use my edited context, not the initial prompt");
+    expect((screen.getByRole("textbox", { name: "Provider" }) as HTMLInputElement).value).toBe("pi");
+    expect((screen.getByRole("textbox", { name: "Model" }) as HTMLInputElement).value).toBe("edited-model");
+    expect(lastComposerProps!.draftKey).toBe(draftKey);
+  }
+  fireEvent.click(screen.getByRole("button", { name: "Send conversation" }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({
+    archiveSource, destinationHostId: "srv", homePath: "/srv/assistants/sam",
+    request: { providerId: "pi", model: "edited-model", input: [{ type: "text", text: "Use my edited context, not the initial prompt", mentions: [] }] },
+  });
+});
+
+it.each(["machine", "source"])("still changes the composer draft and seeds when the %s changes", async (change) => {
+  configureFakeSdk({
+    assistantSeeds: { old: seeds, other: { ...seeds, title: "Forge" } },
+    assistantDestinations: { srv: destination("srv"), mac: destination("mac", false) },
+  });
+  const view = render(<ComposeDialog replaceThreadId="old" onClose={() => {}} onNavigate={() => {}} />);
+  const prompt = await screen.findByRole("textbox", { name: "Prompt" });
+  fireEvent.change(prompt, { target: { value: "Old destination draft" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Provider" }), { target: { value: "pi" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Model" }), { target: { value: "edited-model" } });
+  if (change === "machine") {
+    fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "mac" } });
+  } else {
+    view.rerender(<ComposeDialog replaceThreadId="other" onClose={() => {}} onNavigate={() => {}} />);
+  }
+  const nextPrompt = await screen.findByRole("textbox", { name: "Prompt" });
+  expect(nextPrompt).not.toBe(prompt);
+  expect((nextPrompt as HTMLTextAreaElement).value).not.toBe("Old destination draft");
+  expect((screen.getByRole("textbox", { name: "Model" }) as HTMLInputElement).value).toBe(change === "machine" ? "destination-model" : "retired-model");
+  fireEvent.click(screen.getByRole("button", { name: "Send conversation" }));
+  await waitFor(() => expect(rpcCalls.some((call) => call.method === "createReplacementThread")).toBe(true));
+  expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({
+    replaceThreadId: change === "machine" ? "old" : "other",
+    destinationHostId: change === "machine" ? "mac" : "srv",
+    archiveSource: false,
+  });
+});
+
 it("selects the destination machine/home/vault and submits without the original host or archive behavior", async () => {
   const onClose = vi.fn();
   configureFakeSdk({

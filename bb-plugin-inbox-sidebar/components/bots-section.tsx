@@ -11,7 +11,7 @@ import { CollapsibleSection } from "@/components/section";
 import { SortableRows } from "@/components/sortable-rows";
 import type { RowReorder } from "@/components/sidebar-row";
 import { assistantDisplayOrder, orderableIdentities } from "@/lib/assistant-order";
-import { ASSISTANTS_PROJECT_NAME } from "@/lib/assistant-identity";
+import { selectedAssistantsProjectId } from "@/lib/assistant-identity";
 import { useAssistantAvatars } from "@/lib/use-assistant-avatars";
 import { useAssistantIdentities } from "@/lib/use-assistant-identities";
 import { useAssistantOrder } from "@/lib/use-assistant-order";
@@ -50,14 +50,7 @@ export function BotsSection({
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
 
-  const project = useMemo(
-    () =>
-      projects.find(
-        (candidate) =>
-          candidate.name.toLowerCase() === ASSISTANTS_PROJECT_NAME,
-      ) ?? null,
-    [projects],
-  );
+  const projectId = selectedAssistantsProjectId(projects);
 
   const isSearching = searchQuery.trim().length > 0;
 
@@ -65,10 +58,10 @@ export function BotsSection({
   // them in one round-trip.
   const environmentIds = useMemo(
     () =>
-      project
+      projectId
         ? threads.flatMap(
             (thread) =>
-              thread.projectId === project.id &&
+              thread.projectId === projectId &&
               thread.parentThreadId === null &&
               !thread.isArchived &&
               thread.environment?.id
@@ -76,26 +69,25 @@ export function BotsSection({
                 : [],
           )
         : [],
-    [project, threads],
+    [projectId, threads],
   );
   const identitiesApi = useAssistantIdentities(environmentIds);
   const identities = identitiesApi.identities;
 
   const allRows = useMemo(() => {
-    if (!project) return [];
+    if (!projectId) return [];
     return assistantDisplayOrder(
       threads
         .filter(
           (thread) =>
-            thread.projectId === project.id &&
+            thread.projectId === projectId &&
             thread.parentThreadId === null &&
             !thread.isArchived,
         )
         .map((thread) => ({
           thread,
           environmentId: thread.environment?.id ?? null,
-          // No stable identity (mishomed, no source on this host) falls back
-          // to the environment id, exactly what the stores key it by.
+          // Display can fall back while resolution keeps moves disabled.
           identity: thread.environment?.id
             ? (identities.get(thread.environment.id) ??
               thread.environment.id)
@@ -104,7 +96,7 @@ export function BotsSection({
         })),
       order.ids,
     );
-  }, [identities, order.ids, project, threads]);
+  }, [identities, order.ids, projectId, threads]);
 
   // Row identity is the thread id — always unique. Environment ids are NOT:
   // an automation run in an assistant's home shares its environment, and two
@@ -171,7 +163,7 @@ export function BotsSection({
   const capped = !showAll && !isSearching && rows.length > PREVIEW_COUNT;
   const visibleRows = capped ? rows.slice(0, PREVIEW_COUNT) : rows;
 
-  if (!project || rows.length === 0) return null;
+  if (!projectId || rows.length === 0) return null;
 
   return (
     <>

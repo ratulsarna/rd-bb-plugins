@@ -596,6 +596,13 @@ class FolderRunner {
         folder,
         hostId: node.hostId,
         root: node.root,
+        otherRoots: coordinator.getConfig().flatMap((other) =>
+          other.id === folder.id
+            ? []
+            : other.nodes
+                .filter((entry) => entry.hostId === node.hostId)
+                .map((entry) => entry.path),
+        ),
         scope: scope === null || scope === "all" ? scope : [...scope],
         signal,
         now: coordinator.now,

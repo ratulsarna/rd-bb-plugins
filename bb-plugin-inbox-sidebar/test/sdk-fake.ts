@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, useEffect, useState } from "react";
 import type { NewThreadComposerProps, NewThreadRequest } from "@get-bb/plugin-sdk/app";
 import type { z } from "zod";
 import type { boardRpcContract } from "@/server";
@@ -156,6 +156,7 @@ export function configureFakeSdk(next: Partial<FakeSdkConfig> = {}): void {
   pendingRpc.length = 0;
   lastComposerProps = null;
   composerSubmitErrors.length = 0;
+  composerDrafts.clear();
   navigateCalls.length = 0;
 }
 
@@ -380,17 +381,51 @@ export const useBbNavigate = () => navigate;
 
 export let lastComposerProps: NewThreadComposerProps | null = null;
 export const composerSubmitErrors: unknown[] = [];
+const composerDrafts = new Map<string | undefined, string>();
 export function experimental_NewThreadComposer(props: NewThreadComposerProps) {
   lastComposerProps = props;
-  return createElement("button", {
-    type: "button", "aria-label": "Send conversation",
-    onClick: () => {
-      const request: NewThreadRequest = config.composerRequest ?? {
-        projectId: props.defaultProjectId!, providerId: "codex", model: "destination-model",
-        reasoningLevel: "high", permissionMode: "full", executionInputSources: {},
-        environment: props.defaultEnvironment!, input: [{ type: "text", text: props.initialPrompt ?? "Hello", mentions: [] }],
-      };
-      void Promise.resolve(props.onSubmit(request)).catch((error) => composerSubmitErrors.push(error));
-    },
-  }, "Send");
+  const [prompt, setPrompt] = useState(() => composerDrafts.get(props.draftKey) || props.initialPrompt || "");
+  const [provider, setProvider] = useState(props.defaultProviderId ?? "codex");
+  const [model, setModel] = useState(props.defaultModel ?? "destination-model");
+  const seedKey = JSON.stringify([
+    props.defaultProjectId, props.defaultProviderId, props.defaultModel,
+    props.defaultReasoningLevel, props.defaultPermissionMode,
+    props.defaultServiceTier, props.defaultEnvironment,
+  ]);
+  // The public composer compares seeds by value and keeps nonempty drafts.
+  useEffect(() => {
+    setProvider(props.defaultProviderId ?? "codex");
+    setModel(props.defaultModel ?? "destination-model");
+  }, [seedKey]);
+  useEffect(() => {
+    const draft = composerDrafts.get(props.draftKey) || props.initialPrompt || "";
+    composerDrafts.set(props.draftKey, draft);
+    setPrompt(draft);
+  }, [props.draftKey, props.initialPrompt]);
+  return createElement("div", {},
+    createElement("textarea", {
+      "aria-label": "Prompt", value: prompt,
+      onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+        composerDrafts.set(props.draftKey, event.target.value);
+        setPrompt(event.target.value);
+      },
+    }),
+    createElement("input", { "aria-label": "Provider", value: provider,
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) => setProvider(event.target.value) }),
+    createElement("input", { "aria-label": "Model", value: model,
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) => setModel(event.target.value) }),
+    createElement("button", {
+      type: "button", "aria-label": "Send conversation",
+      onClick: () => {
+        const request: NewThreadRequest = config.composerRequest ?? {
+          projectId: props.defaultProjectId!, providerId: provider, model,
+          reasoningLevel: "high", permissionMode: "full", executionInputSources: {},
+          environment: props.defaultEnvironment!, input: [{ type: "text", text: prompt, mentions: [] }],
+        };
+        void Promise.resolve(props.onSubmit(request)).then(() => {
+          composerDrafts.delete(props.draftKey);
+          setPrompt("");
+        }).catch((error) => composerSubmitErrors.push(error));
+      },
+    }, "Send"));
 }

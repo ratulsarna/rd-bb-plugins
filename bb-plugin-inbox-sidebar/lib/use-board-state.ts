@@ -7,7 +7,7 @@ import {
 import { usePipelinePullRequests } from "@/lib/use-pipeline-pull-requests";
 import { useSettledOverrides } from "@/lib/use-settled";
 import { usePinnedOrder } from "@/lib/use-pinned-order";
-import { ASSISTANTS_PROJECT_NAME } from "@/lib/assistant-identity";
+import { selectedAssistantsProjectId } from "@/lib/assistant-identity";
 import {
   buildBoard,
   type BoardProjection,
@@ -51,26 +51,20 @@ export function useBoardState(): BoardState {
     threads: allThreads,
     projects: allProjects,
   } = useSidebarThreads();
+  const assistantProjectId = selectedAssistantsProjectId(allProjects);
   const projects = useMemo(
     () =>
       allProjects.filter(
-        (project) => project.name.toLowerCase() !== ASSISTANTS_PROJECT_NAME,
+        (project) => project.id !== assistantProjectId,
       ),
-    [allProjects],
+    [allProjects, assistantProjectId],
   );
   const threads = useMemo(() => {
-    const assistantProjectIds = new Set(
-      allProjects
-        .filter(
-          (project) => project.name.toLowerCase() === ASSISTANTS_PROJECT_NAME,
-        )
-        .map((project) => project.id),
-    );
-    if (assistantProjectIds.size === 0) return allThreads;
+    if (assistantProjectId === null) return allThreads;
     return allThreads.filter(
-      (thread) => !assistantProjectIds.has(thread.projectId),
+      (thread) => thread.projectId !== assistantProjectId,
     );
-  }, [allProjects, allThreads]);
+  }, [assistantProjectId, allThreads]);
   const settledApi = useSettledOverrides();
   const pinnedApi = usePinnedOrder();
   const pullRequests = usePipelinePullRequests(threads);

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import {
   configureFakeSdk,
+  rejectPendingRpc,
   resolvePendingRpc,
   rpcCalls,
 } from "@/test/sdk-fake";
@@ -11,6 +12,27 @@ import { useAssistantIdentities } from "./use-assistant-identities";
 afterEach(cleanup);
 
 describe("useAssistantIdentities", () => {
+  it("disables moves when a reconnect lookup fails after a successful resolution", async () => {
+    configureFakeSdk({ assistantIdentities: { "env-a": "proj_x:sam" } });
+    const { result, rerender } = renderHook(() => useAssistantIdentities(["env-a"]));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    configureFakeSdk({ connectionState: "reconnecting", deferRpc: ["assistantIdentities"] });
+    rerender();
+    configureFakeSdk({ connectionState: "connected", deferRpc: ["assistantIdentities"] });
+    rerender();
+    expect(result.current.ready).toBe(false);
+    await act(async () => rejectPendingRpc("assistantIdentities", "oldest", new Error("identity unresolved")));
+    expect(result.current.ready).toBe(false);
+
+    configureFakeSdk({ connectionState: "reconnecting", deferRpc: [] });
+    rerender();
+    configureFakeSdk({ connectionState: "connected", assistantIdentities: { "env-a": "proj_x:sam" } });
+    rerender();
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(result.current.identities.get("env-a")).toBe("proj_x:sam");
+  });
+
   it("deduplicates and batches a duplicate-heavy fleet within rpc limits", async () => {
     // 260 entries over 150 distinct environments, like a fleet where every
     // automation run shares its assistant's environment.

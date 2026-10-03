@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
-import { fork } from "node:child_process";
+import { execFileSync, fork } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
+import { createHostEntry } from "../host";
 import type { Content } from "../contract";
 import {
   HashCache,
@@ -584,4 +586,101 @@ describe("scan root filesystem identity", () => {
       expect(result.skipped).toBe(1);
     }
   });
+});
+
+it.each(["guard", "capture", "capture-save", "published"] as const)("SDK write batch honors abort at %s and retains captured bytes", async (phase) => {
+  await save("expected");
+  const controller = new AbortController();
+  const host = experimental_createHostEntryHarness(createHostEntry(), {
+    experimental_paths: { dataDir: join(base, "data"), tempDir: join(base, "tmp") },
+  });
+  const originalHash = HashCache.prototype.hash;
+  const hash = vi.spyOn(HashCache.prototype, "hash").mockImplementation(async function (this: HashCache, path, abs, stats) {
+    const result = await originalHash.call(this, path, abs, stats);
+    if (phase === "guard" && abs === target) controller.abort();
+    return result;
+  });
+  let captured = false;
+  hooks.after = async (op, args) => {
+    if ((phase === "capture" || phase === "capture-save") && op === "rename" && args[0] === target && !captured) {
+      captured = true;
+      if (phase === "capture-save") await save("newer save");
+      controller.abort();
+    }
+    if (phase === "published" && op === "link" && args[1] === target) controller.abort();
+  };
+  const items = ["doc.md", "later.md"].map((path) => ({
+    path, tempId: path === "doc.md" ? "first1234" : "second1234", offset: 0,
+    data: Buffer.from("remote").toString("base64"),
+    commit: { content: file("remote"), expected: path === "doc.md" ? file("expected") : null },
+  }));
+  try {
+    await expect(host.experimental_call("write", { root, items }, { signal: controller.signal })).rejects.toThrow();
+    expect(controller.signal.aborted).toBe(true);
+    expect(await fs.readFile(join(root, "later.md")).catch(() => null)).toBeNull();
+    expect(await fs.lstat(join(root, `${TEMP_PREFIX}second1234`)).catch(() => null)).toBeNull();
+    expect(await fs.readFile(target, "utf8")).toBe(phase === "published" ? "remote" : phase === "capture-save" ? "newer save" : "expected");
+    if (phase === "capture-save") expect(await copies()).toContain("expected");
+    hooks.after = undefined;
+    hash.mockRestore();
+    const retry = { ...items[0]!, commit: { content: file("remote"), expected: file(phase === "published" ? "remote" : phase === "capture-save" ? "newer save" : "expected") } };
+    expect(await host.experimental_call("write", { root, items: [retry, items[1]!] })).toEqual({ results: [{ ok: true }, { ok: true }] });
+    expect(await fs.readFile(target, "utf8")).toBe("remote");
+    expect(await fs.readFile(join(root, "later.md"), "utf8")).toBe("remote");
+  } finally { hash.mockRestore(); await host.experimental_dispose(); }
+});
+
+it.each([false, true])("preserves a directory captured after guard and recovers without overwriting a new save (recovery interruption: %s)", async (interrupt) => {
+  await save("expected");
+  let injected = false;
+  let captured = false;
+  hooks.before = async (op, args) => {
+    if (op === "rename" && args[0] === target && !injected) {
+      injected = true;
+      await fs.unlink(target);
+      await fs.mkdir(target);
+      await fs.writeFile(join(target, "child.txt"), "checkout directory content");
+      await fs.symlink("../../outside", join(target, "external"));
+    }
+    if (interrupt && op === "rename" && String(args[0]).includes("capture-") && String(args[1]).includes("sync-conflict"))
+      throw new Error("interrupted preservation");
+  };
+  hooks.after = async (op, args) => {
+    if (op === "rename" && args[0] === target && !captured) {
+      captured = true;
+      await save("newer save");
+    }
+  };
+  if (interrupt) await expect(apply("file", file("expected"))).rejects.toThrow("interrupted preservation");
+  else expect(await apply("file", file("expected"))).toEqual({ ok: false, reason: "local-changed" });
+  hooks.before = hooks.after = undefined;
+  expect(injected && captured).toBe(true);
+  expect(await fs.readFile(target, "utf8")).toBe("newer save");
+  const scanned = await scanRoot(cache, { root, ownDirs: [], ignorePaths: [] });
+  expect(scanned.ok).toBe(true);
+  const [container] = (await fs.readdir(root)).filter((name) => name.includes("sync-conflict"));
+  expect(await fs.readFile(join(root, container!, "doc.md", "child.txt"), "utf8")).toBe("checkout directory content");
+  expect(await fs.readlink(join(root, container!, "doc.md", "external"))).toBe("../../outside");
+  expect((await fs.readdir(root)).some((name) => name.startsWith(TEMP_PREFIX))).toBe(false);
+  expect(await apply("file", file("newer save"))).toEqual({ ok: true });
+  expect((await scanRoot(cache, { root, ownDirs: [], ignorePaths: [] })).ok).toBe(true);
+});
+
+it("preserves a captured FIFO without reading it or wedging the next scan", async () => {
+  await save("expected");
+  let injected = false;
+  hooks.before = async (op, args) => {
+    if (op === "rename" && args[0] === target && !injected) {
+      injected = true;
+      await fs.unlink(target);
+      execFileSync("mkfifo", [target]);
+    }
+  };
+  expect(await apply("file", file("expected"))).toEqual({ ok: false, reason: "local-changed" });
+  expect(injected).toBe(true);
+  const [container] = (await fs.readdir(root)).filter((name) => name.includes("sync-conflict"));
+  expect((await fs.lstat(join(root, container!, "doc.md"))).isFIFO()).toBe(true);
+  const result = await scanRoot(cache, { root, ownDirs: [], ignorePaths: [] });
+  expect(result).toMatchObject({ ok: true, skipped: 1, entries: [] });
+  expect((await fs.readdir(root)).some((name) => name.startsWith(TEMP_PREFIX))).toBe(false);
 });

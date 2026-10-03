@@ -14,6 +14,15 @@
 /** The BB project the assistant fleet lives in. */
 export const ASSISTANTS_PROJECT_NAME = "assistants";
 
+/** The project rendered by Bots; other name matches stay on the board. */
+export function selectedAssistantsProjectId(
+  projects: readonly { id: string; name: string }[],
+): string | null {
+  return projects.find(
+    (project) => project.name.toLowerCase() === ASSISTANTS_PROJECT_NAME,
+  )?.id ?? null;
+}
+
 /** The home directory segment that is Sam, in every host's fleet root. */
 export const SAM_HOME_SEGMENT = "sam";
 

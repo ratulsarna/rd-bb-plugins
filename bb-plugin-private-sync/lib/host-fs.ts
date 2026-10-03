@@ -11,7 +11,6 @@ import {
   readlink,
   rename,
   rmdir,
-  stat,
   symlink,
   unlink,
   writeFile,
@@ -150,6 +149,8 @@ export interface ScanOptions {
   ignorePaths: readonly string[];
   /** Restrict the walk to these root-relative paths and their subtrees. */
   paths?: readonly string[];
+  /** Every other configured folder root on this host, including offline mappings. */
+  otherRoots?: readonly string[];
   /** Directories the plugin itself owns on this host; never inside a root. */
   ownDirs: readonly string[];
   now?: number;
@@ -157,7 +158,10 @@ export interface ScanOptions {
 
 export type ScanOutcome =
   | { ok: true; entries: ScanEntry[]; skipped: number; empty: boolean }
-  | { ok: false; reason: "root-missing" | "unsafe-root" };
+  | {
+      ok: false;
+      reason: "root-missing" | "unsafe-root" | "root-changed" | "overlapping-roots";
+    };
 
 /** Owned directories may not exist until the first cache write. */
 async function resolvedPath(path: string): Promise<string> {
@@ -182,13 +186,28 @@ export async function scanRoot(
   options: ScanOptions,
 ): Promise<ScanOutcome> {
   const { ignorePaths } = options;
-  const root = await resolvedPath(options.root);
-  const rootStats = await stat(root).catch((error: unknown) => {
-    if (errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR")
-      return null;
-    throw error;
-  });
+  const configured = [options.root, ...(options.otherRoots ?? [])];
+  const facts = async () => Promise.all(configured.map(async (path) => {
+    const canonical = await resolvedPath(path);
+    return { canonical, stats: await lstatOrNull(canonical) };
+  }));
+  const before = await facts();
+  const { canonical: root, stats: rootStats } = before[0]!;
   if (!rootStats?.isDirectory()) return { ok: false, reason: "root-missing" };
+  for (const [index, entry] of before.entries())
+    if (before.slice(0, index).some((other) =>
+      isWithin(entry.canonical, other.canonical) ||
+      isWithin(other.canonical, entry.canonical),
+    ))
+      return { ok: false, reason: "overlapping-roots" };
+  // Directory edits change mtime; only canonical location and identity define this root.
+  const stable = async () => (await facts()).every((entry, index) => {
+    const original = before[index]!;
+    return entry.canonical === original.canonical &&
+      entry.stats?.dev === original.stats?.dev &&
+      entry.stats?.ino === original.stats?.ino &&
+      entry.stats?.isDirectory() === original.stats?.isDirectory();
+  });
   const ownDirs = await Promise.all(options.ownDirs.map(resolvedPath));
   if (
     root === "/" ||
@@ -203,7 +222,6 @@ export async function scanRoot(
   let skipped = 0;
 
   const visit = async (rel: string, stats: Stats): Promise<void> => {
-    const abs = join(root, rel);
     if (stats.isDirectory()) {
       let names: string[];
       try {
@@ -226,18 +244,14 @@ export async function scanRoot(
         if (childStats) await visit(child, childStats);
       }
     } else if (stats.isSymbolicLink()) {
-      const target = await readlink(abs).catch((error: unknown) => {
-        if (errorCode(error) === "ENOENT") return null;
-        throw error;
-      });
-      if (target === null) return;
-      if (isSafeSymlinkTarget(rel, target))
+      const target = await mirroredLink(root, rel);
+      if (target !== null)
         entries.push({ kind: "symlink", path: rel, target });
       else skipped += 1;
     } else if (stats.isFile()) {
       let hashed: Awaited<ReturnType<HashCache["hash"]>>;
       try {
-        hashed = await cache.hash(rel, abs, stats);
+        hashed = await cache.hash(rel, join(root, rel), stats);
       } catch (error) {
         if (errorCode(error) === "ENOENT") return;
         throw error;
@@ -259,7 +273,9 @@ export async function scanRoot(
 
   if (options.paths === undefined) {
     await visit("", rootStats);
+    if (!(await stable())) return { ok: false, reason: "root-changed" };
     await cache.save(new Set(entries.map((entry) => entry.path)));
+    if (!(await stable())) return { ok: false, reason: "root-changed" };
     return { ok: true, entries, skipped, empty: entries.length === 0 };
   }
   for (const path of options.paths) {
@@ -269,13 +285,24 @@ export async function scanRoot(
     await recoveredNames(
       root,
       posix.dirname(path) === "." ? "" : posix.dirname(path),
-    );
+    ).catch((error: unknown) => {
+      if (errorCode(error) !== "ENOENT") throw error;
+    });
     const stats = await lstatOrNull(join(root, path));
     if (stats) await visit(path, stats);
   }
   const empty =
     entries.length === 0 && !(await holdsMirrored(root, "", ignorePaths));
+  if (!(await stable())) return { ok: false, reason: "root-changed" };
   return { ok: true, entries, skipped, empty };
+}
+
+async function mirroredLink(root: string, path: string): Promise<string | null> {
+  const target = await readlink(join(root, path)).catch((error: unknown) => {
+    if (errorCode(error) === "ENOENT") return null;
+    throw error;
+  });
+  return target !== null && isSafeSymlinkTarget(path, target) ? target : null;
 }
 
 /** Whether anything mirrored remains under `rel`; stops at the first file or link. */
@@ -284,12 +311,17 @@ async function holdsMirrored(
   rel: string,
   ignorePaths: readonly string[],
 ): Promise<boolean> {
-  const names = await recoveredNames(root, rel);
+  const names = await recoveredNames(root, rel).catch((error: unknown) => {
+    if (errorCode(error) === "ENOENT") return [];
+    throw error;
+  });
   for (const name of names) {
     const child = rel === "" ? name : `${rel}/${name}`;
     if (!isSafeRelativePath(child) || isIgnored(child, ignorePaths)) continue;
     const stats = await lstatOrNull(join(root, child));
-    if (stats?.isFile() || stats?.isSymbolicLink()) return true;
+    if (stats?.isFile()) return true;
+    if (stats?.isSymbolicLink() && (await mirroredLink(root, child)) !== null)
+      return true;
     if (stats?.isDirectory() && (await holdsMirrored(root, child, ignorePaths)))
       return true;
   }
@@ -404,6 +436,26 @@ async function preserveCaptured(
   }
 }
 
+/** Move opaque entries into an exclusively owned visible container; never traverse or overwrite them. */
+async function preserveOpaque(
+  root: string,
+  path: string,
+  captured: string,
+): Promise<boolean> {
+  const stats = await lstat(captured);
+  if (stats.isFile() || stats.isSymbolicLink()) return false;
+  const container = mkdtempSync(
+    `${join(root, conflictPath(path, "local", new Date()))}-`,
+  );
+  try {
+    await rename(captured, join(container, posix.basename(path)));
+  } catch (error) {
+    await rmdir(container);
+    throw error;
+  }
+  return true;
+}
+
 /** A capture's single entry carries its original basename, including after a restart. */
 async function recoveredNames(root: string, rel: string): Promise<string[]> {
   const dir = join(root, rel);
@@ -427,13 +479,15 @@ async function recoveredNames(root: string, rel: string): Promise<string[]> {
         const entry = entries[0]!;
         const captured = join(recovery, entry);
         const path = posix.join(rel, entry);
-        await preserveCaptured(root, path, captured);
-        try {
-          await publishCaptured(captured, join(root, path));
-        } catch (error) {
-          if (errorCode(error) !== "EEXIST") throw error;
+        if (!(await preserveOpaque(root, path, captured))) {
+          await preserveCaptured(root, path, captured);
+          try {
+            await publishCaptured(captured, join(root, path));
+          } catch (error) {
+            if (errorCode(error) !== "EEXIST") throw error;
+          }
+          await unlink(captured);
         }
-        await unlink(captured);
       }
       await rmdir(recovery);
     })();
@@ -456,13 +510,16 @@ async function mutatePath(
   cache: HashCache,
   request: { root: string; path: string; expected: Content | null },
   publish: (() => Promise<void>) | null,
+  signal?: AbortSignal,
 ): Promise<ApplyResult> {
+  signal?.throwIfAborted();
   const { path, expected } = request;
   const root = await realpath(request.root);
   const result = await guard(cache, root, path, expected, publish !== null);
   if (!result.ok) return result;
   const apply = async (): Promise<ApplyResult> => {
     try {
+      signal?.throwIfAborted();
       await publish?.();
       return ok;
     } catch (error) {
@@ -470,6 +527,7 @@ async function mutatePath(
       throw error;
     }
   };
+  signal?.throwIfAborted();
   if (expected === null) return apply();
 
   const abs = join(root, path);
@@ -504,6 +562,8 @@ async function mutatePath(
     return outcome;
   } finally {
     try {
+      if (moved && !applied && (await preserveOpaque(root, path, captured)))
+        moved = false;
       if (moved && !applied) {
         // Preserve before restoration: another save may immediately replace it again.
         if (!verified) await preserveCaptured(root, path, captured);
@@ -511,6 +571,7 @@ async function mutatePath(
           await publishCaptured(captured, abs);
         } catch (error) {
           if (errorCode(error) !== "EEXIST") throw error;
+          if (verified) await preserveCaptured(root, path, captured);
         }
       }
       if (moved) await unlink(captured);
@@ -635,7 +696,9 @@ export async function commitFile(
     content: Extract<Content, { kind: "file" }>;
     expected: Content | null;
   },
+  signal?: AbortSignal,
 ): Promise<ApplyResult> {
+  signal?.throwIfAborted();
   const temp = tempPath(request.root, request.path, request.tempId);
   try {
     const stats = await lstat(temp);
@@ -647,8 +710,10 @@ export async function commitFile(
       throw new Error("Transferred file failed verification");
     // Mirrored files are private to the owner on every machine; only the exec bit travels.
     await chmod(temp, request.content.exec ? 0o700 : 0o600);
-    return await mutatePath(cache, request, () =>
-      link(temp, join(request.root, request.path)),
+    return await mutatePath(
+      cache, request,
+      () => link(temp, join(request.root, request.path)),
+      signal,
     );
   } finally {
     await unlink(temp).catch(() => {});
@@ -663,12 +728,15 @@ export async function writeLink(
     target: string;
     expected: Content | null;
   },
+  signal?: AbortSignal,
 ): Promise<ApplyResult> {
   requireSafe(request.path);
   if (!isSafeSymlinkTarget(request.path, request.target))
     throw new Error("Refusing a symlink that leaves the root");
-  return mutatePath(cache, request, () =>
-    symlink(request.target, join(request.root, request.path)),
+  return mutatePath(
+    cache, request,
+    () => symlink(request.target, join(request.root, request.path)),
+    signal,
   );
 }
 
@@ -676,8 +744,9 @@ export async function writeLink(
 export async function removePath(
   cache: HashCache,
   request: { root: string; path: string; expected: Content },
+  signal?: AbortSignal,
 ): Promise<ApplyResult> {
-  const result = await mutatePath(cache, request, null);
+  const result = await mutatePath(cache, request, null, signal);
   if (!result.ok) return result;
   let dir = posix.dirname(request.path);
   while (dir !== ".") {

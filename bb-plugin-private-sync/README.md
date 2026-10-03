@@ -28,7 +28,9 @@ machines sync. The selected primary copy seeds a new folder.
 - **Enable sync** enables automatic transfers. Sync starts disabled by default.
   If Pause is already set, enabling leaves it paused until **Resume**.
 - **Pause** stops all transfers while leaving the map enabled. **Resume** clears
-  Pause; it does not enable a disabled map. **Disable sync** turns sync off.
+  Pause; it does not enable a disabled map. **Disable sync** turns sync off,
+  even if a saved machine has been removed or the saved map is invalid.
+  Enabling validates the saved map and machines.
 - **Sync now** waits for a fresh pass on every mapped machine. It is unavailable
   when disabled, paused, or a mapped machine is offline.
 
@@ -45,7 +47,18 @@ The page's optional details explain these locations.
 Machine-local tools, secrets, and runtime files belong in exclusions. Built-in
 exclusions cover common credentials, dependencies, and caches; folder exclusions
 cover additional local paths. Other files inside mapped roots sync. Conflicting
-edits are kept as conflict copies for review and merging.
+edits are kept as conflict copies for review and merging. **Mark resolved**
+acknowledges a reviewed conflict without changing files, including a restored
+edit that beat a deletion. Deleting a conflict copy also closes its row; for a
+conflict without a copy, deleting the restored original closes it.
+
+Before each pass, the host checks that all its mapped roots are physically
+separate, including symlink aliases. A root moved, replaced, or retargeted
+during a scan is refused. Directory edits do not invalidate root identity.
+If a file becomes a directory or special entry during capture, that entry is
+preserved inside a visible sync-conflict directory without traversing it or
+replacing a newer save. Cancellation stops queued writes and publication that
+has not started; an atomic publication already in progress may finish.
 
 ## Layout
 

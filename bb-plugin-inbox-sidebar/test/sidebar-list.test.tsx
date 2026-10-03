@@ -1349,6 +1349,39 @@ describe("row context menu", () => {
 });
 
 describe("Bots section", () => {
+  it("keeps a second case-variant Assistants project's conversations and filter accessible", async () => {
+    configureFakeSdk({
+      projects: [
+        sidebarProject("assist-1", "Assistants"),
+        sidebarProject("assist-2", "ASSISTANTS"),
+        sidebarProject("project-1", "Work"),
+      ],
+      threads: [
+        thread("first", { title: "First fleet", projectId: "assist-1" }),
+        thread("second-a", { title: "Second fleet A", projectId: "assist-2" }),
+        thread("second-b", { title: "Second fleet B", projectId: "assist-2" }),
+        thread("work", { title: "Other work" }),
+      ],
+    });
+    renderList();
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    const inbox = screen.getByRole("region", { name: "Inbox" });
+    expect(within(bots).getByLabelText("First fleet")).toBeDefined();
+    expect(within(inbox).queryByText("First fleet")).toBeNull();
+    expect(within(inbox).getByText("Second fleet A")).toBeDefined();
+    expect(within(inbox).getByText("Second fleet B")).toBeDefined();
+    const filter = screen.getByRole("combobox", { name: "Filter by project" });
+    expect(within(filter).queryByRole("option", { name: "Assistants" })).toBeNull();
+    expect(within(filter).getByRole("option", { name: "ASSISTANTS" }).getAttribute("value")).toBe("assist-2");
+    fireEvent.change(filter, { target: { value: "assist-2" } });
+    expect(within(inbox).getByText("Second fleet A")).toBeDefined();
+    expect(within(inbox).getByText("Second fleet B")).toBeDefined();
+    expect(within(inbox).queryByText("Other work")).toBeNull();
+    fireEvent.click(within(inbox).getByRole("link", { name: "Second fleet B" }));
+    expect(sidebarActionCalls).toContainEqual({ method: "open", threadId: "second-b", options: undefined });
+    expect(within(bots).getByLabelText("First fleet")).toBeDefined();
+  });
+
   it("keeps the same assistant's conversations on different machines visible with shared subtitles and distinct machine labels", async () => {
     configureFakeSdk({
       projects: [sidebarProject("assist-1", "assistants")],

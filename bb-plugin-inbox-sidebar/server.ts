@@ -343,7 +343,6 @@ export default function plugin(bb: BbPluginApi) {
             error instanceof Error ? error.message : String(error)
           }`,
         );
-        identityCache.set(environmentId, { at: Date.now(), resolved });
         return resolved;
       }
       const source = sources.find(
@@ -366,18 +365,24 @@ export default function plugin(bb: BbPluginApi) {
         bb.log.warn(`assistant identity for ${environmentId} unresolved: ${message}`);
       }
     }
-    identityCache.set(environmentId, { at: Date.now(), resolved });
+    if (resolved.ok && !resolved.awaitingSource) {
+      identityCache.set(environmentId, { at: Date.now(), resolved });
+    }
     return resolved;
   };
 
-  // Storage keys: the stable identity when the environment resolves to one,
-  // the environment id otherwise — a mishomed or source-less environment
-  // keeps working per-environment instead of pretending to be an assistant.
-  // A failed lookup also lands here, so displays degrade instead of breaking.
+  // Displays may fall back; writes and drag readiness require an answer so
+  // a transient lookup or missing source cannot strand metadata under an id.
   const storageKeyOfEnvironment = async (
     environmentId: string,
-  ): Promise<string> =>
-    (await identityOfEnvironment(environmentId)).identity ?? environmentId;
+    requireResolved = false,
+  ): Promise<string> => {
+    const resolved = await identityOfEnvironment(environmentId);
+    if (requireResolved && (!resolved.ok || resolved.awaitingSource)) {
+      throw new Error(`assistant identity for ${environmentId} unresolved; retry when its environment and project source are available`);
+    }
+    return resolved.identity ?? environmentId;
+  };
 
   // One-time rewrite of legacy environment-id keys. The pass resolves every
   // legacy key first, then re-reads the tables and rewrites synchronously:
@@ -440,7 +445,10 @@ export default function plugin(bb: BbPluginApi) {
         `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)`,
       );
       for (const [identity, row] of kept) {
-        insertSubtitle.run(identity, row.subtitle, row.at);
+        // Keep clears until every alias is resolved, including across restarts.
+        if (row.subtitle !== "" || pending.length > 0) {
+          insertSubtitle.run(identity, row.subtitle, row.at);
+        }
       }
       const ranks = new Map<string, number>();
       order.forEach((row) => {
@@ -507,18 +515,26 @@ export default function plugin(bb: BbPluginApi) {
         `thread ${threadId} has no environment — not an assistant home`,
       );
     }
-    const identity = await storageKeyOfEnvironment(thread.environmentId);
-    if (subtitle === "") {
+    const identity = await storageKeyOfEnvironment(thread.environmentId, true);
+    // Remove this environment's alias so it cannot outlive the mutation.
+    if (identity !== thread.environmentId) {
+      db.prepare(`DELETE FROM assistant_subtitles WHERE identity = ?`).run(thread.environmentId);
+    }
+    const migrationPending = !db.prepare(`SELECT done FROM assistant_key_migration`).get();
+    if (subtitle === "" && !migrationPending) {
       db.prepare(
         `DELETE FROM assistant_subtitles WHERE identity = ?`,
       ).run(identity);
     } else {
+      // Empty subtitles persist clears while aliases await sources. Advance
+      // past stored timestamps so clock skew cannot let a legacy alias win.
+      const latest = db.prepare(`SELECT MAX(at) AS at FROM assistant_subtitles`).get() as { at: number | null };
       db.prepare(
         `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)
          ON CONFLICT(identity) DO UPDATE SET
            subtitle = excluded.subtitle,
            at = excluded.at`,
-      ).run(identity, subtitle, Date.now());
+      ).run(identity, subtitle, Math.max(Date.now(), latest.at ?? 0) + 1);
     }
     bb.realtime.publish(SUBTITLE_CHANNEL, { identity });
     return identity;
@@ -553,7 +569,7 @@ export default function plugin(bb: BbPluginApi) {
                   await storageKeyOfEnvironment(thread.environmentId),
                 ) as { subtitle: string } | undefined)
             : undefined;
-          return { exitCode: 0, stdout: `${row?.subtitle ?? "(none)"}\n` };
+          return { exitCode: 0, stdout: `${row?.subtitle || "(none)"}\n` };
         }
         const subtitle =
           rest[0] === "--clear" ? "" : rest.join(" ").trim();
@@ -735,13 +751,13 @@ export default function plugin(bb: BbPluginApi) {
       return { rows: rows.filter((row) => row !== null) };
     },
     // environmentId → stable assistant identity, for rows the board has.
-    // Environments without a stable identity fall back to their own id, the
-    // same key the stores use for them.
+    // Final non-home answers keep their own id; unresolved reads reject so
+    // the client cannot enable dragging with temporary fallback keys.
     async assistantIdentities({ environmentIds }) {
       const rows = await Promise.all(
         [...new Set(environmentIds)].map(async (environmentId) => ({
           environmentId,
-          identity: await storageKeyOfEnvironment(environmentId),
+          identity: await storageKeyOfEnvironment(environmentId, true),
         })),
       );
       return { rows };
@@ -749,7 +765,7 @@ export default function plugin(bb: BbPluginApi) {
     async listAssistantSubtitles() {
       const rows = (
         db
-          .prepare(`SELECT identity, subtitle FROM assistant_subtitles`)
+          .prepare(`SELECT identity, subtitle FROM assistant_subtitles WHERE subtitle != ''`)
           .all() as Array<{ identity: string; subtitle: string }>
       ).map((row) => ({
         identity: row.identity,
@@ -764,15 +780,20 @@ export default function plugin(bb: BbPluginApi) {
     async assistantOrder() {
       return { ids: readAssistantOrder() };
     },
-    // The client sends the full displayed order after a drag; stored verbatim.
+    // Resolve environment-id inputs before touching the saved order.
     // Ids the fleet no longer has just stop matching and the next write
     // clears them.
     async setAssistantOrder({ identities }) {
+      const keys = await Promise.all(identities.map((identity) =>
+        identity.includes(":")
+          ? identity
+          : storageKeyOfEnvironment(identity, true),
+      ));
       db.prepare(`DELETE FROM assistant_order`).run();
       const insert = db.prepare(
         `INSERT INTO assistant_order (identity, rank) VALUES (?, ?)`,
       );
-      [...new Set(identities)].forEach((identity, rank) => {
+      [...new Set(keys)].forEach((identity, rank) => {
         insert.run(identity, rank);
       });
       bb.realtime.publish(ASSISTANT_ORDER_CHANNEL, {});

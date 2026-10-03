@@ -181,6 +181,23 @@ export default async function plugin(bb: BbPluginApi) {
     return refresh();
   }
 
+  async function setEnabled(enabled: boolean): Promise<SyncStatus> {
+    if (enabled) {
+      const saved = await settings.get();
+      const parsed = parseFolders(saved.folders);
+      if (parsed.error) throw new Error(parsed.error);
+      return configure({ enabled: true, folders: parsed.folders });
+    }
+    await settings.experimental_set({ enabled: false });
+    return refresh();
+  }
+
+  function resolveConflict(folderId: string, id: number): SyncStatus {
+    store.resolveConflict(folderId, id, Date.now());
+    coordinator.changed();
+    return coordinator.status();
+  }
+
   async function setPaused(paused: boolean): Promise<SyncStatus> {
     await bb.storage.kv.set(PAUSED_KEY, paused);
     return refresh();
@@ -195,6 +212,8 @@ export default async function plugin(bb: BbPluginApi) {
       })),
     status: () => coordinator.status(),
     configure: (input) => configure(input),
+    setEnabled: ({ enabled }) => setEnabled(enabled),
+    resolveConflict: ({ folderId, id }) => resolveConflict(folderId, id),
     pause: () => setPaused(true),
     resume: () => setPaused(false),
     sync: ({ folderId, hostIds, timeoutMs }) =>
@@ -237,7 +256,7 @@ export default async function plugin(bb: BbPluginApi) {
         .slice(0, 10)
         .map(
           (conflict) =>
-            `  conflict ${conflict.kind}: ${conflict.conflictPath ?? conflict.path}`,
+            `  conflict ${conflict.id} ${conflict.kind}: ${conflict.conflictPath ?? conflict.path}`,
         ),
     ];
   }
@@ -315,6 +334,40 @@ export default async function plugin(bb: BbPluginApi) {
             const value = await configure(parsed.data).catch((error) =>
               fail(error, "invalid_config"),
             );
+            return output(options.json, value, formatStatus(value));
+          },
+        }),
+        enable: cliCommand({
+          summary: "Validate the saved mapping and enable sync",
+          options: jsonOption,
+          async run({ options }) {
+            const value = await setEnabled(true).catch((error) =>
+              fail(error, "invalid_config"),
+            );
+            return output(options.json, value, formatStatus(value));
+          },
+        }),
+        disable: cliCommand({
+          summary: "Disable sync while retaining the saved mapping and pause state",
+          options: jsonOption,
+          async run({ options }) {
+            const value = await setEnabled(false);
+            return output(options.json, value, formatStatus(value));
+          },
+        }),
+        resolve: cliCommand({
+          summary: "Mark a conflict resolved without changing files",
+          options: {
+            folder: { type: "string", required: true, description: "Folder id" },
+            id: { type: "string", required: true, description: "Conflict id from status" },
+            ...jsonOption,
+          },
+          async run({ options }) {
+            const input = rpcContract.resolveConflict.input.parse({
+              folderId: options.folder,
+              id: Number(options.id),
+            });
+            const value = resolveConflict(input.folderId, input.id);
             return output(options.json, value, formatStatus(value));
           },
         }),

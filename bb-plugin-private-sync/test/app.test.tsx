@@ -32,7 +32,7 @@ async function page(initial = status(), handlers: Partial<PluginRpcTestHandlers<
     pluginId: "private-sync", realtimeConnectionState: "connected",
     rpc: {
       status: () => initial, machineDirectory: () => machines,
-      configure: unexpectedRpc, pause: unexpectedRpc, resume: unexpectedRpc,
+      configure: unexpectedRpc, setEnabled: unexpectedRpc, resolveConflict: unexpectedRpc, pause: unexpectedRpc, resume: unexpectedRpc,
       sync: unexpectedRpc, resolvePath: unexpectedRpc, ...handlers,
     },
   });
@@ -134,15 +134,15 @@ it("retains rejected draft edits and blocks duplicate writes until a request set
 it("enables a paused map without claiming to start it, then resumes through the pause RPC", async () => {
   let saved = status({ paused: true });
   const write = deferred<SyncStatus>();
-  const configure = vi.fn((_input: ConfigInput) => write.promise);
+  const setEnabled = vi.fn((_input: { enabled: boolean }) => write.promise);
   const resume = vi.fn(() => { saved = { ...saved, paused: false }; return saved; });
   const pause = vi.fn(() => { saved = { ...saved, paused: true }; return saved; });
-  const view = await page(saved, { configure, resume, pause, status: () => saved });
+  const view = await page(saved, { setEnabled, resume, pause, status: () => saved });
   await view.findByText("Disabled · sync is off");
   const button = view.getByRole("button", { name: "Enable sync" });
   act(() => { fireEvent.click(button); fireEvent.click(button); });
-  expect(configure).toHaveBeenCalledTimes(1);
-  expect(configure.mock.calls[0]![0]).toMatchObject({ enabled: true, folders: [{ id: "assistants", primaryHostId: "server" }, { id: "vault", primaryHostId: "server" }] });
+  expect(setEnabled).toHaveBeenCalledTimes(1);
+  expect(setEnabled.mock.calls[0]![0]).toEqual({ enabled: true });
   expect(view.queryByRole("button", { name: "Resume" })).toBeNull();
   saved = { ...saved, enabled: true };
   await act(async () => write.resolve(saved));
@@ -216,7 +216,7 @@ it("keeps the returned mutation status when an older realtime read finishes afte
   const initial = status();
   const view = await page(initial, {
     status: () => ++readCount === 1 ? initial : oldRead.promise,
-    configure: () => status({ enabled: true }),
+    setEnabled: () => status({ enabled: true }),
   });
   await view.findByText("Disabled · sync is off");
   await view.behavior.emitRealtime("status-changed", {});
@@ -229,7 +229,8 @@ it("keeps the returned mutation status when an older realtime read finishes afte
 
 it("does not offer to overwrite an invalid map as if it were an empty setup", async () => {
   const configure = vi.fn();
-  const view = await page(status({ enabled: true, configError: "Invalid stored folders", folders: [] }), { configure });
+  const setEnabled = vi.fn(() => status({ enabled: false, configError: "Invalid stored folders", folders: [] }));
+  const view = await page(status({ enabled: true, configError: "Invalid stored folders", folders: [] }), { configure, setEnabled });
   await view.findByText("Configuration needs attention");
   expect(view.getByText("Sync cannot use the saved folder map. No folders are syncing.")).toBeTruthy();
   expect(view.queryByText(/No folders mapped/)).toBeNull();
@@ -237,4 +238,22 @@ it("does not offer to overwrite an invalid map as if it were an empty setup", as
   fireEvent.click(view.getByRole("button", { name: "Disable sync" }));
   expect(view.queryByRole("form", { name: "Edit folder mapping" })).toBeNull();
   expect(configure).not.toHaveBeenCalled();
+  await view.findByText("Sync disabled.");
+  expect(setEnabled).toHaveBeenCalledWith({ enabled: false });
+});
+
+it("acknowledges a kept restored edit through the mutation owner and updates the conflict count", async () => {
+  const initial = status({ enabled: true });
+  initial.folders[0]!.openConflicts = 1;
+  initial.folders[0]!.conflicts = [{ id: 42, path: "memory.md", conflictPath: null, hostId: "mac", kind: "delete-edit", detectedAt: 1 }];
+  const saved = status({ enabled: true });
+  const resolveConflict = vi.fn(() => saved);
+  const view = await page(initial, { resolveConflict });
+  const explanation = await view.findByText("A deletion conflicted with an edit; the edited file was kept.");
+  fireEvent.click(explanation.closest("details")!.querySelector("summary")!);
+  fireEvent.click(view.getByRole("button", { name: "Mark resolved" }));
+  await view.findByText("Conflict marked resolved. Files were kept.");
+  expect(resolveConflict).toHaveBeenCalledWith({ folderId: "assistants", id: 42 });
+  expect(view.queryByText("1 conflicting change preserved")).toBeNull();
+  expect(view.getAllByText("No open conflicts.")).toHaveLength(2);
 });

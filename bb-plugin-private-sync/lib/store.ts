@@ -355,13 +355,13 @@ export class Store {
           host,
           at,
         );
-      // Deleting a conflict copy is how a user settles that conflict.
+      // Deletion settles the copy, or the restored original when there is no copy.
       if (content === null)
         this.db
           .prepare(
-            `UPDATE conflicts SET resolved_at = ? WHERE folder = ? AND conflict_path = ? AND resolved_at IS NULL`,
+            `UPDATE conflicts SET resolved_at = ? WHERE folder = ? AND (conflict_path = ? OR (conflict_path IS NULL AND path = ?)) AND resolved_at IS NULL`,
           )
-          .run(at, folder, path);
+          .run(at, folder, path, path);
     })();
   }
 
@@ -378,6 +378,13 @@ export class Store {
         conflict.kind,
         conflict.detectedAt,
       );
+  }
+
+  /** Acknowledgment changes only metadata; repeated and unknown IDs are harmless. */
+  resolveConflict(folder: string, id: number, at: number): void {
+    this.db.prepare(
+      `UPDATE conflicts SET resolved_at = ? WHERE folder = ? AND id = ? AND resolved_at IS NULL`,
+    ).run(at, folder, id);
   }
 
   openConflicts(

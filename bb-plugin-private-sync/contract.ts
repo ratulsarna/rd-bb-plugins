@@ -202,6 +202,14 @@ export const rpcContract = defineRpcContract({
   },
   status: { input: z.null(), output: syncStatusSchema },
   configure: { input: configInputSchema, output: syncStatusSchema },
+  setEnabled: {
+    input: z.object({ enabled: z.boolean() }).strict(),
+    output: syncStatusSchema,
+  },
+  resolveConflict: {
+    input: z.object({ folderId: z.string(), id: z.number().int().positive() }).strict(),
+    output: syncStatusSchema,
+  },
   pause: { input: z.null(), output: syncStatusSchema },
   resume: { input: z.null(), output: syncStatusSchema },
   /**
@@ -307,6 +315,8 @@ export const hostContract = defineRpcContract({
       .object({
         ...rootInput,
         paths: z.array(relativePath).max(512).optional(),
+        /** Every other configured folder root on this host, checked before each pass. */
+        otherRoots: z.array(absolutePath).max(31).default([]),
       })
       .strict(),
     output: z.discriminatedUnion("ok", [
@@ -325,7 +335,7 @@ export const hostContract = defineRpcContract({
       z
         .object({
           ok: z.literal(false),
-          reason: z.enum(["root-missing", "unsafe-root"]),
+          reason: z.enum(["root-missing", "unsafe-root", "root-changed", "overlapping-roots"]),
         })
         .strict(),
     ]),
