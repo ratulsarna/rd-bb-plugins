@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
+  useSidebarSplitLayout,
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import { AddProjectButton } from "@/components/add-project";
 import { BotsSection } from "@/components/bots-section";
 import { ProjectSelect, useProjectFilter } from "@/components/project-select";
 import { CollapsibleSection } from "@/components/section";
-import { SidebarRow, type RowReorder } from "@/components/sidebar-row";
+import {
+  SidebarRow,
+  type RowReorder,
+  type SidebarRowProps,
+} from "@/components/sidebar-row";
 import { SortableRows } from "@/components/sortable-rows";
 import { filterBoardForDisplay } from "@/lib/display-filter";
 import { ancestorIdsOf, effectiveExpandedIds } from "@/lib/expansion";
@@ -16,8 +21,9 @@ import { pinnedMoveActions } from "@/lib/pinned-order";
 import { useBoardState } from "@/lib/use-board-state";
 
 /**
- * The board as bb's sidebar thread list: Bots on top, then Pinned, Inbox and
- * the Settled shelf, every section behind its own collapsible header.
+ * The board as bb's sidebar thread list: Bots on top, then Pinned, Inbox,
+ * Snoozed and the Settled shelf, every section behind its own collapsible
+ * header.
  *
  * The host owns the search field and the New-thread button above it, so this
  * ships neither and filters by the `searchQuery` prop. `activeProjectId` is
@@ -35,7 +41,15 @@ export function BoardSidebar({
   const actions = useSidebarThreadActions();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
-  const state = useBoardState();
+  // Every thread on screen: the route's and each split pane's.
+  const splitLayout = useSidebarSplitLayout();
+  const openThreadIds = useMemo(
+    () =>
+      [activeThreadId, ...(splitLayout?.panes ?? []).map((pane) => pane.threadId)]
+        .filter((id): id is string => id !== null),
+    [activeThreadId, splitLayout],
+  );
+  const state = useBoardState(openThreadIds);
   const [projectId, setProjectId, setPendingProjectId] = useProjectFilter(
     state.projects,
   );
@@ -116,7 +130,10 @@ export function BoardSidebar({
   const cancelRename = useCallback(() => setRenamingThreadId(null), []);
 
   const renderRow = useCallback(
-    (item: BoardItem, action?: { label: string; run: () => void }) => (
+    (
+      item: BoardItem,
+      extras: Pick<SidebarRowProps, "action" | "onSnooze" | "wakeAt"> = {},
+    ) => (
       <SidebarRow
         key={item.thread.id}
         item={item}
@@ -131,7 +148,7 @@ export function BoardSidebar({
         onCancelRename={cancelRename}
         onRename={renameThread}
         pullRequests={state.pullRequests}
-        action={action}
+        {...extras}
       />
     ),
     [
@@ -206,11 +223,12 @@ export function BoardSidebar({
     ],
   );
 
-  // The shelf starts shut, but the thread the user is looking at must exist
-  // on screen — an untouched shelf opens itself for it. A stored choice wins.
-  const settledDefaultExpanded =
+  // Snoozed and Settled start shut, but the thread the user is looking at
+  // must exist on screen — an untouched section opens itself for it. A stored
+  // choice wins.
+  const holdsActive = (items: readonly BoardItem[]) =>
     activeThreadId !== null &&
-    view.settled.some((item) => treeContains(item, activeThreadId));
+    items.some((item) => treeContains(item, activeThreadId));
 
   if (state.threadStatus === "error" || state.overridesStatus === "error") {
     return (
@@ -234,7 +252,11 @@ export function BoardSidebar({
   }
 
   const isEmpty =
-    view.pinned.length + view.inbox.length + view.settled.length === 0;
+    view.pinned.length +
+      view.inbox.length +
+      view.snoozed.length +
+      view.settled.length ===
+    0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -299,27 +321,45 @@ export function BoardSidebar({
                 </li>
               ) : (
                 view.inbox.map((item) =>
-                  renderRow(
-                    item,
-                    canSettle(item)
+                  renderRow(item, {
+                    action: canSettle(item)
                       ? { label: "Settle", run: () => state.settle(item.thread.id) }
                       : undefined,
-                  ),
+                    onSnooze: (until) => state.snooze(item.thread.id, until),
+                  }),
                 )
               )}
             </CollapsibleSection>
+            {view.snoozed.length > 0 && (
+              <CollapsibleSection
+                id="snoozed"
+                label="Snoozed"
+                count={view.snoozed.length}
+                defaultExpanded={holdsActive(view.snoozed)}
+                forceExpanded={isSearching}
+              >
+                {view.snoozed.map((item) =>
+                  renderRow(item, {
+                    action: { label: "Wake", run: () => state.wake(item.thread.id) },
+                    wakeAt: item.wakeAt,
+                  }),
+                )}
+              </CollapsibleSection>
+            )}
             {view.settled.length > 0 && (
               <CollapsibleSection
                 id="settled"
                 label="Settled"
                 count={view.settled.length}
-                defaultExpanded={settledDefaultExpanded}
+                defaultExpanded={holdsActive(view.settled)}
                 forceExpanded={isSearching}
               >
                 {view.settled.map((item) =>
                   renderRow(item, {
-                    label: "Unsettle",
-                    run: () => state.unsettle(item.thread.id),
+                    action: {
+                      label: "Unsettle",
+                      run: () => state.unsettle(item.thread.id),
+                    },
                   }),
                 )}
               </CollapsibleSection>

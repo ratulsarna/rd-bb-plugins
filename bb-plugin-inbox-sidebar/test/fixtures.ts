@@ -1,4 +1,4 @@
-import type { BoardThread, SettledOverride } from "@/lib/lanes";
+import type { BoardThread, ThreadOverride } from "@/lib/lanes";
 import type { PluginSidebarProject } from "@get-bb/plugin-sdk/app";
 
 export const NOW = Date.now();
@@ -48,7 +48,7 @@ export function thread(
 }
 
 export function overrideMap(
-  entries: Array<[string, SettledOverride["override"], number]>,
-): Map<string, SettledOverride> {
+  entries: Array<[string, "settled" | "active", number]>,
+): Map<string, ThreadOverride> {
   return new Map(entries.map(([id, override, at]) => [id, { override, at }]));
 }

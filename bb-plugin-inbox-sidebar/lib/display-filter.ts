@@ -3,7 +3,6 @@ import {
   type BoardItem,
   type BoardProjection,
   type BoardThread,
-  type SettledBoardItem,
 } from "@/lib/lanes";
 
 export interface DisplayFilter {
@@ -33,8 +32,9 @@ export function filterBoardForDisplay<T extends BoardThread>(
     (!needle || threadDisplayTitle(thread).toLowerCase().includes(needle));
 
   // A row survives on its own match or on a descendant's: a hit buried under an
-  // unrelated parent must still be reachable.
-  const prune = (item: BoardItem<T>): BoardItem<T> | null => {
+  // unrelated parent must still be reachable. Generic so each section keeps
+  // its own fields (settledAt, wakeAt).
+  const prune = <I extends BoardItem<T>>(item: I): I | null => {
     const children = item.children
       .map(prune)
       .filter((child): child is BoardItem<T> => child !== null);
@@ -42,19 +42,13 @@ export function filterBoardForDisplay<T extends BoardThread>(
     return { ...item, children };
   };
 
-  const pruneRoots = (roots: readonly BoardItem<T>[]): BoardItem<T>[] =>
-    roots.map(prune).filter((item): item is BoardItem<T> => item !== null);
-
-  const settled = board.settled
-    .map((item): SettledBoardItem<T> | null => {
-      const pruned = prune(item);
-      return pruned === null ? null : { ...item, children: pruned.children };
-    })
-    .filter((item): item is SettledBoardItem<T> => item !== null);
+  const pruneRoots = <I extends BoardItem<T>>(roots: readonly I[]): I[] =>
+    roots.map(prune).filter((item): item is I => item !== null);
 
   return {
     pinned: pruneRoots(board.pinned),
     inbox: pruneRoots(board.inbox),
-    settled,
+    snoozed: pruneRoots(board.snoozed),
+    settled: pruneRoots(board.settled),
   };
 }

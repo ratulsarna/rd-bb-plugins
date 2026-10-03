@@ -9,16 +9,17 @@ export const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1_000;
 export type Lane = "needs-you" | "running" | "idle";
 
 /**
- * A user override from the plugin store. "settled" parks a thread the timer
- * would have kept; "active" un-parks one auto-settle would otherwise take
- * right back. Both go stale on new activity — and an "active" override also
- * expires once the thread has been quiet past the cutoff again, so unsettling
- * is "keep this around for now", not "never settle this".
+ * A user override from the plugin store, one per thread. "settled" parks a
+ * thread the timer would have kept; "active" un-parks one auto-settle would
+ * otherwise take right back. Both go stale on new activity — and an "active"
+ * override also expires once the thread has been quiet past the cutoff again,
+ * so unsettling is "keep this around for now", not "never settle this".
+ * "snoozed" hides a root until `until`; past it, the snooze has woken and
+ * holds the thread at the top of the Inbox until it is opened.
  */
-export interface SettledOverride {
-  override: "settled" | "active";
-  at: number;
-}
+export type ThreadOverride =
+  | { override: "settled" | "active"; at: number }
+  | { override: "snoozed"; at: number; until: number };
 
 export type BoardThread = Pick<
   PluginSidebarThread,
@@ -48,6 +49,8 @@ export interface BoardItem<T extends BoardThread = BoardThread> {
   latestActivityAt: number;
   hasPinnedThread: boolean;
   children: BoardItem<T>[];
+  /** When this root's snooze ended; set until the thread is opened. */
+  wokeAt?: number;
 }
 
 export interface SettledBoardItem<T extends BoardThread = BoardThread>
@@ -55,20 +58,34 @@ export interface SettledBoardItem<T extends BoardThread = BoardThread>
   settledAt: number;
 }
 
+export interface SnoozedBoardItem<T extends BoardThread = BoardThread>
+  extends BoardItem<T> {
+  wakeAt: number;
+}
+
 export interface BoardProjection<T extends BoardThread = BoardThread> {
   /** Pinned threads — the user's own priority shelf. */
   pinned: BoardItem<T>[];
-  /** Active work, newest thread first. Activity never re-orders it. */
+  /** Woken snoozes first, then active work by latest activity. */
   inbox: BoardItem<T>[];
+  /** Snoozed roots, soonest wake first. */
+  snoozed: SnoozedBoardItem<T>[];
   /** Done work, most recently settled first. */
   settled: SettledBoardItem<T>[];
+}
+
+/** Every section's roots, in display order. */
+export function boardRoots<T extends BoardThread>(
+  board: BoardProjection<T>,
+): BoardItem<T>[] {
+  return [...board.pinned, ...board.inbox, ...board.snoozed, ...board.settled];
 }
 
 interface BuildBoardOptions {
   now?: number;
   idleCutoffMs?: number;
   /** User overrides from the plugin store. */
-  overrides?: ReadonlyMap<string, SettledOverride>;
+  overrides?: ReadonlyMap<string, ThreadOverride>;
   /** bb's pinned-root order. Ids it doesn't list sort first, newest first. */
   pinnedOrder?: readonly string[];
   mergedPipelineThreadIds?: ReadonlySet<string>;
@@ -135,8 +152,10 @@ export function threadDisplayTitle(thread: BoardThread): string {
 }
 
 export function statusLabelForItem(
-  item: Pick<BoardItem, "thread" | "lane">,
+  item: Pick<BoardItem, "thread" | "lane" | "wokeAt">,
 ): string | undefined {
+  // The label names what the dot shows.
+  if (rowStatusForItem(item) === "woken") return "Snooze ended";
   const ownLane = laneForThread(item.thread);
   if (item.lane !== ownLane) {
     if (item.lane === "needs-you") return "Subagent needs attention";
@@ -150,15 +169,26 @@ export function statusLabelForItem(
   return undefined;
 }
 
-/** What a row's dot shows. Failed and done split out of their lanes for display only. */
-export type RowStatus = "needs-you" | "failed" | "running" | "done" | "idle";
+/**
+ * What a row's dot shows. Failed and done split out of their lanes for display
+ * only. One dot per row: a woken snooze yields to needs-you and failure, which
+ * ask more of the user, but beats running and unread.
+ */
+export type RowStatus =
+  | "needs-you"
+  | "failed"
+  | "woken"
+  | "running"
+  | "done"
+  | "idle";
 
 export function rowStatusForItem(
-  item: Pick<BoardItem, "thread" | "lane">,
+  item: Pick<BoardItem, "thread" | "lane" | "wokeAt">,
 ): RowStatus {
   if (item.lane === "needs-you") {
     return item.thread.indicator === "unread-error" ? "failed" : "needs-you";
   }
+  if (item.wokeAt !== undefined) return "woken";
   if (item.lane === "running") return "running";
   return item.thread.isUnread ? "done" : "idle";
 }
@@ -184,7 +214,7 @@ export function buildBoard<T extends BoardThread>(
 ): BoardProjection<T> {
   const now = options.now ?? Date.now();
   const idleCutoffMs = options.idleCutoffMs ?? TWO_DAYS_MS;
-  const overrides = options.overrides ?? new Map<string, SettledOverride>();
+  const overrides = options.overrides ?? new Map<string, ThreadOverride>();
   // Every non-archived thread, always. Search and project scoping are display
   // concerns and must never reach classification — see filterBoardForDisplay.
   const visible = threads.filter((thread) => !thread.isArchived);
@@ -271,11 +301,20 @@ export function buildBoard<T extends BoardThread>(
 
   const pinned: BoardItem<T>[] = [];
   const inbox: BoardItem<T>[] = [];
+  const snoozed: SnoozedBoardItem<T>[] = [];
   const settled: SettledBoardItem<T>[] = [];
 
   for (const item of roots) {
     if (item.thread.isPinned) {
       pinned.push(item);
+      continue;
+    }
+    const mark = overrides.get(item.thread.id);
+    // A snooze holds whatever the thread is doing; the server ends it early
+    // on a new request. Once ended it outranks auto-settle until opened.
+    if (mark?.override === "snoozed") {
+      if (mark.until > now) snoozed.push({ ...item, wakeAt: mark.until });
+      else inbox.push({ ...item, wokeAt: mark.until });
       continue;
     }
     // Live work or a raised hand anywhere in the tree always wins: a settled
@@ -284,7 +323,6 @@ export function buildBoard<T extends BoardThread>(
       inbox.push(item);
       continue;
     }
-    const mark = overrides.get(item.thread.id);
     // New attention since the settle voids the mark: the thread has more to
     // say than it did when the user filed it away. A void mark falls through
     // to the ordinary rules rather than pinning the thread to the Inbox —
@@ -337,11 +375,18 @@ export function buildBoard<T extends BoardThread>(
     if (bRank === undefined) return 1;
     return aRank - bRank;
   });
-  inbox.sort(byActivityDesc);
+  // Woken snoozes lead, newest wake first: the user asked to see them now.
+  inbox.sort(
+    (a, b) =>
+      (b.wokeAt ?? 0) - (a.wokeAt ?? 0) || byActivityDesc(a, b),
+  );
+  snoozed.sort(
+    (a, b) => a.wakeAt - b.wakeAt || a.thread.id.localeCompare(b.thread.id),
+  );
   // Settled rows are history, so they order by when the work ended.
   settled.sort(
     (a, b) => b.settledAt - a.settledAt || a.thread.id.localeCompare(b.thread.id),
   );
 
-  return { pinned, inbox, settled };
+  return { pinned, inbox, snoozed, settled };
 }

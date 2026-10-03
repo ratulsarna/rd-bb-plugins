@@ -1,5 +1,6 @@
 import type { PipelinePullRequest } from "@/server";
 import { isolatedRowGestureProps } from "@/components/row-gesture";
+import { formatWakeTime } from "@/lib/snooze";
 import {
   rowStatusForItem,
   statusLabelForItem,
@@ -69,6 +70,7 @@ const STATUS_DOT: Record<RowStatus, { tone: string | null; showsTime: boolean }>
   {
     "needs-you": { tone: "text-attention", showsTime: false },
     failed: { tone: "text-destructive", showsTime: false },
+    woken: { tone: "text-sky-500", showsTime: false },
     running: { tone: "text-success", showsTime: false },
     done: { tone: "text-primary", showsTime: true },
     idle: { tone: null, showsTime: true },
@@ -78,8 +80,23 @@ const STATUS_DOT: Record<RowStatus, { tone: string | null; showsTime: boolean }>
  * The row's status: position never carries it, this slot does. The dot has no
  * tooltip of its own because the row's anchor shows the same label on hover.
  */
-export function StatusSlot({ item, now }: { item: BoardItem; now: number }) {
+export function StatusSlot({
+  item,
+  now,
+  wakeAt,
+}: {
+  item: BoardItem;
+  now: number;
+  /** A snoozed row shows when it comes back in place of its age. */
+  wakeAt?: number;
+}) {
   const { tone, showsTime } = STATUS_DOT[rowStatusForItem(item)];
+  const time =
+    wakeAt !== undefined
+      ? formatWakeTime(wakeAt, now)
+      : showsTime
+        ? formatRelative(item.latestActivityAt, now)
+        : null;
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5">
       {tone && (
@@ -89,9 +106,9 @@ export function StatusSlot({ item, now }: { item: BoardItem; now: number }) {
           className={`size-1.5 shrink-0 rounded-full bg-current ${tone}`}
         />
       )}
-      {showsTime && (
+      {time && (
         <span className="text-xs tabular-nums text-muted-foreground">
-          {formatRelative(item.latestActivityAt, now)}
+          {time}
         </span>
       )}
     </span>

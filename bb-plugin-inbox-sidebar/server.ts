@@ -1,9 +1,11 @@
 // The settled-thread store. This state lives in the plugin's own database,
 // never on bb's thread — uninstalling the plugin takes it with it.
 //
-// Two override kinds, because auto-settle needs both directions: "settled"
-// parks a thread the timer would have kept, and "active" un-parks one the
-// timer would otherwise re-settle on the next render.
+// Three override kinds, one row per thread. Auto-settle needs both
+// directions: "settled" parks a thread the timer would have kept, and
+// "active" un-parks one the timer would otherwise re-settle on the next
+// render. "snoozed" hides a thread until `until`; once that has passed the
+// row is a woken snooze until the thread is opened.
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 // Relative on purpose: a path install loads server.ts directly, where the
@@ -23,6 +25,7 @@ import {
 } from "./lib/project-browser-path";
 
 const threadIdInput = z.object({ threadId: z.string().trim().min(1) });
+const snoozeInput = threadIdInput.extend({ until: z.number().int().positive() });
 const pinnedOrderOutput = z.object({ ids: z.array(z.string()) });
 
 // The automations plugin's overview RPC. Read-only, cross-plugin: this shape
@@ -130,16 +133,27 @@ export const boardRpcContract = defineRpcContract({
     input: z.object({}),
     output: z.object({
       rows: z.array(
-        z.object({
-          threadId: z.string(),
-          override: z.enum(["settled", "active"]),
-          at: z.number(),
-        }),
+        z.discriminatedUnion("override", [
+          z.object({
+            threadId: z.string(),
+            override: z.enum(["settled", "active"]),
+            at: z.number(),
+          }),
+          z.object({
+            threadId: z.string(),
+            override: z.literal("snoozed"),
+            at: z.number(),
+            until: z.number(),
+          }),
+        ]),
       ),
     }),
   },
   settle: { input: threadIdInput, output: z.object({ ok: z.boolean() }) },
   unsettle: { input: threadIdInput, output: z.object({ ok: z.boolean() }) },
+  snooze: { input: snoozeInput, output: z.object({ ok: z.boolean() }) },
+  wake: { input: threadIdInput, output: z.object({ ok: z.boolean() }) },
+  acknowledgeWake: { input: snoozeInput, output: z.object({ ok: z.boolean() }) },
   pinnedOrder: { input: z.object({}), output: pinnedOrderOutput },
   movePinned: {
     input: z.object({
@@ -262,11 +276,9 @@ export const SUBTITLE_CHANNEL = "assistant-subtitles";
 /** Realtime channel the Bots section re-reads its row order on. */
 export const ASSISTANT_ORDER_CHANNEL = "assistant-order";
 
-interface OverrideDbRow {
-  thread_id: string;
-  override: "settled" | "active";
-  at: number;
-}
+type OverrideDbRow =
+  | { thread_id: string; override: "settled" | "active"; at: number; until: null }
+  | { thread_id: string; override: "snoozed"; at: number; until: number };
 
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -291,6 +303,19 @@ export default function plugin(bb: BbPluginApi) {
     `CREATE TABLE IF NOT EXISTS assistant_key_migration (
        done INTEGER NOT NULL
      )`,
+    // Snoozes join settle marks in one row per thread, so a thread is never
+    // settled and snoozed at once. SQLite cannot widen a CHECK in place.
+    `CREATE TABLE thread_overrides_next (
+       thread_id TEXT PRIMARY KEY,
+       override  TEXT NOT NULL CHECK (override IN ('settled', 'active', 'snoozed')),
+       at        INTEGER NOT NULL,
+       until     INTEGER,
+       CHECK ((override = 'snoozed') = (until IS NOT NULL))
+     )`,
+    `INSERT INTO thread_overrides_next (thread_id, override, at)
+       SELECT thread_id, override, at FROM thread_overrides`,
+    `DROP TABLE thread_overrides`,
+    `ALTER TABLE thread_overrides_next RENAME TO thread_overrides`,
   ]);
 
   // Tables that predate identity keys store environment ids in a column of
@@ -498,14 +523,64 @@ export default function plugin(bb: BbPluginApi) {
         .all() as Array<{ identity: string }>
     ).map((row) => row.identity);
 
-  const write = (threadId: string, override: "settled" | "active"): void => {
+  const write = (
+    threadId: string,
+    override: "settled" | "active" | "snoozed",
+    until: number | null = null,
+  ): void => {
     db.prepare(
-      `INSERT INTO thread_overrides (thread_id, override, at) VALUES (?, ?, ?)
+      `INSERT INTO thread_overrides (thread_id, override, at, until) VALUES (?, ?, ?, ?)
        ON CONFLICT(thread_id) DO UPDATE SET
          override = excluded.override,
-         at = excluded.at`,
-    ).run(threadId, override, Date.now());
+         at = excluded.at,
+         until = excluded.until`,
+    ).run(threadId, override, Date.now(), until);
     bb.realtime.publish(SETTLED_CHANNEL, { threadId });
+  };
+
+  // Ends the live snoozes among `threadIds` now. `occurredAt` is when the
+  // cause happened: events reach us late, so a request that arrived before
+  // the user snoozed must not end that snooze.
+  const wakeSnoozed = (threadIds: readonly string[], occurredAt: number): void => {
+    const now = Date.now();
+    const placeholders = threadIds.map(() => "?").join(", ");
+    const woken = db
+      .prepare(
+        `UPDATE thread_overrides SET until = ?
+         WHERE thread_id IN (${placeholders})
+           AND override = 'snoozed' AND until > ? AND at <= ?
+         RETURNING thread_id`,
+      )
+      .all(now, ...threadIds, now, occurredAt) as Array<{ thread_id: string }>;
+    for (const row of woken) {
+      bb.realtime.publish(SETTLED_CHANNEL, { threadId: row.thread_id });
+    }
+  };
+
+  // A question or failure anywhere under a snoozed root wakes it, the same
+  // way the root's rolled-up dot would turn needs-you.
+  const wakeForNeed = async (threadId: string, occurredAt: number) => {
+    const live = db
+      .prepare(
+        `SELECT 1 FROM thread_overrides WHERE override = 'snoozed' AND until > ? LIMIT 1`,
+      )
+      .get(Date.now());
+    if (!live) return;
+    const lineage = [threadId];
+    try {
+      let parentId = (await bb.sdk.threads.get({ threadId })).parentThreadId;
+      while (parentId && !lineage.includes(parentId)) {
+        lineage.push(parentId);
+        parentId = (await bb.sdk.threads.get({ threadId: parentId }))
+          .parentThreadId;
+      }
+    } catch (error) {
+      // Wake what we reached; a missing ancestor must not keep the thread asleep.
+      bb.log.warn(
+        `snooze wake: ancestor lookup failed for ${threadId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    wakeSnoozed(lineage, occurredAt);
   };
 
   // Shared by the rpc (sidebar editor) and the CLI (agents). Resolves the
@@ -659,13 +734,13 @@ export default function plugin(bb: BbPluginApi) {
     async listOverrides() {
       const rows = (
         db
-          .prepare(`SELECT thread_id, override, at FROM thread_overrides`)
+          .prepare(`SELECT thread_id, override, at, until FROM thread_overrides`)
           .all() as OverrideDbRow[]
-      ).map((row) => ({
-        threadId: row.thread_id,
-        override: row.override,
-        at: row.at,
-      }));
+      ).map((row) =>
+        row.override === "snoozed"
+          ? { threadId: row.thread_id, override: row.override, at: row.at, until: row.until }
+          : { threadId: row.thread_id, override: row.override, at: row.at },
+      );
       return { rows };
     },
     async settle({ threadId }) {
@@ -674,6 +749,30 @@ export default function plugin(bb: BbPluginApi) {
     },
     async unsettle({ threadId }) {
       write(threadId, "active");
+      return { ok: true };
+    },
+    async snooze({ threadId, until }) {
+      if (until <= Date.now()) throw new Error("Snooze time is in the past");
+      write(threadId, "snoozed", until);
+      return { ok: true };
+    },
+    async wake({ threadId }) {
+      wakeSnoozed([threadId], Date.now());
+      return { ok: true };
+    },
+    // Opening a woken thread hands it back to the ordinary rules as "active",
+    // which restarts the quiet clock: a week-long snooze must not auto-settle
+    // the moment it is opened. Keyed on the `until` the client saw, so a late
+    // acknowledgement cannot undo a newer snooze or settle.
+    async acknowledgeWake({ threadId, until }) {
+      const now = Date.now();
+      const changed = db
+        .prepare(
+          `UPDATE thread_overrides SET override = 'active', at = ?, until = NULL
+           WHERE thread_id = ? AND override = 'snoozed' AND until = ? AND until <= ?`,
+        )
+        .run(now, threadId, until, now).changes;
+      if (changed > 0) bb.realtime.publish(SETTLED_CHANNEL, { threadId });
       return { ok: true };
     },
     // Pin order is bb's, not ours: we read its list and write through its
@@ -847,4 +946,14 @@ export default function plugin(bb: BbPluginApi) {
     );
     bb.realtime.publish(SETTLED_CHANNEL, { threadId: thread.id });
   });
+
+  // Our own needs-you signals: a pending request or a failure. Both events
+  // fire only for a new one, so a request already open when the user
+  // snoozed never wakes the thread.
+  bb.events.on("interaction.pending", ({ thread, interaction }) =>
+    wakeForNeed(thread.id, interaction.createdAt),
+  );
+  bb.events.on("thread.failed", ({ thread }) =>
+    wakeForNeed(thread.id, thread.updatedAt),
+  );
 }

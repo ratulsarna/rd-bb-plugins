@@ -12,6 +12,7 @@ import {
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import {
   configureFakeSdk,
+  emitRealtime,
   pullRequestLookupCalls,
   registrations,
   resolvePendingRpc,
@@ -24,6 +25,7 @@ import {
 } from "./sdk-fake";
 import { DAY, HOUR, NOW, project as sidebarProject, thread } from "./fixtures";
 import type { BoardThread } from "@/lib/lanes";
+import { formatWakeTime } from "@/lib/snooze";
 // Importing the plugin entry is what registers the slots, exactly as bb loads
 // it — so these tests exercise the component the host would actually mount.
 import "@/app";
@@ -1349,7 +1351,53 @@ describe("row context menu", () => {
       within(menu)
         .getAllByRole("menuitem")
         .map((item) => item.textContent),
-    ).toEqual(["Mark unread", "Pin", "Rename", "Archive", "Delete"]);
+    ).toEqual([
+      "Snooze…",
+      "Settle",
+      "Mark unread",
+      "Pin",
+      "Rename",
+      "Archive",
+      "Delete",
+    ]);
+  });
+
+  // On a phone this menu (long-press) is the only way to snooze or settle,
+  // and opening the row by accident would close the drawer on the user.
+  it("snoozes from the menu through the picker without opening the thread", async () => {
+    configureFakeSdk({ threads: [thread("thr_nap", { title: "Nap me" })] });
+    renderList();
+
+    fireEvent.contextMenu(await screen.findByText("Nap me"));
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    fireEvent.click(within(menu).getByText("Snooze…"));
+
+    const picker = await screen.findByRole("dialog", { name: "Snooze until" });
+    await waitFor(() => expect(picker.contains(document.activeElement)).toBe(true));
+    const before = Date.now();
+    fireEvent.click(within(picker).getByRole("button", { name: "1 hour" }));
+
+    const call = rpcCalls.find((c) => c.method === "snooze");
+    expect(call?.input).toMatchObject({ threadId: "thr_nap" });
+    const until = (call?.input as { until: number }).until;
+    expect(until - before).toBeGreaterThanOrEqual(HOUR - 1_000);
+    expect(until - before).toBeLessThanOrEqual(HOUR + 1_000);
+    expect(screen.queryByRole("dialog", { name: "Snooze until" })).toBeNull();
+    expect(sidebarActionCalls.some((c) => c.method === "open")).toBe(false);
+  });
+
+  it("settles from the menu without opening the thread", async () => {
+    configureFakeSdk({ threads: [thread("thr_done", { title: "Done here" })] });
+    renderList();
+
+    fireEvent.contextMenu(await screen.findByText("Done here"));
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    fireEvent.click(within(menu).getByText("Settle"));
+
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({ method: "settle", input: { threadId: "thr_done" } }),
+    );
+    expect(sidebarActionCalls.some((c) => c.method === "open")).toBe(false);
   });
 
   it("starts inline rename from the thread menu", async () => {
@@ -1750,4 +1798,88 @@ it.each(["down", "up", "same then down"])("drags any retained conversation as on
   const expected = direction === "up" ? ["assist-1:sam", "assist-1:forge"] : ["assist-1:forge", "assist-1:sam"];
   await waitFor(() => expect(rpcCalls.filter((call) => call.method === "setAssistantOrder").map((call) => call.input)).toEqual([{ identities: expected }]));
   await waitFor(() => expect(ids()).toEqual(direction === "up" ? ["sam-server", "sam-mac", "forge-server", "forge-mac"] : ["forge-server", "forge-mac", "sam-server", "sam-mac"]));
+});
+
+describe("snooze", () => {
+  it("keeps snoozed rows shut away, shows when they return, and wakes one to the top", async () => {
+    const until = Date.now() + 3 * HOUR;
+    configureFakeSdk({
+      threads: [
+        thread("thr_later", { title: "Later", latestAttentionAt: NOW - 3 * DAY }),
+        thread("thr_fresh", { title: "Fresh" }),
+      ],
+      overrides: [{ threadId: "thr_later", override: "snoozed", at: NOW - HOUR, until }],
+    });
+    renderList();
+
+    const snoozed = await screen.findByRole("region", { name: "Snoozed" });
+    expect(within(snoozed).queryByText("Later")).toBeNull();
+    // dnd-kit swallows every click for 50 ms after a drag ends, and the drag
+    // tests above can end just before this one starts.
+    await act(() => new Promise((resolve) => window.setTimeout(resolve, 60)));
+    fireEvent.click(within(snoozed).getByRole("button", { name: "Snoozed (1)" }));
+    const row = within(snoozed).getByText("Later").closest("li")!;
+    expect(within(row).getByText(formatWakeTime(until, Date.now()))).toBeDefined();
+
+    fireEvent.click(within(row).getByRole("button", { name: "Wake" }));
+    expect(rpcCalls).toContainEqual({ method: "wake", input: { threadId: "thr_later" } });
+    // The wake is stamped after the board last read the clock; it must still
+    // land now, not at the next minute tick.
+    act(() => emitRealtime("settled"));
+
+    const inbox = screen.getByRole("region", { name: "Inbox" });
+    await waitFor(() =>
+      expect(
+        within(inbox)
+          .getAllByRole("link")
+          .map((link) => link.getAttribute("data-sidebar-thread-id")),
+      ).toEqual(["thr_later", "thr_fresh"]),
+    );
+    expect(within(inbox).getByRole("img", { name: "Snooze ended" })).toBeDefined();
+    expect(screen.queryByRole("region", { name: "Snoozed" })).toBeNull();
+  });
+
+  it("acknowledges a woken thread once when it is the open thread", async () => {
+    const until = NOW - HOUR;
+    configureFakeSdk({
+      threads: [thread("thr_woke", { title: "Woke" })],
+      overrides: [{ threadId: "thr_woke", override: "snoozed", at: NOW - DAY, until }],
+    });
+    const view = renderList({ activeThreadId: "thr_woke" });
+
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({
+        method: "acknowledgeWake",
+        input: { threadId: "thr_woke", until },
+      }),
+    );
+    view.rerender(listElement({ activeThreadId: "thr_woke" }));
+    act(() => emitRealtime("settled"));
+    await act(async () => {});
+    expect(rpcCalls.filter((c) => c.method === "acknowledgeWake")).toHaveLength(1);
+  });
+
+  // Pinned rows never carry the woken marker, so the acknowledgement must not
+  // depend on where the row sits: unpinned later, it would come back woken.
+  it("acknowledges an expired snooze on a pinned thread open in a split pane", async () => {
+    const until = NOW - HOUR;
+    configureFakeSdk({
+      threads: [thread("thr_pin", { title: "Pinned nap", isPinned: true })],
+      overrides: [{ threadId: "thr_pin", override: "snoozed", at: NOW - DAY, until }],
+      splitLayout: {
+        panes: [
+          { paneId: "a", rect: { x: 0, y: 0, width: 0.5, height: 1 }, threadId: null, isFocused: true },
+          { paneId: "b", rect: { x: 0.5, y: 0, width: 0.5, height: 1 }, threadId: "thr_pin", isFocused: false },
+        ],
+      },
+    });
+    renderList();
+
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({
+        method: "acknowledgeWake",
+        input: { threadId: "thr_pin", until },
+      }),
+    );
+  });
 });
