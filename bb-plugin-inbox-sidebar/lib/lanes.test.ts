@@ -3,6 +3,7 @@ import {
   buildBoard,
   canSettle,
   laneForThread,
+  rowStatusForItem,
   statusLabelForItem,
   TWO_DAYS_MS,
   type BoardThread,
@@ -552,6 +553,44 @@ describe("laneForThread", () => {
         lane: "running",
       }),
     ).toBe("Workflow running");
+  });
+});
+
+describe("rowStatusForItem", () => {
+  it("keeps red for the thread that failed, not the parent it rolls up to", () => {
+    const [parent] = buildBoard(
+      [
+        thread("parent"),
+        thread("child", { parentThreadId: "parent", indicator: "unread-error" }),
+      ],
+      { now: NOW },
+    ).inbox;
+    expect(rowStatusForItem(parent!)).toBe("needs-you");
+    expect(rowStatusForItem(parent!.children[0]!)).toBe("failed");
+  });
+
+  it("lets live state beat unread, and unread mark only finished rows", () => {
+    const status = (overrides: Partial<BoardThread>) => {
+      const t = thread("t", overrides);
+      return rowStatusForItem({ thread: t, lane: laneForThread(t) });
+    };
+    expect(status({ isUnread: true, indicator: "runtime" })).toBe("running");
+    expect(status({ isUnread: true })).toBe("done");
+    expect(status({ isUnread: true, parentThreadId: "parent" })).toBe(
+      "needs-you",
+    );
+    expect(status({})).toBe("idle");
+  });
+
+  it("labels an unread finished row, after the host's own label", () => {
+    const unread = thread("t", { isUnread: true });
+    expect(statusLabelForItem({ thread: unread, lane: "idle" })).toBe("Unread");
+    expect(
+      statusLabelForItem({
+        thread: { ...unread, indicatorLabel: "Finished" },
+        lane: "idle",
+      }),
+    ).toBe("Finished");
   });
 });
 

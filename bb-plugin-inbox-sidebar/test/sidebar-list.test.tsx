@@ -154,7 +154,10 @@ describe("BoardSidebar host contract", () => {
     expect(machine.className).toContain("flex-1");
     expect(machine.className).toContain("truncate");
     expect(project.parentElement?.className).toContain("whitespace-nowrap");
-    expect(within(row).getByText("Running").className).toContain("shrink-0");
+    expect(
+      within(row).getByRole("img", { name: "Thread running" }).parentElement
+        ?.className,
+    ).toContain("shrink-0");
 
     fireEvent.click(rowLink);
     fireEvent.click(titleLabel);
@@ -181,6 +184,44 @@ describe("BoardSidebar host contract", () => {
       sidebarActionCalls.filter((call) => call.method === "open"),
     ).toHaveLength(4);
     expect(navigated).toBe(4);
+  });
+
+  it("shows status as one dot, keeps age for finished rows, and fades only quiet ones", async () => {
+    const at = NOW - 3 * HOUR;
+    configureFakeSdk({
+      threads: [
+        thread("pending", { title: "Pending", hasPendingInteraction: true, latestAttentionAt: at }),
+        thread("failed", { title: "Failed", indicator: "unread-error", indicatorLabel: "Run failed", isUnread: true, latestAttentionAt: at }),
+        thread("running", { title: "Running unread", indicator: "runtime", isUnread: true, latestAttentionAt: at }),
+        thread("done", { title: "Done", isUnread: true, latestAttentionAt: at }),
+        thread("idle", { title: "Idle", latestAttentionAt: at }),
+        thread("selected", { title: "Selected", latestAttentionAt: at }),
+      ],
+    });
+    renderList({ activeThreadId: "selected" });
+
+    const expected = [
+      ["Pending", "Thread needs attention", "text-attention", false, false],
+      ["Failed", "Run failed", "text-destructive", false, false],
+      ["Running unread", "Thread running", "text-success", false, false],
+      ["Done", "Unread", "text-primary", true, false],
+      ["Idle", null, null, true, true],
+      ["Selected", null, null, true, false],
+    ] as const;
+    for (const [title, label, tone, showsAge, faded] of expected) {
+      const row = (await screen.findByRole("link", { name: title }))
+        .parentElement!;
+      const dots = row.querySelectorAll("span[role=img]");
+      expect(dots, title).toHaveLength(label ? 1 : 0);
+      if (label) {
+        expect(dots[0]!.getAttribute("aria-label"), title).toBe(label);
+        expect(dots[0]!.getAttribute("class"), title).toContain(tone);
+      }
+      expect(within(row).queryByText("3h") !== null, title).toBe(showsAge);
+      expect(row.className.includes("opacity-60"), title).toBe(faded);
+    }
+    expect(screen.queryByText("Needs you")).toBeNull();
+    expect(screen.queryByText("Running")).toBeNull();
   });
 
   it("links only open and draft PRs without opening the thread row", async () => {

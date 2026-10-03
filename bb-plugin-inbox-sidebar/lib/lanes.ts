@@ -146,7 +146,21 @@ export function statusLabelForItem(
   if (isUnreadSettledChild(item.thread)) return "Unread subagent result";
   if (ownLane === "needs-you") return "Thread needs attention";
   if (ownLane === "running") return "Thread running";
+  if (item.thread.isUnread) return "Unread";
   return undefined;
+}
+
+/** What a row's dot shows. Failed and done split out of their lanes for display only. */
+export type RowStatus = "needs-you" | "failed" | "running" | "done" | "idle";
+
+export function rowStatusForItem(
+  item: Pick<BoardItem, "thread" | "lane">,
+): RowStatus {
+  if (item.lane === "needs-you") {
+    return item.thread.indicator === "unread-error" ? "failed" : "needs-you";
+  }
+  if (item.lane === "running") return "running";
+  return item.thread.isUnread ? "done" : "idle";
 }
 
 /**
