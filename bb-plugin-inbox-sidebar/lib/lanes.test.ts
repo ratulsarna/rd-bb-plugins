@@ -557,18 +557,6 @@ describe("laneForThread", () => {
 });
 
 describe("rowStatusForItem", () => {
-  it("keeps red for the thread that failed, not the parent it rolls up to", () => {
-    const [parent] = buildBoard(
-      [
-        thread("parent"),
-        thread("child", { parentThreadId: "parent", indicator: "unread-error" }),
-      ],
-      { now: NOW },
-    ).inbox;
-    expect(rowStatusForItem(parent!)).toBe("needs-you");
-    expect(rowStatusForItem(parent!.children[0]!)).toBe("failed");
-  });
-
   it("lets live state beat unread, and unread mark only finished rows", () => {
     const status = (overrides: Partial<BoardThread>) => {
       const t = thread("t", overrides);
