@@ -91,6 +91,9 @@ export function SidebarRow({
   const title = threadDisplayTitle(item.thread);
   const expanded = expandedIds.has(item.thread.id);
   const isActive = item.thread.id === activeThreadId;
+  // Unread beats quiet: an unread running row stays bright.
+  const quiet =
+    item.lane !== "needs-you" && !item.thread.isUnread && !isActive;
   const projectName =
     projectNames.get(item.thread.projectId) ?? "Unknown project";
   const machineName = item.thread.host?.name ?? "Unknown machine";
@@ -158,6 +161,8 @@ export function SidebarRow({
           ref={setInteractionRef}
           className={`group/row relative flex h-[54px] flex-col justify-center gap-0.5 rounded-md pr-1.5 text-xs ${
             isActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60"
+          } ${
+            quiet ? "opacity-60 hover:opacity-100 focus-within:opacity-100" : ""
           } ${reorder ? "select-none touch-manipulation" : ""}`}
           style={{ paddingLeft: `${10 + depth * 12}px` }}
           {...(reorder?.attributes ?? {})}
@@ -249,12 +254,6 @@ export function SidebarRow({
               {machineName}
             </span>
             <span className="pointer-events-none relative flex shrink-0 items-center gap-1.5">
-              {item.thread.isUnread && (
-                <span
-                  aria-label="Unread"
-                  className="size-1.5 shrink-0 rounded-full bg-primary"
-                />
-              )}
               <span className={action ? "group-hover/row:opacity-0" : undefined}>
                 <StatusSlot item={item} now={now} />
               </span>

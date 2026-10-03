@@ -1,6 +1,11 @@
 import type { PipelinePullRequest } from "@/server";
 import { isolatedRowGestureProps } from "@/components/row-gesture";
-import { statusLabelForItem, type BoardItem } from "@/lib/lanes";
+import {
+  rowStatusForItem,
+  statusLabelForItem,
+  type BoardItem,
+  type RowStatus,
+} from "@/lib/lanes";
 
 export function formatRelative(timestamp: number, now: number): string {
   const elapsed = Math.max(0, now - timestamp);
@@ -59,34 +64,36 @@ export function OpenPrLink({
   );
 }
 
-/** The row's status: position never carries it, this slot does. */
+// Time ago shows only where there is no live state to report.
+const STATUS_DOT: Record<RowStatus, { tone: string | null; showsTime: boolean }> =
+  {
+    "needs-you": { tone: "text-attention", showsTime: false },
+    failed: { tone: "text-destructive", showsTime: false },
+    running: { tone: "text-success", showsTime: false },
+    done: { tone: "text-primary", showsTime: true },
+    idle: { tone: null, showsTime: true },
+  };
+
+/**
+ * The row's status: position never carries it, this slot does. The dot has no
+ * tooltip of its own because the row's anchor shows the same label on hover.
+ */
 export function StatusSlot({ item, now }: { item: BoardItem; now: number }) {
-  const label = statusLabelForItem(item);
-  if (item.lane === "needs-you") {
-    return (
-      <span
-        className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-attention"
-        title={label}
-      >
-        <span aria-hidden className="size-1.5 rounded-full bg-current" />
-        Needs you
-      </span>
-    );
-  }
-  if (item.lane === "running") {
-    return (
-      <span
-        className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-success"
-        title={label}
-      >
-        <span aria-hidden className="size-1.5 rounded-full bg-current" />
-        Running
-      </span>
-    );
-  }
+  const { tone, showsTime } = STATUS_DOT[rowStatusForItem(item)];
   return (
-    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-      {formatRelative(item.latestActivityAt, now)}
+    <span className="inline-flex shrink-0 items-center gap-1.5">
+      {tone && (
+        <span
+          role="img"
+          aria-label={statusLabelForItem(item)}
+          className={`size-1.5 shrink-0 rounded-full bg-current ${tone}`}
+        />
+      )}
+      {showsTime && (
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {formatRelative(item.latestActivityAt, now)}
+        </span>
+      )}
     </span>
   );
 }
