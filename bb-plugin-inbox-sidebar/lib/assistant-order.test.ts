@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { assistantDisplayOrder, orderableIds } from "./assistant-order";
+import { assistantDisplayOrder, orderableIdentities } from "./assistant-order";
 
-const row = (environmentId: string | null, updatedAt: number) => ({
-  environmentId,
+const row = (identity: string | null, updatedAt: number) => ({
+  identity,
   updatedAt,
 });
 
@@ -11,7 +11,7 @@ describe("assistantDisplayOrder", () => {
     const rows = [row("busy", 300), row("quiet", 100), row("mid", 200)];
     expect(
       assistantDisplayOrder(rows, ["quiet", "mid", "busy"]).map(
-        (r) => r.environmentId,
+        (r) => r.identity,
       ),
     ).toEqual(["quiet", "mid", "busy"]);
   });
@@ -24,7 +24,7 @@ describe("assistantDisplayOrder", () => {
       row(null, 150),
     ];
     expect(
-      assistantDisplayOrder(rows, ["placed"]).map((r) => r.environmentId),
+      assistantDisplayOrder(rows, ["placed"]).map((r) => r.identity),
     ).toEqual(["placed", "new-a", null, "new-b"]);
   });
 
@@ -32,7 +32,7 @@ describe("assistantDisplayOrder", () => {
     const rows = [row("only", 10)];
     expect(
       assistantDisplayOrder(rows, ["gone-1", "gone-2"]).map(
-        (r) => r.environmentId,
+        (r) => r.identity,
       ),
     ).toEqual(["only"]);
   });
@@ -40,14 +40,14 @@ describe("assistantDisplayOrder", () => {
   it("falls back to activity when nothing is saved", () => {
     const rows = [row("old", 1), row("fresh", 9), row("mid", 5)];
     expect(
-      assistantDisplayOrder(rows, []).map((r) => r.environmentId),
+      assistantDisplayOrder(rows, []).map((r) => r.identity),
     ).toEqual(["fresh", "mid", "old"]);
   });
 });
 
-describe("orderableIds", () => {
+describe("orderableIdentities", () => {
   it("writes back only rows with a durable key, in display order", () => {
     const display = [row("a", 3), row(null, 2), row("b", 1)];
-    expect(orderableIds(display)).toEqual(["a", "b"]);
+    expect(orderableIdentities(display)).toEqual(["a", "b"]);
   });
 });

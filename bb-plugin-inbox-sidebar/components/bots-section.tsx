@@ -5,16 +5,17 @@ import {
   experimental_useSidebarThreads as useSidebarThreads,
   experimental_useSidebarThreadSplit as useSidebarThreadSplit,
   type PluginSidebarThread,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import { ComposeDialog } from "@/components/compose-dialog";
 import { CollapsibleSection } from "@/components/section";
 import { SortableRows } from "@/components/sortable-rows";
 import type { RowReorder } from "@/components/sidebar-row";
-import { assistantDisplayOrder, orderableIds } from "@/lib/assistant-order";
+import { assistantDisplayOrder, orderableIdentities } from "@/lib/assistant-order";
+import { ASSISTANTS_PROJECT_NAME } from "@/lib/assistant-identity";
 import { useAssistantAvatars } from "@/lib/use-assistant-avatars";
+import { useAssistantIdentities } from "@/lib/use-assistant-identities";
 import { useAssistantOrder } from "@/lib/use-assistant-order";
 import { useAssistantSubtitles } from "@/lib/use-assistant-subtitles";
-import { ASSISTANTS_PROJECT_NAME } from "@/lib/use-board-state";
 
 interface BotsSectionProps {
   activeThreadId: string | null;
@@ -27,7 +28,7 @@ interface BotsSectionProps {
 const PREVIEW_COUNT = 3;
 
 /**
- * The assistant fleet as the board's top section: one row per assistant,
+ * The assistant fleet as the board's top section: one row per root conversation,
  * like a messenger's conversation list. Rows order by hand — drag one, the
  * whole order lands in the plugin's store — and new assistants append at the
  * bottom by activity until placed.
@@ -60,6 +61,26 @@ export function BotsSection({
 
   const isSearching = searchQuery.trim().length > 0;
 
+  // Environments behind the fleet's rows; identities are derived for all of
+  // them in one round-trip.
+  const environmentIds = useMemo(
+    () =>
+      project
+        ? threads.flatMap(
+            (thread) =>
+              thread.projectId === project.id &&
+              thread.parentThreadId === null &&
+              !thread.isArchived &&
+              thread.environment?.id
+                ? [thread.environment.id]
+                : [],
+          )
+        : [],
+    [project, threads],
+  );
+  const identitiesApi = useAssistantIdentities(environmentIds);
+  const identities = identitiesApi.identities;
+
   const allRows = useMemo(() => {
     if (!project) return [];
     return assistantDisplayOrder(
@@ -73,11 +94,17 @@ export function BotsSection({
         .map((thread) => ({
           thread,
           environmentId: thread.environment?.id ?? null,
+          // No stable identity (mishomed, no source on this host) falls back
+          // to the environment id, exactly what the stores key it by.
+          identity: thread.environment?.id
+            ? (identities.get(thread.environment.id) ??
+              thread.environment.id)
+            : null,
           updatedAt: thread.updatedAt,
         })),
       order.ids,
     );
-  }, [order.ids, project, threads]);
+  }, [identities, order.ids, project, threads]);
 
   // Row identity is the thread id — always unique. Environment ids are NOT:
   // an automation run in an assistant's home shares its environment, and two
@@ -92,15 +119,15 @@ export function BotsSection({
   );
 
   // A dropped row's projection arrives as thread ids; the store wants the
-  // durable environment ids in that order.
-  const environmentOrderOf = useCallback(
+  // durable assistant identities in that order.
+  const identityOrderOf = useCallback(
     (threadIds: readonly string[]) => {
       const byThread = new Map(
-        allRows.map((row) => [row.thread.id, row.environmentId]),
+        allRows.map((row) => [row.thread.id, row.identity]),
       );
-      return orderableIds(
+      return orderableIdentities(
         threadIds.map((threadId) => ({
-          environmentId: byThread.get(threadId) ?? null,
+          identity: byThread.get(threadId) ?? null,
           updatedAt: 0,
         })),
       );
@@ -128,14 +155,16 @@ export function BotsSection({
     setRestartThreadId(threadId);
   }, []);
 
-  const avatars = useAssistantAvatars(
-    useMemo(() => orderableIds(allRows), [allRows]),
-  );
+  const avatars = useAssistantAvatars(environmentIds);
 
   const moveBot = useCallback(
-    (_activeId: string, projection: { ids: string[] }) =>
-      order.set(environmentOrderOf(projection.ids)),
-    [environmentOrderOf, order],
+    (_activeId: string, projection: { ids: string[] }) => {
+      // A drag that lands before identities resolve would store environment
+      // ids over the saved order; the rows are not draggable until then.
+      if (!identitiesApi.ready) return;
+      order.set(identityOrderOf(projection.ids));
+    },
+    [identitiesApi.ready, identityOrderOf, order],
   );
 
   // A search may only match a bot the cap hides — matches always show.
@@ -168,7 +197,9 @@ export function BotsSection({
           items={visibleRows}
           idOf={(row) => row.thread.id}
           fullOrder={fullOrder}
-          enabled={order.ready && !isCompactViewport}
+          enabled={
+            order.ready && identitiesApi.ready && !isCompactViewport
+          }
           movePending={order.moving}
           onMove={moveBot}
         >
@@ -182,8 +213,8 @@ export function BotsSection({
                   : undefined) ?? null
               }
               subtitle={
-                (row.environmentId
-                  ? subtitles.get(row.environmentId)
+                (row.identity
+                  ? subtitles.get(row.identity)
                   : undefined) ?? null
               }
               isActive={row.thread.id === activeThreadId}
@@ -252,7 +283,7 @@ function AssistantRow({
             data-sidebar-thread-shortcut-target=""
             data-sidebar-thread-id={thread.id}
             href="#"
-            aria-label={thread.indicatorLabel ?? name}
+            aria-label={[thread.indicatorLabel ?? name, thread.host?.name].filter(Boolean).join(" — ")}
             aria-current={isActive ? "true" : undefined}
             draggable={false}
             onClick={(event) => {
@@ -293,6 +324,7 @@ function AssistantRow({
               >
                 {name}
               </span>
+              {thread.host && <span className="block truncate text-[10px] text-muted-foreground/70">{thread.host.name}</span>}
               {isEditingSubtitle ? (
                 <input
                   autoFocus
@@ -357,7 +389,7 @@ function AssistantRow({
       <button
         type="button"
         title="New thread"
-        aria-label={`New thread with ${name}`}
+        aria-label={`New thread with ${name}${thread.host ? ` on ${thread.host.name}` : ""}`}
         onClick={() => onRestart(thread.id)}
         className="shrink-0 rounded-md px-1.5 py-2 text-[13px] text-muted-foreground/50 hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >

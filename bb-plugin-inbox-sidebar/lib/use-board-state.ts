@@ -1,12 +1,13 @@
+import type { PipelinePullRequest } from "@/server";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   experimental_useSidebarThreads as useSidebarThreads,
   type PluginSidebarProject,
-  type PluginSidebarPullRequest,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import { usePipelinePullRequests } from "@/lib/use-pipeline-pull-requests";
 import { useSettledOverrides } from "@/lib/use-settled";
 import { usePinnedOrder } from "@/lib/use-pinned-order";
+import { ASSISTANTS_PROJECT_NAME } from "@/lib/assistant-identity";
 import {
   buildBoard,
   type BoardProjection,
@@ -20,7 +21,7 @@ export interface BoardState {
   projects: readonly PluginSidebarProject[];
   /** The full projection over every non-archived thread. Never filtered. */
   board: BoardProjection<BoardThread>;
-  pullRequests: ReadonlyMap<string, PluginSidebarPullRequest | null>;
+  pullRequests: ReadonlyMap<string, PipelinePullRequest | null>;
   now: number;
   settle(threadId: string): void;
   unsettle(threadId: string): void;
@@ -41,13 +42,9 @@ export interface BoardState {
  *
  * It deliberately takes no search or project input. Whatever the surface hides
  * on screen, the classification underneath is computed over every thread.
+ * The assistant fleet is excluded here — it renders as the board's own Bots
+ * section, not as board rows.
  */
-/**
- * The assistant fleet renders as the board's own Bots section, not as board
- * rows. Its project and threads never reach the lanes.
- */
-export const ASSISTANTS_PROJECT_NAME = "assistants";
-
 export function useBoardState(): BoardState {
   const {
     status: threadStatus,

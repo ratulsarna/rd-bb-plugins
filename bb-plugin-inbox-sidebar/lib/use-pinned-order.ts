@@ -3,7 +3,7 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import type { boardRpcContract } from "@/server";
 import { shouldRefreshOnReconnect } from "@/lib/reconnect";
 

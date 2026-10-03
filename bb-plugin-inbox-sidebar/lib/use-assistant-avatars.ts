@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useRpc } from "@bb/plugin-sdk/app";
+import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { boardRpcContract } from "@/server";
 
 /**

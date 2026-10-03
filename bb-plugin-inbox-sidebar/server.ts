@@ -4,11 +4,13 @@
 // Two override kinds, because auto-settle needs both directions: "settled"
 // parks a thread the timer would have kept, and "active" un-parks one the
 // timer would otherwise re-settle on the next render.
-import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 // Relative on purpose: a path install loads server.ts directly, where the
 // bundler's "@/" alias does not exist.
 import { pinnedRootIds } from "./lib/pinned-order";
+import { homeSegmentUnder } from "./lib/assistant-identity";
+import { assistantConversationContext, assistantDestinationSchema, assistantMachineSchema } from "./lib/assistant-conversation";
 import {
   getProjectPathError,
   normalizeProjectPath,
@@ -152,6 +154,12 @@ export const boardRpcContract = defineRpcContract({
       title: z.string().nullable(),
       projectId: z.string(),
       environmentId: z.string(),
+      /** Stable across machines; null when the home cannot be derived. */
+      identity: z.string().nullable(),
+      sourceHostId: z.string(),
+      machines: z.array(assistantMachineSchema),
+      /** The mapped journal vault on the source host. */
+      vaultPath: z.string().nullable(),
       providerId: z.string(),
       model: z.string().optional(),
       reasoningLevel: z.string().optional(),
@@ -164,6 +172,10 @@ export const boardRpcContract = defineRpcContract({
       ),
     }),
   },
+  assistantDestination: {
+    input: z.object({ threadId: z.string().trim().min(1), hostId: z.string().trim().min(1) }),
+    output: assistantDestinationSchema,
+  },
   listAssistantAvatars: {
     input: z.object({
       environmentIds: z.array(z.string().trim().min(1)).max(100),
@@ -174,11 +186,21 @@ export const boardRpcContract = defineRpcContract({
       ),
     }),
   },
+  assistantIdentities: {
+    input: z.object({
+      environmentIds: z.array(z.string().trim().min(1)).max(100),
+    }),
+    output: z.object({
+      rows: z.array(
+        z.object({ environmentId: z.string(), identity: z.string() }),
+      ),
+    }),
+  },
   listAssistantSubtitles: {
     input: z.object({}),
     output: z.object({
       rows: z.array(
-        z.object({ environmentId: z.string(), subtitle: z.string() }),
+        z.object({ identity: z.string(), subtitle: z.string() }),
       ),
     }),
   },
@@ -188,7 +210,7 @@ export const boardRpcContract = defineRpcContract({
   },
   setAssistantOrder: {
     input: z.object({
-      environmentIds: z.array(z.string().trim().min(1)).max(200),
+      identities: z.array(z.string().trim().min(1)).max(200),
     }),
     output: z.object({ ids: z.array(z.string()) }),
   },
@@ -203,12 +225,29 @@ export const boardRpcContract = defineRpcContract({
     input: z.object({
       replaceThreadId: z.string().trim().min(1),
       title: z.string().nullable(),
-      request: z.unknown(),
-      homePath: z.string().trim().min(1).optional(),
+      request: z.object({
+        projectId: z.string().min(1),
+        providerId: z.string().min(1),
+        model: z.string(),
+        reasoningLevel: z.string(),
+        permissionMode: z.string(),
+        serviceTier: z.string().optional(),
+        executionInputSources: z.unknown(),
+        environment: z.unknown(),
+        input: z.array(z.unknown()).min(1),
+        sendAt: z.number().optional(),
+      }),
+      destinationHostId: z.string().trim().min(1),
+      homePath: z.string().min(1),
+      archiveSource: z.boolean(),
     }),
-    output: z.object({ newThreadId: z.string() }),
+    output: z.object({ newThreadId: z.string(), archivedSource: z.boolean(), archiveError: z.string().optional() }),
   },
 });
+
+export type PipelinePullRequest = NonNullable<
+  z.infer<typeof boardRpcContract.threadPullRequests.output>["rows"][number]["pullRequest"]
+>;
 
 /** Realtime channel the board re-reads overrides on. */
 export const SETTLED_CHANNEL = "settled";
@@ -236,29 +275,215 @@ export default function plugin(bb: BbPluginApi) {
        override  TEXT NOT NULL CHECK (override IN ('settled', 'active')),
        at        INTEGER NOT NULL
      )`,
-    // Keyed by environment, not thread: an assistant is its home environment,
-    // and threads are disposable — a subtitle must survive a thread restart.
+    // Applied SQL is hashed; preserve the historical column names here.
+    // The guarded rename below converts them to stable identity keys.
     `CREATE TABLE IF NOT EXISTS assistant_subtitles (
        environment_id TEXT PRIMARY KEY,
        subtitle       TEXT NOT NULL,
        at             INTEGER NOT NULL
      )`,
-    // The user's hand-picked Bots order. Environment-keyed like subtitles,
-    // one row per rank; a write replaces the whole list.
     `CREATE TABLE IF NOT EXISTS assistant_order (
        environment_id TEXT PRIMARY KEY,
        rank           INTEGER NOT NULL
      )`,
+    // One row once the legacy environment-id keys have been rewritten.
+    `CREATE TABLE IF NOT EXISTS assistant_key_migration (
+       done INTEGER NOT NULL
+     )`,
   ]);
+
+  // Tables that predate identity keys store environment ids in a column of
+  // the same role; rename the column first, then rewrite the values below.
+  for (const table of ["assistant_subtitles", "assistant_order"]) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+    }>;
+    if (columns.some((column) => column.name === "environment_id")) {
+      db.prepare(
+        `ALTER TABLE ${table} RENAME COLUMN environment_id TO identity`,
+      ).run();
+    }
+  }
+
+  // Identity comes from the environment plus its project's registered
+  // sources, and sources change when a machine is added — so the cache lives
+  // for a minute, not forever. Environment facts themselves are stable.
+  const IDENTITY_TTL_MS = 60_000;
+  interface ResolvedIdentity {
+    /** False when the lookup itself failed — not an answer, a retry. */
+    ok: boolean;
+    /** Set iff the environment sits in a home of its project. */
+    identity: string | null;
+    /** True when a registered source on this host is all that's missing. */
+    awaitingSource: boolean;
+  }
+  const identityCache = new Map<
+    string,
+    { at: number; resolved: ResolvedIdentity }
+  >();
+  const identityOfEnvironment = async (
+    environmentId: string,
+  ): Promise<ResolvedIdentity> => {
+    const cached = identityCache.get(environmentId);
+    if (cached && Date.now() - cached.at < IDENTITY_TTL_MS) {
+      return cached.resolved;
+    }
+    let resolved: ResolvedIdentity = { ok: false, identity: null, awaitingSource: false };
+    try {
+      const env = await bb.sdk.environments.get({ environmentId });
+      let sources: Array<{ hostId: string; path: string }>;
+      try {
+        sources = (
+          await bb.sdk.projects.get({ projectId: env.projectId })
+        ).sources;
+      } catch (error) {
+        // A project lookup hiccup is transient; retry, keeping the key.
+        bb.log.warn(
+          `assistant identity for ${environmentId} unresolved: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        identityCache.set(environmentId, { at: Date.now(), resolved });
+        return resolved;
+      }
+      const source = sources.find(
+        (candidate: { hostId: string }) => candidate.hostId === env.hostId,
+      );
+      const segment =
+        source && env.path ? homeSegmentUnder(env.path, source.path) : null;
+      resolved = {
+        ok: true,
+        identity: segment === null ? null : `${env.projectId}:${segment}`,
+        awaitingSource: source === undefined,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/not found/i.test(message)) {
+        // The environment is gone for good: an answer, not a failure. Its
+        // rows keep their key.
+        resolved = { ok: true, identity: null, awaitingSource: false };
+      } else {
+        bb.log.warn(`assistant identity for ${environmentId} unresolved: ${message}`);
+      }
+    }
+    identityCache.set(environmentId, { at: Date.now(), resolved });
+    return resolved;
+  };
+
+  // Storage keys: the stable identity when the environment resolves to one,
+  // the environment id otherwise — a mishomed or source-less environment
+  // keeps working per-environment instead of pretending to be an assistant.
+  // A failed lookup also lands here, so displays degrade instead of breaking.
+  const storageKeyOfEnvironment = async (
+    environmentId: string,
+  ): Promise<string> =>
+    (await identityOfEnvironment(environmentId)).identity ?? environmentId;
+
+  // One-time rewrite of legacy environment-id keys. The pass resolves every
+  // legacy key first, then re-reads the tables and rewrites synchronously:
+  // a user edit landing mid-pass is re-read instead of clobbered, and one
+  // landing after the rewrite simply wins the database.
+  //
+  // A failed lookup is not an answer, and neither is an environment whose
+  // host has no registered source yet — both keep the pass unfinished, so
+  // the next start retries and rows move to their identities as soon as the
+  // sources exist. Environments that resolve to no home (mishomed, or gone
+  // for good) keep their environment id and do finish the pass.
+  const migrateIdentityKeys = async (): Promise<void> => {
+    if (db.prepare(`SELECT done FROM assistant_key_migration`).get()) return;
+    try {
+      const legacyKeys = (
+        db
+          .prepare(
+            `SELECT identity FROM assistant_subtitles UNION SELECT identity FROM assistant_order`,
+          )
+          .all() as Array<{ identity: string }>
+      )
+        .map((row) => row.identity)
+        // Already-migrated keys carry a project id and a colon; only
+        // environment ids ever need resolving, on this or a retry pass.
+        .filter((key) => !key.includes(":"));
+      const resolved = await Promise.all(
+        legacyKeys.map((key) => identityOfEnvironment(key)),
+      );
+      const translation = new Map<string, string>();
+      legacyKeys.forEach((key, index) => {
+        const entry = resolved[index];
+        if (entry.ok && entry.identity !== null) {
+          translation.set(key, entry.identity);
+        }
+      });
+      const pending = legacyKeys.filter(
+        (_, index) =>
+          !resolved[index].ok ||
+          (resolved[index].identity === null && resolved[index].awaitingSource),
+      );
+
+      // Past this point nothing awaits: re-read what actually is there now
+      // and replace it in one synchronous sweep.
+      const subtitles = db
+        .prepare(`SELECT identity, subtitle, at FROM assistant_subtitles ORDER BY at`)
+        .all() as Array<{ identity: string; subtitle: string; at: number }>;
+      const order = db
+        .prepare(`SELECT identity, rank FROM assistant_order ORDER BY rank`)
+        .all() as Array<{ identity: string; rank: number }>;
+      // Two old environments can map to one identity; the newest subtitle
+      // wins, matching how the display treats stale ids. Keys the resolver
+      // did not translate (written after the pass began, or final
+      // no-identity keys) pass through unchanged.
+      const kept = new Map<string, { subtitle: string; at: number }>();
+      subtitles.forEach((row) => {
+        kept.set(translation.get(row.identity) ?? row.identity, row);
+      });
+      db.prepare(`DELETE FROM assistant_subtitles`).run();
+      const insertSubtitle = db.prepare(
+        `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)`,
+      );
+      for (const [identity, row] of kept) {
+        insertSubtitle.run(identity, row.subtitle, row.at);
+      }
+      const ranks = new Map<string, number>();
+      order.forEach((row) => {
+        ranks.set(translation.get(row.identity) ?? row.identity, row.rank);
+      });
+      db.prepare(`DELETE FROM assistant_order`).run();
+      const insertOrder = db.prepare(
+        `INSERT INTO assistant_order (identity, rank) VALUES (?, ?)`,
+      );
+      [...ranks.entries()]
+        .sort((a, b) => a[1] - b[1])
+        .forEach(([identity], rank) => insertOrder.run(identity, rank));
+
+      if (pending.length > 0) {
+        bb.log.warn(
+          `assistant key migration deferred: ${pending.length} keys awaiting sources or lookups`,
+        );
+        return;
+      }
+      db.prepare(`INSERT INTO assistant_key_migration (done) VALUES (1)`).run();
+      bb.realtime.publish(SUBTITLE_CHANNEL, {});
+      bb.realtime.publish(ASSISTANT_ORDER_CHANNEL, {});
+    } catch (error) {
+      // No flag row: the next start retries.
+      bb.log.warn(
+        `assistant key migration deferred: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  };
+  // Off the synchronous startup path: the pass reads the tables only after
+  // plugin() has returned, and the flag row makes it idempotent.
+  void Promise.resolve().then(() => migrateIdentityKeys());
 
   const readAssistantOrder = (): string[] =>
     (
       db
         .prepare(
-          `SELECT environment_id FROM assistant_order ORDER BY rank`,
+          `SELECT identity FROM assistant_order ORDER BY rank`,
         )
-        .all() as Array<{ environment_id: string }>
-    ).map((row) => row.environment_id);
+        .all() as Array<{ identity: string }>
+    ).map((row) => row.identity);
 
   const write = (threadId: string, override: "settled" | "active"): void => {
     db.prepare(
@@ -271,7 +496,7 @@ export default function plugin(bb: BbPluginApi) {
   };
 
   // Shared by the rpc (sidebar editor) and the CLI (agents). Resolves the
-  // thread to its home environment; empty subtitle clears.
+  // thread to its home's identity; empty subtitle clears.
   const writeSubtitle = async (
     threadId: string,
     subtitle: string,
@@ -282,70 +507,21 @@ export default function plugin(bb: BbPluginApi) {
         `thread ${threadId} has no environment — not an assistant home`,
       );
     }
+    const identity = await storageKeyOfEnvironment(thread.environmentId);
     if (subtitle === "") {
       db.prepare(
-        `DELETE FROM assistant_subtitles WHERE environment_id = ?`,
-      ).run(thread.environmentId);
+        `DELETE FROM assistant_subtitles WHERE identity = ?`,
+      ).run(identity);
     } else {
       db.prepare(
-        `INSERT INTO assistant_subtitles (environment_id, subtitle, at) VALUES (?, ?, ?)
-         ON CONFLICT(environment_id) DO UPDATE SET
+        `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)
+         ON CONFLICT(identity) DO UPDATE SET
            subtitle = excluded.subtitle,
            at = excluded.at`,
-      ).run(thread.environmentId, subtitle, Date.now());
+      ).run(identity, subtitle, Date.now());
     }
-    bb.realtime.publish(SUBTITLE_CHANNEL, {
-      environmentId: thread.environmentId,
-    });
-    return thread.environmentId;
-  };
-
-  // A directory is an assistant home when it carries its own identity file.
-  const isAssistantHome = async (
-    hostId: string,
-    path: string,
-  ): Promise<boolean> => {
-    try {
-      await bb.sdk.files.read({ hostId, path: `${path}/.pi/SYSTEM.md` });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  // Candidate homes for the ↻ dialog: the fleet root's subdirectories that
-  // are homes. The fleet root is the environment's parent when the
-  // environment is itself a home, else the environment directory — a
-  // mishomed thread sits directly on the fleet root.
-  const listAssistantHomes = async (
-    hostId: string,
-    environmentPath: string,
-  ): Promise<Array<{ name: string; path: string }>> => {
-    try {
-      const here = await bb.sdk.hosts.directory({
-        hostId,
-        path: environmentPath,
-      });
-      const root = (await isAssistantHome(hostId, environmentPath))
-        ? here.parent
-        : here.directory;
-      if (!root) return [];
-      const listing =
-        root === here.directory
-          ? here
-          : await bb.sdk.hosts.directory({ hostId, path: root });
-      const dirs = listing.entries.filter(
-        (entry) => entry.kind === "directory" && !entry.name.startsWith("."),
-      );
-      const flags = await Promise.all(
-        dirs.map((dir) => isAssistantHome(hostId, dir.path)),
-      );
-      return dirs
-        .filter((_, index) => flags[index])
-        .map(({ name, path }) => ({ name, path }));
-    } catch {
-      return [];
-    }
+    bb.realtime.publish(SUBTITLE_CHANNEL, { identity });
+    return identity;
   };
 
   const SUBTITLE_USAGE =
@@ -371,11 +547,11 @@ export default function plugin(bb: BbPluginApi) {
           const row = thread.environmentId
             ? (db
                 .prepare(
-                  `SELECT subtitle FROM assistant_subtitles WHERE environment_id = ?`,
+                  `SELECT subtitle FROM assistant_subtitles WHERE identity = ?`,
                 )
-                .get(thread.environmentId) as
-                | { subtitle: string }
-                | undefined)
+                .get(
+                  await storageKeyOfEnvironment(thread.environmentId),
+                ) as { subtitle: string } | undefined)
             : undefined;
           return { exitCode: 0, stdout: `${row?.subtitle ?? "(none)"}\n` };
         }
@@ -498,38 +674,35 @@ export default function plugin(bb: BbPluginApi) {
       bb.realtime.publish(PINNED_CHANNEL, { threadId });
       return { ids: pinnedRootIds(threads) };
     },
-    // An assistant is its home environment; threads are disposable. These two
-    // back the ↻ dialog: seed bb's compose surface from the current thread,
-    // then spawn the replacement from the typed message and archive the old
-    // thread — a fresh thread born exactly like bb's default new-thread flow.
     async assistantSeeds({ threadId }) {
-      const thread = await bb.sdk.threads.get({ threadId });
-      if (!thread.environmentId) {
-        throw new Error(
-          `thread ${threadId} has no environment — not an assistant home`,
-        );
-      }
-      const [options, env] = await Promise.all([
-        bb.sdk.threads.defaultExecutionOptions({ threadId }),
-        bb.sdk.environments.get({ environmentId: thread.environmentId }),
-      ]);
-      const homes = env.path
-        ? await listAssistantHomes(env.hostId, env.path)
-        : [];
-      const targetingAutomations = await targetingAutomationsOf(bb, threadId);
+      const context = await assistantConversationContext(bb, threadId);
+      // A source conversation can outlive its provider; use normal composer defaults then.
+      const options = await bb.sdk.threads.defaultExecutionOptions({ threadId }).catch((error: unknown) => {
+        bb.log.warn(`Could not seed execution options for ${threadId}: ${String(error)}`);
+        return null;
+      });
       return {
-        title: thread.title,
-        projectId: thread.projectId,
-        environmentId: thread.environmentId,
-        providerId: thread.providerId,
-        model: options?.model,
-        reasoningLevel: options?.reasoningLevel,
-        permissionMode: options?.permissionMode,
-        serviceTier: options?.serviceTier,
-        homePath: env.path,
-        homes,
-        targetingAutomations,
+        title: context.thread.title,
+        projectId: context.thread.projectId,
+        environmentId: context.env.id,
+        sourceHostId: context.env.hostId,
+        machines: context.machines,
+        identity: context.identity,
+        vaultPath: context.machines.find((host) => host.hostId === context.env.hostId)?.vaultPath ?? null,
+        providerId: context.thread.providerId,
+        ...(options ? {
+          model: options.model,
+          reasoningLevel: options.reasoningLevel,
+          permissionMode: options.permissionMode,
+          serviceTier: options.serviceTier,
+        } : {}),
+        homePath: context.env.path,
+        homes: [{ name: context.segment, path: context.env.path! }],
+        targetingAutomations: await targetingAutomationsOf(bb, threadId),
       };
+    },
+    async assistantDestination({ threadId, hostId }) {
+      return (await assistantConversationContext(bb, threadId)).destination(hostId);
     },
     // An assistant's picture is a file it owns: <home>/avatar.svg. No store,
     // no upload — the assistant (or the user) writes the file and the sidebar
@@ -561,13 +734,25 @@ export default function plugin(bb: BbPluginApi) {
       );
       return { rows: rows.filter((row) => row !== null) };
     },
+    // environmentId → stable assistant identity, for rows the board has.
+    // Environments without a stable identity fall back to their own id, the
+    // same key the stores use for them.
+    async assistantIdentities({ environmentIds }) {
+      const rows = await Promise.all(
+        [...new Set(environmentIds)].map(async (environmentId) => ({
+          environmentId,
+          identity: await storageKeyOfEnvironment(environmentId),
+        })),
+      );
+      return { rows };
+    },
     async listAssistantSubtitles() {
       const rows = (
         db
-          .prepare(`SELECT environment_id, subtitle FROM assistant_subtitles`)
-          .all() as Array<{ environment_id: string; subtitle: string }>
+          .prepare(`SELECT identity, subtitle FROM assistant_subtitles`)
+          .all() as Array<{ identity: string; subtitle: string }>
       ).map((row) => ({
-        environmentId: row.environment_id,
+        identity: row.identity,
         subtitle: row.subtitle,
       }));
       return { rows };
@@ -582,45 +767,46 @@ export default function plugin(bb: BbPluginApi) {
     // The client sends the full displayed order after a drag; stored verbatim.
     // Ids the fleet no longer has just stop matching and the next write
     // clears them.
-    async setAssistantOrder({ environmentIds }) {
+    async setAssistantOrder({ identities }) {
       db.prepare(`DELETE FROM assistant_order`).run();
       const insert = db.prepare(
-        `INSERT INTO assistant_order (environment_id, rank) VALUES (?, ?)`,
+        `INSERT INTO assistant_order (identity, rank) VALUES (?, ?)`,
       );
-      [...new Set(environmentIds)].forEach((environmentId, rank) => {
-        insert.run(environmentId, rank);
+      [...new Set(identities)].forEach((identity, rank) => {
+        insert.run(identity, rank);
       });
       bb.realtime.publish(ASSISTANT_ORDER_CHANNEL, {});
       return { ids: readAssistantOrder() };
     },
-    async createReplacementThread({ replaceThreadId, title, request, homePath }) {
-      // The dialog's Home choice wins over the composer's environment picker,
-      // which cannot express a plain directory: unchanged path reuses the
-      // current environment, a different path lets bb resolve it into one.
-      let environment: Record<string, unknown> | undefined;
-      if (homePath) {
-        const thread = await bb.sdk.threads.get({ threadId: replaceThreadId });
-        const env = thread.environmentId
-          ? await bb.sdk.environments.get({
-              environmentId: thread.environmentId,
-            })
-          : null;
-        environment =
-          env && env.path === homePath
-            ? { type: "reuse", environmentId: env.id }
-            : {
-                type: "host",
-                ...(env ? { hostId: env.hostId } : {}),
-                workspace: { type: "unmanaged", path: homePath },
-              };
-      }
+    async createReplacementThread({ replaceThreadId, request, destinationHostId, homePath, archiveSource }) {
+      const context = await assistantConversationContext(bb, replaceThreadId);
+      if (request.projectId !== context.thread.projectId)
+        throw new Error("Keep the assistants project selected");
+      if (archiveSource && destinationHostId !== context.env.hostId)
+        throw new Error("Starting on another machine keeps the source conversation intact");
+      await context.validate(destinationHostId, homePath);
+      // Copy composer selections only. Filing and lifecycle always belong to this flow.
       const fresh = await bb.sdk.threads.spawn({
-        ...(request as Record<string, unknown>),
-        ...(environment ? { environment } : {}),
-        title: title ?? undefined,
+        projectId: request.projectId,
+        providerId: request.providerId,
+        model: request.model,
+        reasoningLevel: request.reasoningLevel,
+        permissionMode: request.permissionMode,
+        serviceTier: request.serviceTier,
+        executionInputSources: request.executionInputSources,
+        input: request.input,
+        sendAt: request.sendAt,
+        title: context.thread.title ?? undefined,
+        environment: { type: "host", hostId: destinationHostId, workspace: { type: "unmanaged", path: homePath } },
       } as Parameters<typeof bb.sdk.threads.spawn>[0]);
-      await bb.sdk.threads.archive({ threadId: replaceThreadId });
-      return { newThreadId: fresh.id };
+      if (archiveSource) {
+        try {
+          await bb.sdk.threads.archive({ threadId: replaceThreadId });
+        } catch (error) {
+          return { newThreadId: fresh.id, archivedSource: false, archiveError: String(error) };
+        }
+      }
+      return { newThreadId: fresh.id, archivedSource: archiveSource };
     },
   });
 

@@ -4,12 +4,12 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import type { boardRpcContract } from "@/server";
 import { shouldRefreshOnReconnect } from "@/lib/reconnect";
 
 export interface AssistantSubtitlesApi {
-  /** environmentId → subtitle, from the plugin's own store. */
+  /** identity → subtitle, from the plugin's own store. */
   subtitles: ReadonlyMap<string, string>;
   /** Empty string clears the subtitle. A failed write toasts and re-reads. */
   set(threadId: string, subtitle: string): void;
@@ -31,7 +31,7 @@ export function useAssistantSubtitles(): AssistantSubtitlesApi {
       const result = await rpc.call("listAssistantSubtitles", {});
       if (seq !== requestSeq.current) return;
       setSubtitles(
-        new Map(result.rows.map((row) => [row.environmentId, row.subtitle])),
+        new Map(result.rows.map((row) => [row.identity, row.subtitle])),
       );
     } catch {
       // Reads are best-effort: rows simply show no subtitle.

@@ -1,3 +1,4 @@
+import type { PipelinePullRequest } from "@/server";
 import {
   useCallback,
   useEffect,
@@ -11,8 +12,7 @@ import type {
 } from "@dnd-kit/core";
 import {
   experimental_useSidebarThreadSplit,
-  type PluginSidebarPullRequest,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import { ProviderIcon } from "@/components/provider-icon";
 import { isolatedRowGestureProps } from "@/components/row-gesture";
 import { OpenPrLink, StatusSlot } from "@/components/row-parts";
@@ -49,7 +49,7 @@ interface SidebarRowProps {
   onStartRename: (threadId: string) => void;
   onCancelRename: () => void;
   onRename: (threadId: string, title: string) => Promise<void>;
-  pullRequests: ReadonlyMap<string, PluginSidebarPullRequest | null>;
+  pullRequests: ReadonlyMap<string, PipelinePullRequest | null>;
   /** Settle / Unsettle, provided by the list for root rows only. */
   action?: { label: string; run: () => void };
   /** Pinned-root reordering, for the context menu and pointer gesture. */

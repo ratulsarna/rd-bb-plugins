@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { PluginSidebarProject } from "@bb/plugin-sdk/app";
+import type { PluginSidebarProject } from "@get-bb/plugin-sdk/app";
 
 /**
  * The display-only project scope, shared by both surfaces. "" means every

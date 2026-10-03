@@ -9,7 +9,7 @@
   },
   "engines": {
     "bb": ">=0.36",
-    "bbPluginSdk": "^0.4.1"
+    "bbPluginSdk": ">=0.6.16"
   },
   "bb": {
     "name": "Inbox Sidebar",
@@ -30,19 +30,21 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@radix-ui/react-context-menu": "^2.3.7",
-    "@radix-ui/react-dialog": "^1.1.23",
+    "@get-bb/plugin-sdk": "0.6.15",
+    "@radix-ui/react-context-menu": "^2.3.3",
+    "@radix-ui/react-dialog": "^1.1.19",
     "@testing-library/react": "^16.3.2",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.2.4",
     "better-sqlite3": "^12.0.0",
+    "cron-parser": "^5.5.0",
     "hono": "^4.11.9",
     "jsdom": "^26.1.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "sonner": "^2.0.7",
+    "sonner": "^1.7.4",
     "typescript": "^5.7.3",
     "vitest": "^3.2.4"
   }

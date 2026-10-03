@@ -1,4 +1,4 @@
-import type { PluginRealtimeConnectionState } from "@bb/plugin-sdk/app";
+import type { PluginRealtimeConnectionState } from "@get-bb/plugin-sdk/app";
 
 export function shouldRefreshOnReconnect(
   previous: PluginRealtimeConnectionState,
