@@ -88,7 +88,8 @@ export function useBoardState(
   // Read from the overrides, not the board, so an open thread is acknowledged
   // in any section: pinned or nested, its marker would otherwise come back.
   // Keys are id:until, so a later snooze of the same thread is acknowledged
-  // again, and a re-render is not.
+  // again, and a re-render is not. A failed call forgets its key, so the next
+  // run (at the latest the minute tick) retries it.
   const acknowledgeWake = settledApi.acknowledgeWake;
   const acknowledged = useRef(new Set<string>());
   useEffect(() => {
@@ -98,7 +99,10 @@ export function useBoardState(
       if (mark?.override !== "snoozed" || mark.until > now) continue;
       const key = `${threadId}:${mark.until}`;
       sent.add(key);
-      if (!acknowledged.current.has(key)) acknowledgeWake(threadId, mark.until);
+      if (acknowledged.current.has(key)) continue;
+      void acknowledgeWake(threadId, mark.until).catch(() =>
+        acknowledged.current.delete(key),
+      );
     }
     acknowledged.current = sent;
   }, [acknowledgeWake, now, openThreadIds, overrides]);

@@ -16,7 +16,7 @@ import {
 import { SortableRows } from "@/components/sortable-rows";
 import { filterBoardForDisplay } from "@/lib/display-filter";
 import { ancestorIdsOf, effectiveExpandedIds } from "@/lib/expansion";
-import { canSettle, type BoardItem } from "@/lib/lanes";
+import { canSettle, canSnooze, type BoardItem } from "@/lib/lanes";
 import { pinnedMoveActions } from "@/lib/pinned-order";
 import { useBoardState } from "@/lib/use-board-state";
 
@@ -325,7 +325,9 @@ export function BoardSidebar({
                     action: canSettle(item)
                       ? { label: "Settle", run: () => state.settle(item.thread.id) }
                       : undefined,
-                    onSnooze: (until) => state.snooze(item.thread.id, until),
+                    onSnooze: canSnooze(item)
+                      ? (until) => state.snooze(item.thread.id, until)
+                      : undefined,
                   }),
                 )
               )}

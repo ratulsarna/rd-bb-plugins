@@ -19,8 +19,8 @@ export interface SettledApi {
   unsettle(threadId: string): void;
   snooze(threadId: string, until: number): void;
   wake(threadId: string): void;
-  /** Not a user action: a failure re-reads quietly instead of toasting. */
-  acknowledgeWake(threadId: string, until: number): void;
+  /** Not a user action: no toast. Rejects so the caller can retry. */
+  acknowledgeWake(threadId: string, until: number): Promise<unknown>;
 }
 
 export function useSettledOverrides(): SettledApi {
@@ -99,9 +99,7 @@ export function useSettledOverrides(): SettledApi {
           void refresh();
         }),
       acknowledgeWake: (threadId, until) =>
-        void rpc
-          .call("acknowledgeWake", { threadId, until })
-          .catch(() => void refresh()),
+        rpc.call("acknowledgeWake", { threadId, until }),
     }),
     [overrides, refresh, rpc, status],
   );

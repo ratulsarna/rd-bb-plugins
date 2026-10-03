@@ -668,6 +668,16 @@ describe("buildBoard snooze", () => {
     expect(board.pinned.map((item) => item.thread.id)).toEqual(["pinned"]);
   });
 
+  it("ignores a snooze on a tree that holds a pinned thread", () => {
+    const board = buildBoard(
+      [thread("parent"), thread("kid", { parentThreadId: "parent", isPinned: true })],
+      { now: NOW, overrides: new Map([snoozed("parent", NOW + HOUR)]) },
+    );
+
+    expect(board.snoozed).toHaveLength(0);
+    expect(board.inbox.map((item) => item.thread.id)).toEqual(["parent"]);
+  });
+
   it("keeps one dot: needs-you and failure outrank a woken snooze, which outranks running", () => {
     const woken = (overrides: Partial<BoardThread>) => {
       const t = thread("t", overrides);

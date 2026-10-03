@@ -104,9 +104,13 @@ export function SidebarRow({
   const title = threadDisplayTitle(item.thread);
   const expanded = expandedIds.has(item.thread.id);
   const isActive = item.thread.id === activeThreadId;
-  // Unread beats quiet: an unread running row stays bright.
+  // Unread beats quiet: an unread running row stays bright. So does a woken
+  // snooze, which the user asked to see now.
   const quiet =
-    item.lane !== "needs-you" && !item.thread.isUnread && !isActive;
+    item.lane !== "needs-you" &&
+    !item.thread.isUnread &&
+    item.wokeAt === undefined &&
+    !isActive;
   const projectName =
     projectNames.get(item.thread.projectId) ?? "Unknown project";
   const machineName = item.thread.host?.name ?? "Unknown machine";

@@ -204,6 +204,11 @@ export function canSettle(
   return item.lane === "idle" && !item.hasPinnedThread;
 }
 
+/** A tree holding a pinned thread stays in sight, so it cannot snooze. */
+export function canSnooze(item: Pick<BoardItem, "hasPinnedThread">): boolean {
+  return !item.hasPinnedThread;
+}
+
 function moreUrgent(a: Lane, b: Lane): Lane {
   return LANE_URGENCY[a] >= LANE_URGENCY[b] ? a : b;
 }
@@ -311,8 +316,10 @@ export function buildBoard<T extends BoardThread>(
     }
     const mark = overrides.get(item.thread.id);
     // A snooze holds whatever the thread is doing; the server ends it early
-    // on a new request. Once ended it outranks auto-settle until opened.
-    if (mark?.override === "snoozed") {
+    // on a new request. Once ended it outranks auto-settle until opened. A
+    // pinned descendant must stay in sight, so it voids the snooze, as it
+    // does a settle mark.
+    if (mark?.override === "snoozed" && !item.hasPinnedThread) {
       if (mark.until > now) snoozed.push({ ...item, wakeAt: mark.until });
       else inbox.push({ ...item, wokeAt: mark.until });
       continue;

@@ -14,6 +14,7 @@ import {
   configureFakeSdk,
   emitRealtime,
   pullRequestLookupCalls,
+  rejectPendingRpc,
   registrations,
   resolvePendingRpc,
   rpcCalls,
@@ -1857,6 +1858,26 @@ describe("snooze", () => {
     act(() => emitRealtime("settled"));
     await act(async () => {});
     expect(rpcCalls.filter((c) => c.method === "acknowledgeWake")).toHaveLength(1);
+  });
+
+  it("retries a failed acknowledgement instead of leaving the marker stuck", async () => {
+    const until = NOW - HOUR;
+    configureFakeSdk({
+      threads: [thread("thr_flaky", { title: "Flaky" })],
+      overrides: [{ threadId: "thr_flaky", override: "snoozed", at: NOW - DAY, until }],
+      deferRpc: ["acknowledgeWake"],
+    });
+    renderList({ activeThreadId: "thr_flaky" });
+
+    await waitFor(() =>
+      expect(rpcCalls.filter((c) => c.method === "acknowledgeWake")).toHaveLength(1),
+    );
+    await act(async () => rejectPendingRpc("acknowledgeWake", "oldest", new Error("offline")));
+    // Any fresh read of the overrides is a chance to try again.
+    act(() => emitRealtime("settled"));
+    await waitFor(() =>
+      expect(rpcCalls.filter((c) => c.method === "acknowledgeWake")).toHaveLength(2),
+    );
   });
 
   // Pinned rows never carry the woken marker, so the acknowledgement must not

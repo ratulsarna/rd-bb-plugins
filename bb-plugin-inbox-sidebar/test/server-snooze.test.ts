@@ -14,11 +14,16 @@ afterEach(async () => {
   await host.harness.lifecycle.dispose();
 });
 
-/** A loaded plugin over threads with the given parents (id → parent id). */
-function load(parents: Record<string, string | null> = {}) {
+/**
+ * A loaded plugin over threads with the given parents (id → parent id).
+ * Lookups of `unreachable` ids fail, as a host hiccup would.
+ */
+function load(parents: Record<string, string | null> = {}, unreachable: string[] = []) {
   host = createFakePluginHost({ pluginId: "inbox-sidebar" });
   host.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => {
-    if (!(threadId in parents)) throw new Error(`thread ${threadId} not found`);
+    if (!(threadId in parents) || unreachable.includes(threadId)) {
+      throw new Error(`thread ${threadId} not found`);
+    }
     return makeThreadResponse({ id: threadId, parentThreadId: parents[threadId] ?? null });
   });
   plugin(host.bb);
@@ -115,13 +120,11 @@ describe("early wake", () => {
     expect(await rows()).toMatchObject([{ override: "snoozed", until }]);
   });
 
-  it("still wakes the thread itself when an ancestor lookup fails", async () => {
-    // "orphan" names a parent the host cannot find.
-    const { call, rows, question } = load({ orphan: "gone" });
-    await call("snooze", { threadId: "orphan", until: Date.now() + HOUR });
+  it("wakes the parent the event names even when every lookup fails", async () => {
+    const { call, rows, question } = load({ child: "root", root: null }, ["child", "root"]);
+    await call("snooze", { threadId: "root", until: Date.now() + HOUR });
 
-    const { errors } = await question("orphan");
-    expect(errors).toEqual([]);
+    expect((await question("child")).errors).toEqual([]);
     expect(isAwake((await rows())[0])).toBe(true);
   });
 

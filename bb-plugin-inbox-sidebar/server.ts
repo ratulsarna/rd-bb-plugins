@@ -557,18 +557,23 @@ export default function plugin(bb: BbPluginApi) {
     }
   };
 
-  // A question or failure anywhere under a snoozed root wakes it, the same
-  // way the root's rolled-up dot would turn needs-you.
-  const wakeForNeed = async (threadId: string, occurredAt: number) => {
+  // A question or failure anywhere under a snoozed root wakes it. A subagent
+  // that only finished does not, though the board rolls that up as needs-you.
+  const wakeForNeed = async (
+    thread: { id: string; parentThreadId: string | null },
+    occurredAt: number,
+  ) => {
     const live = db
       .prepare(
         `SELECT 1 FROM thread_overrides WHERE override = 'snoozed' AND until > ? LIMIT 1`,
       )
       .get(Date.now());
     if (!live) return;
-    const lineage = [threadId];
+    const lineage = [thread.id];
+    // The event already names the parent, so a failed lookup further up can
+    // only cost the ancestors above it.
+    let parentId = thread.parentThreadId;
     try {
-      let parentId = (await bb.sdk.threads.get({ threadId })).parentThreadId;
       while (parentId && !lineage.includes(parentId)) {
         lineage.push(parentId);
         parentId = (await bb.sdk.threads.get({ threadId: parentId }))
@@ -577,7 +582,7 @@ export default function plugin(bb: BbPluginApi) {
     } catch (error) {
       // Wake what we reached; a missing ancestor must not keep the thread asleep.
       bb.log.warn(
-        `snooze wake: ancestor lookup failed for ${threadId}: ${error instanceof Error ? error.message : String(error)}`,
+        `snooze wake: ancestor lookup failed for ${thread.id}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
     wakeSnoozed(lineage, occurredAt);
@@ -763,15 +768,16 @@ export default function plugin(bb: BbPluginApi) {
     // Opening a woken thread hands it back to the ordinary rules as "active",
     // which restarts the quiet clock: a week-long snooze must not auto-settle
     // the moment it is opened. Keyed on the `until` the client saw, so a late
-    // acknowledgement cannot undo a newer snooze or settle.
+    // acknowledgement cannot undo a newer snooze or settle. No check against
+    // our own clock: a browser a few seconds ahead would be refused forever.
     async acknowledgeWake({ threadId, until }) {
       const now = Date.now();
       const changed = db
         .prepare(
           `UPDATE thread_overrides SET override = 'active', at = ?, until = NULL
-           WHERE thread_id = ? AND override = 'snoozed' AND until = ? AND until <= ?`,
+           WHERE thread_id = ? AND override = 'snoozed' AND until = ?`,
         )
-        .run(now, threadId, until, now).changes;
+        .run(now, threadId, until).changes;
       if (changed > 0) bb.realtime.publish(SETTLED_CHANNEL, { threadId });
       return { ok: true };
     },
@@ -951,9 +957,9 @@ export default function plugin(bb: BbPluginApi) {
   // fire only for a new one, so a request already open when the user
   // snoozed never wakes the thread.
   bb.events.on("interaction.pending", ({ thread, interaction }) =>
-    wakeForNeed(thread.id, interaction.createdAt),
+    wakeForNeed(thread, interaction.createdAt),
   );
   bb.events.on("thread.failed", ({ thread }) =>
-    wakeForNeed(thread.id, thread.updatedAt),
+    wakeForNeed(thread, thread.updatedAt),
   );
 }
