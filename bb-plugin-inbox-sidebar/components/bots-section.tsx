@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
@@ -249,6 +249,8 @@ function AssistantRow({
   const name = nameOf(thread);
   const tone = toneOf(thread);
   const { splitProps } = useSidebarThreadSplit(thread.id);
+  // A touch long-press opens the menu, then releases into a click on the row.
+  const menuOpenRef = useRef(false);
   return (
     <li
       ref={reorder?.setNodeRef}
@@ -256,7 +258,11 @@ function AssistantRow({
       data-pinned-reordering={reorder?.isDragging || undefined}
       style={reorder?.style}
     >
-      <ContextMenu.Root>
+      <ContextMenu.Root
+        onOpenChange={(open) => {
+          menuOpenRef.current = open;
+        }}
+      >
         <ContextMenu.Trigger asChild>
           <a
             ref={reorder?.setActivatorNodeRef}
@@ -268,7 +274,7 @@ function AssistantRow({
             draggable={false}
             onClick={(event) => {
               event.preventDefault();
-              if (isEditingSubtitle) return;
+              if (isEditingSubtitle || menuOpenRef.current) return;
               onOpen(thread.id);
             }}
             className={`flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${

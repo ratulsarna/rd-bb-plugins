@@ -17,6 +17,7 @@ export function RowContextMenu({
   action,
   onSnooze,
   onRename,
+  onOpenChange,
   children,
 }: {
   thread: BoardThread;
@@ -27,12 +28,13 @@ export function RowContextMenu({
   /** Opens the row's snooze picker. */
   onSnooze?: () => void;
   onRename: () => void;
+  onOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }) {
   const actions = useSidebarThreadActions();
 
   return (
-    <ContextMenu.Root>
+    <ContextMenu.Root onOpenChange={onOpenChange}>
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content

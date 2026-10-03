@@ -30,9 +30,6 @@ import {
 import type { PinnedMove } from "@/lib/pinned-order";
 
 const DOUBLE_CLICK_MS = 300;
-// Radix ContextMenu opens on a touch or pen hold this long, then lets the
-// click through. A hold that opened the menu must not also open the thread.
-const LONG_PRESS_MS = 700;
 
 /** dnd-kit's sortable bindings for a pinned root. */
 export interface RowReorder {
@@ -121,21 +118,11 @@ export function SidebarRow({
   const { splitProps } = experimental_useSidebarThreadSplit(item.thread.id);
   const isRenaming = renamingThreadId === item.thread.id;
   const pendingTapRef = useRef<number | null>(null);
-  const pressRef = useRef<{ at: number; pointerType: string } | null>(null);
-
-  // Classifies the click being handled and consumes its press, so a later
-  // keyboard activation (no pointer) is never judged by an old one.
-  const isLongPressClick = () => {
-    const press = pressRef.current;
-    pressRef.current = null;
-    return (
-      press !== null &&
-      press.pointerType !== "mouse" &&
-      Date.now() - press.at >= LONG_PRESS_MS
-    );
-  };
+  // A touch long-press opens the row menu and then releases into a click on
+  // the row; that click must not also open the thread and shut the drawer.
+  const menuOpenRef = useRef(false);
   const openFromClick = () => {
-    if (!isLongPressClick()) openThread();
+    if (!menuOpenRef.current) openThread();
   };
 
   const startRename = () => {
@@ -147,7 +134,7 @@ export function SidebarRow({
   };
 
   const handleTitleClick = () => {
-    if (isLongPressClick()) return;
+    if (menuOpenRef.current) return;
     if (pendingTapRef.current !== null) {
       startRename();
       return;
@@ -200,6 +187,9 @@ export function SidebarRow({
         action={action}
         onSnooze={onSnooze && (() => setSnoozeOpen(true))}
         onRename={startRename}
+        onOpenChange={(open) => {
+          menuOpenRef.current = open;
+        }}
       >
         <SnoozeAnchor asChild>
         <div
@@ -213,14 +203,6 @@ export function SidebarRow({
           {...(reorder?.attributes ?? {})}
           {...(reorder?.listeners ?? {})}
           {...splitProps}
-          // Capture, so the split and reorder handlers spread above keep
-          // their own onPointerDown.
-          onPointerDownCapture={(event) => {
-            pressRef.current = { at: Date.now(), pointerType: event.pointerType };
-          }}
-          onPointerCancelCapture={() => {
-            pressRef.current = null;
-          }}
         >
           {/* Prevent the browser's href drag from stealing the row gesture. */}
           <a

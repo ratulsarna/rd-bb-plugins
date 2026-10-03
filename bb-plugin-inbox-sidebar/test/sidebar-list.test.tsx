@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   act,
   cleanup,
@@ -35,7 +35,6 @@ const list = registrations.threadLists[0]!;
 
 afterEach(() => {
   cleanup();
-  vi.unstubAllGlobals();
   // Section collapse choices persist in localStorage; tests must not inherit
   // a choice an earlier test clicked into place.
   localStorage.clear();
@@ -1388,44 +1387,38 @@ describe("row context menu", () => {
     expect(sidebarActionCalls.some((c) => c.method === "open")).toBe(false);
   });
 
-  // Radix opens the menu on a 700 ms touch or pen hold and then lets the
-  // click through; that click must not open the row and close the drawer.
-  it("opens a row on a tap or a mouse press, never on the long press that opens its menu", async () => {
-    // jsdom has no PointerEvent, so pointerType would never arrive.
-    class TestPointerEvent extends MouseEvent {
-      pointerType: string;
-      constructor(type: string, init: PointerEventInit = {}) {
-        super(type, init);
-        this.pointerType = init.pointerType ?? "";
-      }
-    }
-    vi.stubGlobal("PointerEvent", TestPointerEvent);
-    configureFakeSdk({ threads: [thread("thr_hold", { title: "Hold me" })] });
+  // A touch long-press opens the menu (Radix, after 700 ms) and then releases
+  // into a click on the row; that click must not open the thread and close
+  // the drawer. Once the menu is gone, a click opens the row again.
+  it("ignores the click that lands on a row while its menu is open", async () => {
+    configureFakeSdk({
+      projects: [sidebarProject("assist-1", "assistants"), sidebarProject("project-1", "bb")],
+      threads: [
+        thread("thr_hold", { title: "Hold me" }),
+        thread("thr_bot", { title: "Sam", projectId: "assist-1" }),
+      ],
+    });
     renderList({ isCompactViewport: true });
-    const anchor = await screen.findByRole("link", { name: "Hold me" });
-    const row = anchor.parentElement!;
-    const press = (pointerType: string, heldMs: number) => {
-      const start = Date.now();
-      const clock = vi.spyOn(Date, "now").mockReturnValue(start);
-      fireEvent.pointerDown(row, { pointerType });
-      clock.mockReturnValue(start + heldMs);
-      fireEvent.click(anchor);
-      clock.mockRestore();
-    };
-    const opens = () => sidebarActionCalls.filter((c) => c.method === "open").length;
+    const opens = () =>
+      sidebarActionCalls.filter((c) => c.method === "open").map((c) => c.threadId);
 
-    press("touch", 800);
-    press("pen", 800);
-    expect(opens()).toBe(0);
-    press("touch", 150);
-    expect(opens()).toBe(1);
-    press("mouse", 800);
-    expect(opens()).toBe(2);
-    // Keyboard activation has no press of its own and must not inherit one.
-    fireEvent.pointerDown(row, { pointerType: "touch" });
-    fireEvent.pointerCancel(row, { pointerType: "touch" });
-    fireEvent.click(anchor);
-    expect(opens()).toBe(3);
+    for (const anchor of [
+      await screen.findByRole("link", { name: "Hold me" }),
+      within(await screen.findByRole("region", { name: "Bots" })).getByRole("link", { name: /^Sam/ }),
+    ]) {
+      fireEvent.contextMenu(anchor);
+      const menu = await screen.findByRole("menu");
+      fireEvent.click(anchor);
+      expect(opens()).toEqual([]);
+      fireEvent.keyDown(menu, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    }
+
+    fireEvent.click(screen.getByRole("link", { name: "Hold me" }));
+    fireEvent.click(
+      within(screen.getByRole("region", { name: "Bots" })).getByRole("link", { name: /^Sam/ }),
+    );
+    expect(opens()).toEqual(["thr_hold", "thr_bot"]);
   });
 
   it("settles from the menu without opening the thread", async () => {
