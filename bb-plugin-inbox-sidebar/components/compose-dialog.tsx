@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -7,34 +7,17 @@ import {
   useBbNavigate,
   useRpc,
   type NewThreadComposerProps,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
+import { toast } from "sonner";
+import type { z } from "zod";
+import type { AssistantDestination } from "@/lib/assistant-conversation";
 import type { boardRpcContract } from "@/server";
 import { usePortalScopeProps } from "@/lib/portal-scope";
 import { restartPrompt } from "@/lib/restart-prompt";
 
-type Seeds = {
-  title: string | null;
-  projectId: string;
-  environmentId: string;
-  providerId: string;
-  model?: string;
-  reasoningLevel?: string;
-  permissionMode?: string;
-  serviceTier?: string;
-  homePath: string | null;
-  homes: Array<{ name: string; path: string }>;
-  /** Agent automations that still target the thread being replaced. */
-  targetingAutomations: Array<{ id: string; name: string }>;
-};
+type Seeds = z.infer<typeof boardRpcContract.assistantSeeds.output>;
 
-/**
- * bb's own new-thread compose surface in a dialog, seeded with one
- * assistant's home and settings. The draft opens prefilled with a pointer to
- * the thread being replaced — a fresh start, not a fork; the assistant reads
- * the old thread itself when it needs the history. Submitting spawns the new
- * thread from the typed message, then archives the thread it replaces.
- * Closing without submitting changes nothing.
- */
+/** Starts a fresh root conversation through bb's normal composer. */
 export function ComposeDialog({
   replaceThreadId,
   onClose,
@@ -47,48 +30,58 @@ export function ComposeDialog({
   const rpc = useRpc<typeof boardRpcContract>();
   const navigate = useBbNavigate();
   const portalScope = usePortalScopeProps();
-  const [seeds, setSeeds] = useState<Seeds | null>(null);
+  const [seedResult, setSeedResult] = useState<{ threadId: string; value: Seeds } | null>(null);
+  const seeds = seedResult?.threadId === replaceThreadId ? seedResult.value : null;
   const [error, setError] = useState<string | null>(null);
+  const [hostId, setHostId] = useState<string | null>(null);
+  const [destinationResult, setDestinationResult] = useState<{ key: string; value: AssistantDestination } | null>(null);
   const [homePath, setHomePath] = useState<string | null>(null);
+  const [archiveSource, setArchiveSource] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
+  const destinationKey = `${replaceThreadId}:${hostId}:${attempt}`;
+  const currentKey = useRef(destinationKey);
+  currentKey.current = destinationKey;
+  const destination = destinationResult?.key === destinationKey ? destinationResult.value : null;
 
   useEffect(() => {
-    if (!replaceThreadId) return;
     let live = true;
-    setSeeds(null);
+    setSeedResult(null);
     setError(null);
+    setHostId(null);
     setHomePath(null);
-    rpc
-      .call("assistantSeeds", { threadId: replaceThreadId })
-      .then((result) => {
+    if (replaceThreadId) {
+      rpc.call("assistantSeeds", { threadId: replaceThreadId }).then((result) => {
         if (!live) return;
-        setSeeds(result);
-        setHomePath(result.homePath);
-      })
-      .catch((cause: unknown) => {
+        setSeedResult({ threadId: replaceThreadId, value: result });
+        setHostId(result.sourceHostId);
+        setArchiveSource(false);
+      }).catch((cause: unknown) => {
         if (live) setError(String(cause));
       });
-    return () => {
-      live = false;
-    };
+    }
+    return () => { live = false; };
   }, [replaceThreadId, rpc]);
 
-  // The current path leads the list even when it is not a real home (a
-  // mishomed thread sitting on the fleet root), so the default is visible.
-  const homeOptions = useMemo(() => {
-    if (!seeds) return [];
-    const options = [...seeds.homes];
-    if (
-      seeds.homePath &&
-      !options.some((home) => home.path === seeds.homePath)
-    ) {
-      options.unshift({
-        name: seeds.homePath.split("/").filter(Boolean).pop() ?? seeds.homePath,
-        path: seeds.homePath,
+  useEffect(() => {
+    let live = true;
+    setDestinationResult(null);
+    setHomePath(null);
+    if (replaceThreadId && hostId && seeds) {
+      setError(null);
+      rpc.call("assistantDestination", { threadId: replaceThreadId, hostId }).then((result) => {
+        if (!live) return;
+        setDestinationResult({ key: destinationKey, value: result });
+        setHomePath(result.homePath);
+      }).catch((cause: unknown) => {
+        if (live) setError(String(cause));
       });
     }
-    return options;
-  }, [seeds]);
+    return () => { live = false; };
+  }, [replaceThreadId, hostId, seeds, destinationKey, rpc]);
 
+  const sameHost = seeds?.sourceHostId === hostId;
+  const shouldArchive = sameHost && archiveSource;
   const name = seeds?.title ?? "assistant";
   return (
     <Dialog.Root
@@ -123,69 +116,102 @@ export function ComposeDialog({
               New thread with {name}
             </Dialog.Title>
             <Dialog.Description className="mt-1.5 pr-8 text-sm leading-relaxed text-muted-foreground">
-              Home decides where they run, over the environment picker below.
-              Sending archives the current thread.
+              Start a fresh root conversation with an empty session. Machine and Home
+              set its destination. {shouldArchive ? "Sending replaces and archives the selected conversation." : "The existing conversation stays intact."}
             </Dialog.Description>
 
-            {homeOptions.length > 0 && (
-              <label className="mt-3 flex items-center gap-2 text-sm">
-                <span className="shrink-0 text-muted-foreground">Home</span>
-                <select
-                  value={homePath ?? ""}
-                  onChange={(event) => setHomePath(event.target.value)}
-                  className="min-w-0 flex-1 truncate rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {homeOptions.map((home) => (
-                    <option key={home.path} value={home.path}>
-                      {home.name} ({home.path})
-                    </option>
-                  ))}
-                </select>
-              </label>
+            {seeds && (
+              <>
+                <label className="mt-3 flex items-center gap-2 text-sm">
+                  <span className="shrink-0 text-muted-foreground">Machine</span>
+                  <select aria-label="Machine" value={hostId ?? ""} disabled={submitting}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      setHostId(next);
+                      setArchiveSource(false);
+                    }}
+                    className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5">
+                    {seeds.machines.map((machine) => (
+                      <option key={machine.hostId} value={machine.hostId}>
+                        {machine.name} — {machine.connected ? "connected" : "offline"}{machine.reason ? `: ${machine.reason}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {destination && (
+                  <>
+                    <label className="mt-3 flex items-center gap-2 text-sm">
+                      <span className="shrink-0 text-muted-foreground">Home</span>
+                      <select aria-label="Home" value={homePath ?? ""} disabled={submitting || !destination.ready}
+                        onChange={(event) => setHomePath(event.target.value)}
+                        className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5">
+                        {destination.homes.map((home) => <option key={home.path} value={home.path}>{home.name} ({home.path})</option>)}
+                      </select>
+                    </label>
+                    <p className="mt-2 break-all text-xs text-muted-foreground">Vault: {destination.vaultPath ?? "unmapped"}</p>
+                    <p role="status" className="mt-2 text-sm text-muted-foreground">{destination.ready ? "Destination files are ready. Sending checks them again." : destination.reason}</p>
+                    {!destination.providerAvailable && destination.ready && <p className="mt-2 text-xs text-muted-foreground">Choose an available provider and model below.</p>}
+                  </>
+                )}
+                {sameHost && <label className="mt-3 flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={archiveSource} disabled={submitting} onChange={(event) => setArchiveSource(event.target.checked)} />
+                  Replace and archive the selected conversation after creation
+                </label>}
+                <button type="button" disabled={submitting} onClick={() => setAttempt((value) => value + 1)} className="mt-2 text-xs text-muted-foreground underline">Refresh destination</button>
+              </>
             )}
 
             <div className="mt-5">
               {error ? (
                 <p className="text-sm text-destructive">{error}</p>
-              ) : seeds ? (
+              ) : seeds && destination?.ready ? (
                 <NewThreadComposer
                   defaultProjectId={seeds.projectId}
-                  defaultProviderId={seeds.providerId}
-                  defaultModel={seeds.model}
+                  key={`${replaceThreadId}:${hostId}`}
+                  defaultProviderId={destination.providerAvailable ? seeds.providerId : undefined}
+                  defaultModel={destination.providerAvailable ? seeds.model : undefined}
                   defaultReasoningLevel={
-                    seeds.reasoningLevel as NewThreadComposerProps["defaultReasoningLevel"]
+                    (destination.providerAvailable ? seeds.reasoningLevel : undefined) as NewThreadComposerProps["defaultReasoningLevel"]
                   }
                   defaultPermissionMode={
                     seeds.permissionMode as NewThreadComposerProps["defaultPermissionMode"]
                   }
                   defaultServiceTier={
-                    seeds.serviceTier as NewThreadComposerProps["defaultServiceTier"]
+                    (destination.providerAvailable ? seeds.serviceTier : undefined) as NewThreadComposerProps["defaultServiceTier"]
                   }
                   defaultEnvironment={{
-                    type: "reuse",
-                    environmentId: seeds.environmentId,
+                    type: "host",
+                    hostId: destination.hostId,
+                    workspace: { type: "unmanaged", path: destination.homePath },
                   }}
-                  initialPrompt={restartPrompt(replaceThreadId, seeds)}
-                  draftKey={`restart-${replaceThreadId}`}
+                  initialPrompt={restartPrompt(replaceThreadId, { ...seeds, identity: destination.identity, vaultPath: destination.vaultPath })}
+                  draftKey={`restart-${replaceThreadId}-${hostId}-new`}
                   placeholder={`Message ${name}…`}
                   onSubmit={async (request) => {
-                    if (!replaceThreadId) return;
-                    const { newThreadId } = await rpc.call(
-                      "createReplacementThread",
-                      {
+                    if (!replaceThreadId || !hostId || !homePath || !destination.ready || submitting) return;
+                    const key = destinationKey;
+                    setSubmitting(true);
+                    try {
+                      const result = await rpc.call("createReplacementThread", {
                         replaceThreadId,
                         title: seeds.title,
                         request,
-                        homePath: homePath ?? undefined,
-                      },
-                    );
-                    onClose();
-                    navigate.toThread(newThreadId);
-                    onNavigate();
+                        destinationHostId: hostId,
+                        homePath,
+                        archiveSource: shouldArchive,
+                      });
+                      if (result.archiveError) toast.error(`New conversation created; source was kept: ${result.archiveError}`);
+                      if (currentKey.current !== key) return;
+                      onClose();
+                      navigate.toThread(result.newThreadId);
+                      onNavigate();
+                    } finally {
+                      setSubmitting(false);
+                    }
                   }}
                 />
               ) : (
-                <p className="text-sm text-muted-foreground">Loading…</p>
+                <p className="text-sm text-muted-foreground">{destination && !destination.ready ? "Resolve the destination status, then refresh to compose." : "Loading…"}</p>
               )}
             </div>
           </Dialog.Content>

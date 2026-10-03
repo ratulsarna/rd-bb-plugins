@@ -2,9 +2,8 @@ import { useEffect, useState } from "react";
 import {
   useRpc,
   useRealtimeConnectionState,
-  type PluginSidebarPullRequest,
-} from "@bb/plugin-sdk/app";
-import type { boardRpcContract } from "@/server";
+} from "@get-bb/plugin-sdk/app";
+import type { boardRpcContract, PipelinePullRequest } from "@/server";
 import type { BoardThread } from "./lanes";
 
 export function usePipelinePullRequests(threads: readonly BoardThread[]) {
@@ -14,7 +13,7 @@ export function usePipelinePullRequests(threads: readonly BoardThread[]) {
     threads.filter((thread) => !thread.isArchived).map((thread) => thread.id).sort(),
   );
   const [pullRequests, setPullRequests] = useState<
-    ReadonlyMap<string, PluginSidebarPullRequest | null>
+    ReadonlyMap<string, PipelinePullRequest | null>
   >(() => new Map());
 
   useEffect(() => {
@@ -22,16 +21,14 @@ export function usePipelinePullRequests(threads: readonly BoardThread[]) {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
-      const next = new Map<string, PluginSidebarPullRequest | null>();
+      const next = new Map<string, PipelinePullRequest | null>();
       for (let offset = 0; offset < ids.length && !disposed; offset += 100) {
         try {
           const { rows } = await rpc.call("threadPullRequests", {
             threadIds: ids.slice(offset, offset + 100),
           });
           for (const { threadId, pullRequest } of rows) {
-            next.set(threadId, pullRequest === null ? null : {
-              ...pullRequest, attention: "none",
-            });
+            next.set(threadId, pullRequest);
           }
         } catch {
           // A failed batch cannot provide a reliable task association.

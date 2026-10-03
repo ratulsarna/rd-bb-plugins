@@ -10,7 +10,7 @@ export default defineConfig({
       // fake instead. Regex, not a bare "@" prefix: that would also swallow
       // every scoped package.
       {
-        find: "@bb/plugin-sdk/app",
+        find: /^@get-bb\/plugin-sdk\/app$/,
         replacement: `${root}test/sdk-fake.ts`,
       },
       { find: /^@\//, replacement: root },

@@ -3,19 +3,19 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import type { boardRpcContract } from "@/server";
 import { shouldRefreshOnReconnect } from "@/lib/reconnect";
 
 export interface AssistantOrderApi {
-  /** The stored Bots order, freshest known. Environment ids. */
+  /** The stored Bots order, freshest known. Assistant identities. */
   ids: readonly string[];
   /** False until the first read lands. Reordering stays disabled until it. */
   ready: boolean;
   /** True until the server answers the current write. */
   moving: boolean;
   /** Store a full new order; the response is canonical. */
-  set(environmentIds: readonly string[]): void;
+  set(identities: readonly string[]): void;
 }
 
 /**
@@ -65,7 +65,7 @@ export function useAssistantOrder(): AssistantOrderApi {
   }, [connectionState, refresh]);
 
   const set = useCallback<AssistantOrderApi["set"]>(
-    (environmentIds) => {
+    (identities) => {
       if (movingRef.current) return;
       movingRef.current = true;
       setMoving(true);
@@ -73,7 +73,7 @@ export function useAssistantOrder(): AssistantOrderApi {
       void (async () => {
         try {
           const result = await rpc.call("setAssistantOrder", {
-            environmentIds: [...environmentIds],
+            identities: [...identities],
           });
           if (seq === requestSeq.current) setIds(result.ids);
         } catch {

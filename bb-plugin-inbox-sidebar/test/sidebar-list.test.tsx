@@ -9,7 +9,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import type { PluginThreadListProps } from "@bb/plugin-sdk/app";
+import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import {
   configureFakeSdk,
   pullRequestLookupCalls,
@@ -22,7 +22,7 @@ import {
   sidebarActionCalls,
   splitPointerDownCalls,
 } from "./sdk-fake";
-import { DAY, HOUR, NOW, thread } from "./fixtures";
+import { DAY, HOUR, NOW, project as sidebarProject, thread } from "./fixtures";
 import type { BoardThread } from "@/lib/lanes";
 // Importing the plugin entry is what registers the slots, exactly as bb loads
 // it — so these tests exercise the component the host would actually mount.
@@ -117,7 +117,7 @@ describe("BoardSidebar host contract", () => {
     const projectName = "A project name long enough to need clipping";
     const machineName = "A machine name long enough to use the flexible space";
     configureFakeSdk({
-      projects: [{ id: "project-long", name: projectName, isPersonal: false }],
+      projects: [sidebarProject("project-long", projectName)],
       threads: [
         thread("metadata", {
           title,
@@ -132,7 +132,6 @@ describe("BoardSidebar host contract", () => {
           title: "Hover target fix",
           url: "https://example.test/pulls/41",
           state: "open",
-          attention: "ready_to_merge",
         },
       },
     });
@@ -198,28 +197,24 @@ describe("BoardSidebar host contract", () => {
           title: "Ready change",
           url: "https://example.test/pulls/42",
           state: "open",
-          attention: "ready_to_merge",
         },
         draft: {
           number: 43,
           title: "Work in progress",
           url: "https://example.test/pulls/43",
           state: "draft",
-          attention: "draft",
         },
         merged: {
           number: 44,
           title: "Merged change",
           url: "https://example.test/pulls/44",
           state: "merged",
-          attention: "merged",
         },
         closed: {
           number: 45,
           title: "Closed change",
           url: "https://example.test/pulls/45",
           state: "closed",
-          attention: "closed",
         },
       },
     });
@@ -447,8 +442,8 @@ describe("BoardSidebar host contract", () => {
         thread("b", { title: "In other", projectId: "project-2" }),
       ],
       projects: [
-        { id: "project-1", name: "bb", isPersonal: false },
-        { id: "project-2", name: "other", isPersonal: false },
+        sidebarProject("project-1", "bb"),
+        sidebarProject("project-2", "other"),
       ],
     });
     renderList({ activeProjectId: "project-2" });
@@ -525,8 +520,8 @@ describe("BoardSidebar host contract", () => {
     expect(navigated).toBe(1);
 
     setFakeProjects([
-      { id: "project-1", name: "bb", isPersonal: false },
-      { id: "project-created", name: "new-project", isPersonal: false },
+      sidebarProject("project-1", "bb"),
+      sidebarProject("project-created", "new-project"),
     ]);
     rendered.rerender(listElement({ onNavigate }));
 
@@ -644,7 +639,6 @@ describe("BoardSidebar Pipeline pull requests", () => {
           title: "Still under review",
           url: "https://example.test/pulls/81",
           state: "open",
-          attention: "ready_to_merge",
         },
       },
     });
@@ -679,7 +673,6 @@ describe("BoardSidebar Pipeline pull requests", () => {
           title: "Child work",
           url: "https://example.test/pulls/82",
           state: "draft",
-          attention: "draft",
         },
       },
     });
@@ -715,14 +708,12 @@ describe("BoardSidebar Pipeline pull requests", () => {
           title: "Merged work",
           url: "https://example.test/pulls/83",
           state: "merged",
-          attention: "merged",
         },
         "recent-closed": {
           number: 84,
           title: "Closed work",
           url: "https://example.test/pulls/84",
           state: "closed",
-          attention: "closed",
         },
       },
     });
@@ -898,7 +889,6 @@ describe("pinned reordering", () => {
           title: "Third change",
           url: "https://example.test/pulls/43",
           state: "open",
-          attention: "ready_to_merge",
         },
       },
     });
@@ -1059,7 +1049,6 @@ describe("pinned reordering", () => {
           title: "Pinned change",
           url: "https://example.test/pulls/42",
           state: "open",
-          attention: "ready_to_merge",
         },
       },
     });
@@ -1106,7 +1095,6 @@ describe("pinned reordering", () => {
           title: "Pinned change",
           url: "https://example.test/pulls/42",
           state: "open",
-          attention: "ready_to_merge",
         },
       },
     });
@@ -1361,6 +1349,58 @@ describe("row context menu", () => {
 });
 
 describe("Bots section", () => {
+  it("keeps a second case-variant Assistants project's conversations and filter accessible", async () => {
+    configureFakeSdk({
+      projects: [
+        sidebarProject("assist-1", "Assistants"),
+        sidebarProject("assist-2", "ASSISTANTS"),
+        sidebarProject("project-1", "Work"),
+      ],
+      threads: [
+        thread("first", { title: "First fleet", projectId: "assist-1" }),
+        thread("second-a", { title: "Second fleet A", projectId: "assist-2" }),
+        thread("second-b", { title: "Second fleet B", projectId: "assist-2" }),
+        thread("work", { title: "Other work" }),
+      ],
+    });
+    renderList();
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    const inbox = screen.getByRole("region", { name: "Inbox" });
+    expect(within(bots).getByLabelText("First fleet")).toBeDefined();
+    expect(within(inbox).queryByText("First fleet")).toBeNull();
+    expect(within(inbox).getByText("Second fleet A")).toBeDefined();
+    expect(within(inbox).getByText("Second fleet B")).toBeDefined();
+    const filter = screen.getByRole("combobox", { name: "Filter by project" });
+    expect(within(filter).queryByRole("option", { name: "Assistants" })).toBeNull();
+    expect(within(filter).getByRole("option", { name: "ASSISTANTS" }).getAttribute("value")).toBe("assist-2");
+    fireEvent.change(filter, { target: { value: "assist-2" } });
+    expect(within(inbox).getByText("Second fleet A")).toBeDefined();
+    expect(within(inbox).getByText("Second fleet B")).toBeDefined();
+    expect(within(inbox).queryByText("Other work")).toBeNull();
+    fireEvent.click(within(inbox).getByRole("link", { name: "Second fleet B" }));
+    expect(sidebarActionCalls).toContainEqual({ method: "open", threadId: "second-b", options: undefined });
+    expect(within(bots).getByLabelText("First fleet")).toBeDefined();
+  });
+
+  it("keeps the same assistant's conversations on different machines visible with shared subtitles and distinct machine labels", async () => {
+    configureFakeSdk({
+      projects: [sidebarProject("assist-1", "assistants")],
+      threads: [
+        Object.assign(thread("sam-server", { title: "Sam", projectId: "assist-1", host: { id: "srv", name: "Server" }, environment: { id: "env-server" } as BoardThread["environment"] }), { updatedAt: 200 }),
+        Object.assign(thread("sam-mac", { title: "Sam", projectId: "assist-1", host: { id: "mac", name: "Mac" }, environment: { id: "env-mac" } as BoardThread["environment"] }), { updatedAt: 100 }),
+      ],
+      assistantIdentities: { "env-server": "assist-1:sam", "env-mac": "assist-1:sam" },
+      assistantOrder: ["assist-1:sam"],
+      subtitles: [{ identity: "assist-1:sam", subtitle: "Chief of staff" }],
+    });
+    renderList();
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    expect(await within(bots).findByLabelText("Sam — Server")).toBeDefined();
+    expect(within(bots).getByLabelText("Sam — Mac")).toBeDefined();
+    await waitFor(() => expect(within(bots).getAllByText("Chief of staff")).toHaveLength(2));
+    expect(Array.from(bots.querySelectorAll("[data-sidebar-thread-id]")).map((row) => row.getAttribute("data-sidebar-thread-id"))).toEqual(["sam-server", "sam-mac"]);
+  });
+
   const fleet = () => [
     thread("thr_sam", {
       title: "Sam",
@@ -1379,8 +1419,8 @@ describe("Bots section", () => {
     configureFakeSdk({
       threads: fleet(),
       projects: [
-        { id: "project-1", name: "bb", isPersonal: false },
-        { id: "assist-1", name: "assistants", isPersonal: false },
+        sidebarProject("project-1", "bb"),
+        sidebarProject("assist-1", "assistants"),
       ],
       assistantOrder,
     });
@@ -1391,10 +1431,12 @@ describe("Bots section", () => {
     fleetSidebar(["env-hands", "env-sam"]);
 
     const bots = await screen.findByRole("region", { name: "Bots" });
-    const rows = Array.from(bots.querySelectorAll("[data-sidebar-thread-id]"));
-    expect(rows.map((row) => row.getAttribute("data-sidebar-thread-id"))).toEqual(
-      ["thr_hands", "thr_sam"],
-    );
+    await waitFor(() => {
+      const rows = Array.from(bots.querySelectorAll("[data-sidebar-thread-id]"));
+      expect(rows.map((row) => row.getAttribute("data-sidebar-thread-id"))).toEqual(
+        ["thr_hands", "thr_sam"],
+      );
+    });
 
     const inbox = screen.getByRole("region", { name: "Inbox" });
     expect(within(inbox).queryByText("Sam")).toBeNull();
@@ -1427,6 +1469,94 @@ describe("Bots section", () => {
       options: undefined,
     });
   });
+
+  it("keeps rows undraggable until identities resolve", async () => {
+    configureFakeSdk({
+      threads: fleet(),
+      projects: [
+        sidebarProject("project-1", "bb"),
+        sidebarProject("assist-1", "assistants"),
+      ],
+      deferRpc: ["assistantIdentities"],
+    });
+    renderList();
+
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    // No identity map yet: a drag now would store environment ids over the
+    // saved order, so the rows carry no sort affordances at all.
+    expect(
+      bots.querySelector('[aria-roledescription="sortable"]'),
+    ).toBeNull();
+
+    await act(async () =>
+      resolvePendingRpc("assistantIdentities", "oldest", {
+        rows: [
+          { environmentId: "env-sam", identity: "proj_x:sam" },
+          { environmentId: "env-hands", identity: "proj_x:hands" },
+        ],
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        bots.querySelector('[aria-roledescription="sortable"]'),
+      ).not.toBeNull(),
+    );
+  });
+
+  // The machine switch in real life: the thread reattaches to the same home
+  // on another machine and lands in a brand-new environment, but the
+  // identity underneath is unchanged — so the subtitle survives.
+  it("keeps a subtitle across a reattach to a new environment", async () => {
+    configureFakeSdk({
+      threads: [
+        thread("thr_sam", {
+          title: "Sam",
+          projectId: "assist-1",
+          environment: { id: "env-sam-mac" } as BoardThread["environment"],
+        }),
+      ],
+      projects: [
+        sidebarProject("project-1", "bb"),
+        sidebarProject("assist-1", "assistants"),
+      ],
+      assistantIdentities: { "env-sam-mac": "proj_x:sam" },
+      subtitles: [{ identity: "proj_x:sam", subtitle: "Chief of staff" }],
+    });
+    renderList();
+
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    expect(await within(bots).findByText("Chief of staff")).toBeDefined();
+  });
+
+  it("orders rows by identity even when every row changed environment", async () => {
+    const bot = (id: string, envId: string) =>
+      thread(id, {
+        title: id,
+        projectId: "assist-1",
+        environment: { id: envId } as BoardThread["environment"],
+      });
+    configureFakeSdk({
+      threads: [bot("thr_sam", "env-sam-2"), bot("thr_hands", "env-hands-2")],
+      projects: [
+        sidebarProject("project-1", "bb"),
+        sidebarProject("assist-1", "assistants"),
+      ],
+      assistantOrder: ["proj_x:hands", "proj_x:sam"],
+      assistantIdentities: {
+        "env-sam-2": "proj_x:sam",
+        "env-hands-2": "proj_x:hands",
+      },
+    });
+    renderList();
+
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    await waitFor(() => {
+      const rows = Array.from(bots.querySelectorAll("[data-sidebar-thread-id]"));
+      expect(rows.map((row) => row.getAttribute("data-sidebar-thread-id"))).toEqual(
+        ["thr_hands", "thr_sam"],
+      );
+    });
+  });
 });
 
 describe("Bots preview cap", () => {
@@ -1443,8 +1573,8 @@ describe("Bots preview cap", () => {
     configureFakeSdk({
       threads: crowd(),
       projects: [
-        { id: "project-1", name: "bb", isPersonal: false },
-        { id: "assist-1", name: "assistants", isPersonal: false },
+        sidebarProject("project-1", "bb"),
+        sidebarProject("assist-1", "assistants"),
       ],
       assistantOrder: ["env-one", "env-two", "env-three", "env-four"],
     });
@@ -1511,8 +1641,8 @@ describe("Bots row identity", () => {
     configureFakeSdk({
       threads: [chimp(), sweepRun()],
       projects: [
-        { id: "project-1", name: "bb", isPersonal: false },
-        { id: "assist-1", name: "assistants", isPersonal: false },
+        sidebarProject("project-1", "bb"),
+        sidebarProject("assist-1", "assistants"),
       ],
       assistantOrder: ["env-chimp"],
     });
@@ -1528,4 +1658,55 @@ describe("Bots row identity", () => {
     view.rerender(listElement());
     expect(ids()).toEqual(["thr_chimp"]);
   });
+});
+
+
+it.each(["down", "up", "same then down"])("drags any retained conversation as one assistant group: %s", async (direction) => {
+  const initial = direction === "up" ? ["assist-1:forge", "assist-1:sam"] : ["assist-1:sam", "assist-1:forge"];
+  configureFakeSdk({
+    projects: [sidebarProject("assist-1", "assistants")],
+    threads: ["sam-server", "sam-mac", "forge-server", "forge-mac"].map((id, index) => Object.assign(thread(id, {
+      title: id.startsWith("sam") ? "Sam" : "Forge", projectId: "assist-1",
+      host: { id: id.endsWith("server") ? "srv" : "mac", name: id.endsWith("server") ? "Server" : "Mac" },
+      environment: { id } as BoardThread["environment"],
+    }), { updatedAt: 100 - index })),
+    assistantIdentities: { "sam-server": "assist-1:sam", "sam-mac": "assist-1:sam", "forge-server": "assist-1:forge", "forge-mac": "assist-1:forge" },
+    assistantOrder: initial,
+  });
+  renderList();
+  const bots = await screen.findByRole("region", { name: "Bots" });
+  await waitFor(() => {
+    const more = within(bots).queryByRole("button", { name: "Show more" });
+    if (more) fireEvent.click(more);
+    expect(within(bots).getByRole("button", { name: "Show less" })).toBeDefined();
+  });
+  await waitFor(() => expect(within(bots).getByLabelText("Sam — Mac").getAttribute("aria-roledescription")).toBe("sortable"));
+  const ids = () => Array.from(bots.querySelectorAll("[data-sidebar-thread-id]")).map((row) => row.getAttribute("data-sidebar-thread-id"));
+  await waitFor(() => expect(ids()).toHaveLength(4));
+  const drag = async (activeId: string, overId: string) => {
+    const links = Array.from(bots.querySelectorAll<HTMLElement>("[data-sidebar-thread-id]"));
+    links.forEach((link, index) => {
+      const top = index * 48;
+      link.closest("li")!.getBoundingClientRect = () => ({ x: 0, y: top, top, left: 0, right: 240, bottom: top + 48, width: 240, height: 48, toJSON: () => ({}) }) as DOMRect;
+    });
+    const activeIndex = links.findIndex((link) => link.getAttribute("data-sidebar-thread-id") === activeId);
+    const overIndex = links.findIndex((link) => link.getAttribute("data-sidebar-thread-id") === overId);
+    const active = links[activeIndex]!;
+    const startY = activeIndex * 48 + 24;
+    const targetY = overIndex * 48 + 24;
+    fireEvent.mouseDown(active, { button: 0, buttons: 1, clientX: 20, clientY: startY });
+    fireEvent.mouseMove(document, { buttons: 1, clientX: 20, clientY: startY + 6 });
+    await waitFor(() => expect(active.closest("li")!.getAttribute("data-pinned-reordering")).toBe("true"));
+    fireEvent.mouseMove(document, { buttons: 1, clientX: 20, clientY: targetY });
+    fireEvent.mouseUp(document, { button: 0, clientX: 20, clientY: targetY });
+  };
+  if (direction === "same then down") {
+    await drag("sam-mac", "sam-server");
+    expect(rpcCalls.filter((call) => call.method === "setAssistantOrder")).toEqual([]);
+    expect(ids()).toEqual(["sam-server", "sam-mac", "forge-server", "forge-mac"]);
+  }
+  await drag("sam-mac", direction === "up" ? "forge-server" : "forge-mac");
+  const expected = direction === "up" ? ["assist-1:sam", "assist-1:forge"] : ["assist-1:forge", "assist-1:sam"];
+  await waitFor(() => expect(rpcCalls.filter((call) => call.method === "setAssistantOrder").map((call) => call.input)).toEqual([{ identities: expected }]));
+  await waitFor(() => expect(ids()).toEqual(direction === "up" ? ["sam-server", "sam-mac", "forge-server", "forge-mac"] : ["forge-server", "forge-mac", "sam-server", "sam-mac"]));
 });

@@ -1,30 +1,43 @@
+import { createElement, useEffect, useState } from "react";
+import type { NewThreadComposerProps, NewThreadRequest } from "@get-bb/plugin-sdk/app";
+import type { z } from "zod";
+import type { boardRpcContract } from "@/server";
+import type { PipelinePullRequest } from "@/server";
 import type { ComponentType, PointerEvent as ReactPointerEvent } from "react";
 import type {
+  PluginRealtimeConnectionState,
   PluginSidebarProject,
-  PluginSidebarPullRequest,
   PluginThreadListProps,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import type { BoardThread, SettledOverride } from "@/lib/lanes";
+import { project } from "./fixtures";
 
 /**
- * A stand-in for `@bb/plugin-sdk/app`, aliased in by vitest.config.ts.
+ * A stand-in for `@get-bb/plugin-sdk/app`, aliased in by vitest.config.ts.
  *
  * The SDK is a runtime the bb app injects — the plugin only ever sees its
  * types — so component tests need something to import. This is the smallest
  * thing that satisfies the hooks this plugin actually calls.
  */
 export interface FakeSdkConfig {
+  assistantSeeds: Record<string, z.infer<typeof boardRpcContract.assistantSeeds.output>>;
+  assistantDestinations: Record<string, z.infer<typeof boardRpcContract.assistantDestination.output>>;
+  composerRequest: NewThreadRequest | null;
   threadStatus: "loading" | "ready" | "error";
   threads: BoardThread[];
   projects: PluginSidebarProject[];
   /** Reported by Pipeline; a missing key reports null. */
-  pullRequests: Record<string, PluginSidebarPullRequest | null>;
+  pullRequests: Record<string, PipelinePullRequest | null>;
   overrides: Array<{ threadId: string } & SettledOverride>;
   failRpc: boolean;
   /** What `pinnedOrder` returns; `setFakePinnedOrder` changes it mid-test. */
   pinnedOrder: string[];
   /** What `assistantOrder` returns; `setAssistantOrder` echoes its input. */
   assistantOrder: string[];
+  /** What `assistantIdentities` resolves; unmapped environments fall back to their id. */
+  assistantIdentities: Record<string, string>;
+  /** What `listAssistantSubtitles` returns; keyed by assistant identity. */
+  subtitles: Array<{ identity: string; subtitle: string }>;
   /** Makes `movePinned` reject, so the refetch path can be exercised. */
   failMovePinned: boolean;
   /** Makes `pinnedOrder` reject, leaving the order unknown. */
@@ -37,6 +50,8 @@ export interface FakeSdkConfig {
   projectHosts: Array<{ id: string; name: string }>;
   primaryHostId: string | null;
   createdProjectId: string;
+  /** What `useRealtimeConnectionState` reports; flip mid-test to simulate a reconnect. */
+  connectionState: PluginRealtimeConnectionState;
   projectDirectories: Record<
     string,
     {
@@ -48,23 +63,27 @@ export interface FakeSdkConfig {
 }
 
 const DEFAULTS: FakeSdkConfig = {
+  assistantSeeds: {}, assistantDestinations: {}, composerRequest: null,
   threadStatus: "ready",
   threads: [],
-  projects: [{ id: "project-1", name: "bb", isPersonal: false }],
+  projects: [project("project-1", "bb")],
   pullRequests: {},
   overrides: [],
   failRpc: false,
   pinnedOrder: [],
   assistantOrder: [],
+  assistantIdentities: {},
+  subtitles: [],
   failMovePinned: false,
   failPinnedOrder: false,
   deferRpc: [],
   projectHosts: [{ id: "host-1", name: "Workstation" }],
   primaryHostId: "host-1",
   createdProjectId: "project-new",
+  connectionState: "connected",
   projectDirectories: {
     "host-1:<home>": {
-      directory: "/home/ratul",
+      directory: "/home/me",
       parent: "/home",
       entries: [],
     },
@@ -135,6 +154,10 @@ export function configureFakeSdk(next: Partial<FakeSdkConfig> = {}): void {
   rpcCalls.length = 0;
   splitPointerDownCalls.length = 0;
   pendingRpc.length = 0;
+  lastComposerProps = null;
+  composerSubmitErrors.length = 0;
+  composerDrafts.clear();
+  navigateCalls.length = 0;
 }
 
 /** Change what a later `pinnedOrder` read returns, mid-test. */
@@ -237,6 +260,9 @@ const rpc = {
         pendingRpc.push({ method, input, resolve, reject });
       });
     }
+    if (method === "assistantSeeds") return config.assistantSeeds[(input as { threadId: string }).threadId];
+    if (method === "assistantDestination") return config.assistantDestinations[(input as { hostId: string }).hostId];
+    if (method === "createReplacementThread") return { newThreadId: "new-conversation", archivedSource: (input as { archiveSource: boolean }).archiveSource };
     if (method === "threadPullRequests") {
       const { threadIds } = input as { threadIds: string[] };
       return { rows: threadIds.map((threadId) => ({ threadId, pullRequest: config.pullRequests[threadId] ?? null })) };
@@ -254,11 +280,23 @@ const rpc = {
       return { ids: config.assistantOrder };
     }
     if (method === "setAssistantOrder") {
-      const { environmentIds } = input as { environmentIds: string[] };
-      config.assistantOrder = environmentIds;
-      return { ids: environmentIds };
+      const { identities } = input as { identities: string[] };
+      config.assistantOrder = identities;
+      return { ids: identities };
     }
-    if (method === "listAssistantSubtitles" || method === "listAssistantAvatars") {
+    if (method === "assistantIdentities") {
+      const { environmentIds } = input as { environmentIds: string[] };
+      return {
+        rows: environmentIds.map((environmentId) => ({
+          environmentId,
+          identity: config.assistantIdentities[environmentId] ?? environmentId,
+        })),
+      };
+    }
+    if (method === "listAssistantSubtitles") {
+      return { rows: config.subtitles };
+    }
+    if (method === "listAssistantAvatars") {
       return { rows: [] };
     }
     if (method === "listOverrides") {
@@ -328,7 +366,7 @@ export const useRpc = () => rpc;
 
 export const useRealtime = () => {};
 
-export const useRealtimeConnectionState = () => "connected" as const;
+export const useRealtimeConnectionState = () => config.connectionState;
 
 export const navigateCalls: Array<{ method: string; arg: unknown }> = [];
 const navigate = {
@@ -341,4 +379,53 @@ const navigate = {
 };
 export const useBbNavigate = () => navigate;
 
-export const experimental_NewThreadComposer = () => null;
+export let lastComposerProps: NewThreadComposerProps | null = null;
+export const composerSubmitErrors: unknown[] = [];
+const composerDrafts = new Map<string | undefined, string>();
+export function experimental_NewThreadComposer(props: NewThreadComposerProps) {
+  lastComposerProps = props;
+  const [prompt, setPrompt] = useState(() => composerDrafts.get(props.draftKey) || props.initialPrompt || "");
+  const [provider, setProvider] = useState(props.defaultProviderId ?? "codex");
+  const [model, setModel] = useState(props.defaultModel ?? "destination-model");
+  const seedKey = JSON.stringify([
+    props.defaultProjectId, props.defaultProviderId, props.defaultModel,
+    props.defaultReasoningLevel, props.defaultPermissionMode,
+    props.defaultServiceTier, props.defaultEnvironment,
+  ]);
+  // The public composer compares seeds by value and keeps nonempty drafts.
+  useEffect(() => {
+    setProvider(props.defaultProviderId ?? "codex");
+    setModel(props.defaultModel ?? "destination-model");
+  }, [seedKey]);
+  useEffect(() => {
+    const draft = composerDrafts.get(props.draftKey) || props.initialPrompt || "";
+    composerDrafts.set(props.draftKey, draft);
+    setPrompt(draft);
+  }, [props.draftKey, props.initialPrompt]);
+  return createElement("div", {},
+    createElement("textarea", {
+      "aria-label": "Prompt", value: prompt,
+      onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+        composerDrafts.set(props.draftKey, event.target.value);
+        setPrompt(event.target.value);
+      },
+    }),
+    createElement("input", { "aria-label": "Provider", value: provider,
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) => setProvider(event.target.value) }),
+    createElement("input", { "aria-label": "Model", value: model,
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) => setModel(event.target.value) }),
+    createElement("button", {
+      type: "button", "aria-label": "Send conversation",
+      onClick: () => {
+        const request: NewThreadRequest = config.composerRequest ?? {
+          projectId: props.defaultProjectId!, providerId: provider, model,
+          reasoningLevel: "high", permissionMode: "full", executionInputSources: {},
+          environment: props.defaultEnvironment!, input: [{ type: "text", text: prompt, mentions: [] }],
+        };
+        void Promise.resolve(props.onSubmit(request)).then(() => {
+          composerDrafts.delete(props.draftKey);
+          setPrompt("");
+        }).catch((error) => composerSubmitErrors.push(error));
+      },
+    }, "Send"));
+}

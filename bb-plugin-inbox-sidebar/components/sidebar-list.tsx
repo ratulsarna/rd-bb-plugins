@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
   type PluginThreadListProps,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import { AddProjectButton } from "@/components/add-project";
 import { BotsSection } from "@/components/bots-section";
 import { ProjectSelect, useProjectFilter } from "@/components/project-select";

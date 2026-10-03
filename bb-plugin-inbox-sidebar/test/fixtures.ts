@@ -1,8 +1,19 @@
 import type { BoardThread, SettledOverride } from "@/lib/lanes";
+import type { PluginSidebarProject } from "@get-bb/plugin-sdk/app";
 
 export const NOW = Date.now();
 export const HOUR = 60 * 60 * 1_000;
 export const DAY = 24 * HOUR;
+
+export function project(id: string, name: string): PluginSidebarProject {
+  return {
+    id,
+    name,
+    isPersonal: false,
+    href: `/projects/${id}`,
+    settingsHref: `/settings/projects/${id}`,
+  };
+}
 
 export function thread(
   id: string,

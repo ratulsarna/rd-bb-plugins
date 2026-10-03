@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { experimental_useSidebarThreadActions as useSidebarThreadActions } from "@bb/plugin-sdk/app";
+import { experimental_useSidebarThreadActions as useSidebarThreadActions } from "@get-bb/plugin-sdk/app";
 import type { BoardThread } from "@/lib/lanes";
 import type { PinnedMove } from "@/lib/pinned-order";
 

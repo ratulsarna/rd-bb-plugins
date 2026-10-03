@@ -1,4 +1,4 @@
-import type { PluginSidebarPullRequest } from "@bb/plugin-sdk/app";
+import type { PipelinePullRequest } from "@/server";
 import { isolatedRowGestureProps } from "@/components/row-gesture";
 import { statusLabelForItem, type BoardItem } from "@/lib/lanes";
 
@@ -13,7 +13,7 @@ export function formatRelative(timestamp: number, now: number): string {
 }
 
 const PR_LINK: Partial<
-  Record<PluginSidebarPullRequest["state"], { text: string; label: string }>
+  Record<PipelinePullRequest["state"], { text: string; label: string }>
 > = {
   draft: { text: "text-muted-foreground", label: "Draft pull request" },
   open: { text: "text-success", label: "Open pull request" },
@@ -22,7 +22,7 @@ const PR_LINK: Partial<
 export function OpenPrLink({
   pullRequest,
 }: {
-  pullRequest: PluginSidebarPullRequest | null;
+  pullRequest: PipelinePullRequest | null;
 }) {
   if (!pullRequest) return null;
   const link = PR_LINK[pullRequest.state];

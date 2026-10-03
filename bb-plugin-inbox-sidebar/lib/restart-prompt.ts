@@ -1,8 +1,35 @@
+import { SAM_HOME_SEGMENT } from "./assistant-identity";
+
 export type RestartSeeds = {
-  homePath: string | null;
-  /** Agent automations that still target the thread being replaced. */
+  projectId: string;
+  /** Stable assistant identity, or null when the home has none. */
+  identity: string | null;
+  /**
+   * The journal vault mapped to the destination host, or null when unmapped.
+   */
+  vaultPath: string | null;
+  /** Agent automations that still target the source conversation. */
   targetingAutomations: Array<{ id: string; name: string }>;
 };
+
+function automationList(automations: RestartSeeds["targetingAutomations"]): string {
+  return automations.map(({ id, name }) => `- ${name} (${id})`).join("\n");
+}
+
+/** Final guidance follows the validated choice, even for a previously saved draft. */
+export function restartAutomationPolicy(
+  sourceThreadId: string,
+  archiveSource: boolean,
+  automations: RestartSeeds["targetingAutomations"],
+): string {
+  const choice = archiveSource
+    ? "Replacement was selected. Review automations targeting the source before repointing them."
+    : "The source is being kept. Keep automation targets on the source intact.";
+  return `Use thread ${sourceThreadId} as context when needed.\n` +
+    `Final automation policy for source thread ${sourceThreadId}; this supersedes any conflicting source-retention or replacement guidance in the draft:\n` +
+    `${choice} Preserve each automation's machine and workspace requirements, including server-only jobs. Starting this conversation does not migrate automations.\n` +
+    (automations.length ? `Current automations targeting the source:\n${automationList(automations)}\n` : "");
+}
 
 /** YYYY-MM-DD on Sam's clock, whatever timezone the browser is in. */
 function istDay(now: Date): string {
@@ -14,36 +41,24 @@ function istDay(now: Date): string {
   }).format(now);
 }
 
-/**
- * The draft's lead line, with a repoint note when automations still point at
- * the thread being replaced, and Sam's reading for the day. It rides in the
- * first user message, so the freshly-born assistant sees it and knows to
- * repoint (its own id is the new one) or tell you.
- *
- * Only Sam keeps a journal (fleet AGENTS.md), so only Sam's home gets the
- * reading line: today's note and the week summary the nightly compress
- * builds. A pointer, not the text; Sam reads the files herself.
- */
+/** A fresh conversation's context pointer and Sam's destination journal paths. */
 export function restartPrompt(
   replaceThreadId: string | null,
   seeds: RestartSeeds,
   now: Date = new Date(),
 ): string {
   if (!replaceThreadId) return "";
-  let lead = `Continue from thread ${replaceThreadId}.\n\n`;
+  let lead = `Start a fresh root conversation. Use thread ${replaceThreadId} as context when needed.\n\n`;
   if (seeds.targetingAutomations.length > 0) {
-    const lines = seeds.targetingAutomations
-      .map((automation) => `- ${automation.name} (${automation.id})`)
-      .join("\n");
-    lead +=
-      `This thread replaces the one above. These automations still target ` +
-      `the archived thread and need repointing to this thread's id:\n${lines}\n\n`;
+    lead += `Automations currently targeting the source; final guidance follows the selected creation mode:\n${automationList(seeds.targetingAutomations)}\n\n`;
   }
-  if (seeds.homePath?.replace(/\/+$/, "").endsWith("/sam")) {
+  const isSam = seeds.identity === `${seeds.projectId}:${SAM_HOME_SEGMENT}`;
+  if (isSam && seeds.vaultPath) {
+    const vault = seeds.vaultPath.replace(/\/+$/, "");
     const day = istDay(now);
     lead +=
-      `Read ~/ObsidianVault/Notes/Dated/${day}/${day}.md and ` +
-      `~/ObsidianVault/Notes/Memory/WeekSummary.md before answering.\n\n`;
+      `Read ${vault}/Notes/Dated/${day}/${day}.md and ` +
+      `${vault}/Notes/Memory/WeekSummary.md before answering.\n\n`;
   }
   return lead;
 }

@@ -1,4 +1,4 @@
-import { definePluginApp } from "@bb/plugin-sdk/app";
+import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { BoardSidebar } from "@/components/sidebar-list";
 
 export default definePluginApp((app) => {

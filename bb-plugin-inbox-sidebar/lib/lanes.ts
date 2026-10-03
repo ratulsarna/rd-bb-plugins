@@ -1,7 +1,7 @@
 import type {
   PluginSidebarThread,
   PluginSidebarThreadActivity,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 
 export const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1_000;
 

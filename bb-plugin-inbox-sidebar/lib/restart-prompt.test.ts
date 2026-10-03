@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { restartPrompt } from "./restart-prompt";
 
+const PROJECT = "proj_fleet";
 const sam = {
-  homePath: "/home/ratul/assistants/sam",
+  projectId: PROJECT,
+  identity: `${PROJECT}:sam`,
+  vaultPath: "/home/me/ObsidianVault",
   targetingAutomations: [],
 };
 
@@ -19,21 +22,37 @@ describe("restartPrompt", () => {
     expect(prompt).toContain("Notes/Memory/WeekSummary.md");
   });
 
+  it("resolves the vault as registered on the target host", () => {
+    const prompt = restartPrompt("thr_old", {
+      ...sam,
+      vaultPath: "/Users/me/Vault/ObsidianVault",
+    });
+    expect(prompt).toContain(
+      "/Users/me/Vault/ObsidianVault/Notes/Dated/",
+    );
+    expect(prompt).not.toContain("/home/me/ObsidianVault");
+  });
+
   it("gives other assistants no reading, they keep no journal", () => {
     const prompt = restartPrompt("thr_old", {
       ...sam,
-      homePath: "/home/ratul/assistants/forge",
+      identity: `${PROJECT}:forge`,
     });
-    expect(prompt).toBe("Continue from thread thr_old.\n\n");
+    expect(prompt).toBe("Start a fresh root conversation. Use thread thr_old as context when needed.\n\n");
   });
 
-  it("keeps the repoint note right under the line it refers to", () => {
+  it("skips the reading when the target host has no vault source", () => {
+    const prompt = restartPrompt("thr_old", { ...sam, vaultPath: null });
+    expect(prompt).toBe("Start a fresh root conversation. Use thread thr_old as context when needed.\n\n");
+  });
+
+  it("names automations without seeding a choice that can become stale", () => {
     const prompt = restartPrompt("thr_old", {
       ...sam,
       targetingAutomations: [{ id: "auto_1", name: "heartbeat" }],
     });
-    expect(prompt.indexOf("replaces the one above")).toBeLessThan(
-      prompt.indexOf("Read ~/ObsidianVault"),
+    expect(prompt.indexOf("Automations currently targeting the source")).toBeLessThan(
+      prompt.indexOf("Read /home/me/ObsidianVault"),
     );
     expect(prompt).toContain("- heartbeat (auto_1)");
   });
