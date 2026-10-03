@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   act,
   cleanup,
@@ -35,6 +35,7 @@ const list = registrations.threadLists[0]!;
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   // Section collapse choices persist in localStorage; tests must not inherit
   // a choice an earlier test clicked into place.
   localStorage.clear();
@@ -1385,6 +1386,46 @@ describe("row context menu", () => {
     expect(until - before).toBeLessThanOrEqual(HOUR + 1_000);
     expect(screen.queryByRole("dialog", { name: "Snooze until" })).toBeNull();
     expect(sidebarActionCalls.some((c) => c.method === "open")).toBe(false);
+  });
+
+  // Radix opens the menu on a 700 ms touch or pen hold and then lets the
+  // click through; that click must not open the row and close the drawer.
+  it("opens a row on a tap or a mouse press, never on the long press that opens its menu", async () => {
+    // jsdom has no PointerEvent, so pointerType would never arrive.
+    class TestPointerEvent extends MouseEvent {
+      pointerType: string;
+      constructor(type: string, init: PointerEventInit = {}) {
+        super(type, init);
+        this.pointerType = init.pointerType ?? "";
+      }
+    }
+    vi.stubGlobal("PointerEvent", TestPointerEvent);
+    configureFakeSdk({ threads: [thread("thr_hold", { title: "Hold me" })] });
+    renderList({ isCompactViewport: true });
+    const anchor = await screen.findByRole("link", { name: "Hold me" });
+    const row = anchor.parentElement!;
+    const press = (pointerType: string, heldMs: number) => {
+      const start = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+      fireEvent.pointerDown(row, { pointerType });
+      clock.mockReturnValue(start + heldMs);
+      fireEvent.click(anchor);
+      clock.mockRestore();
+    };
+    const opens = () => sidebarActionCalls.filter((c) => c.method === "open").length;
+
+    press("touch", 800);
+    press("pen", 800);
+    expect(opens()).toBe(0);
+    press("touch", 150);
+    expect(opens()).toBe(1);
+    press("mouse", 800);
+    expect(opens()).toBe(2);
+    // Keyboard activation has no press of its own and must not inherit one.
+    fireEvent.pointerDown(row, { pointerType: "touch" });
+    fireEvent.pointerCancel(row, { pointerType: "touch" });
+    fireEvent.click(anchor);
+    expect(opens()).toBe(3);
   });
 
   it("settles from the menu without opening the thread", async () => {

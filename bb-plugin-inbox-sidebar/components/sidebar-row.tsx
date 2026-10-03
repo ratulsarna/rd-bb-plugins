@@ -30,6 +30,9 @@ import {
 import type { PinnedMove } from "@/lib/pinned-order";
 
 const DOUBLE_CLICK_MS = 300;
+// Radix ContextMenu opens on a touch or pen hold this long, then lets the
+// click through. A hold that opened the menu must not also open the thread.
+const LONG_PRESS_MS = 700;
 
 /** dnd-kit's sortable bindings for a pinned root. */
 export interface RowReorder {
@@ -118,6 +121,22 @@ export function SidebarRow({
   const { splitProps } = experimental_useSidebarThreadSplit(item.thread.id);
   const isRenaming = renamingThreadId === item.thread.id;
   const pendingTapRef = useRef<number | null>(null);
+  const pressRef = useRef<{ at: number; pointerType: string } | null>(null);
+
+  // Classifies the click being handled and consumes its press, so a later
+  // keyboard activation (no pointer) is never judged by an old one.
+  const isLongPressClick = () => {
+    const press = pressRef.current;
+    pressRef.current = null;
+    return (
+      press !== null &&
+      press.pointerType !== "mouse" &&
+      Date.now() - press.at >= LONG_PRESS_MS
+    );
+  };
+  const openFromClick = () => {
+    if (!isLongPressClick()) openThread();
+  };
 
   const startRename = () => {
     if (pendingTapRef.current !== null) {
@@ -128,6 +147,7 @@ export function SidebarRow({
   };
 
   const handleTitleClick = () => {
+    if (isLongPressClick()) return;
     if (pendingTapRef.current !== null) {
       startRename();
       return;
@@ -193,6 +213,14 @@ export function SidebarRow({
           {...(reorder?.attributes ?? {})}
           {...(reorder?.listeners ?? {})}
           {...splitProps}
+          // Capture, so the split and reorder handlers spread above keep
+          // their own onPointerDown.
+          onPointerDownCapture={(event) => {
+            pressRef.current = { at: Date.now(), pointerType: event.pointerType };
+          }}
+          onPointerCancelCapture={() => {
+            pressRef.current = null;
+          }}
         >
           {/* Prevent the browser's href drag from stealing the row gesture. */}
           <a
@@ -204,7 +232,7 @@ export function SidebarRow({
             draggable={false}
             onClick={(event) => {
               event.preventDefault();
-              openThread();
+              openFromClick();
             }}
             className="absolute inset-0 cursor-pointer rounded-md"
           />
@@ -267,14 +295,14 @@ export function SidebarRow({
             <span
               className="pointer-events-auto max-w-[45%] min-w-0 shrink cursor-pointer truncate rounded bg-foreground/[0.07] px-1.5 py-px font-medium text-muted-foreground"
               title={`Project: ${projectName}`}
-              onClick={openThread}
+              onClick={openFromClick}
             >
               {projectName}
             </span>
             <span
               className="pointer-events-auto min-w-0 flex-1 cursor-pointer truncate text-muted-foreground/70"
               title={`Machine: ${machineName}`}
-              onClick={openThread}
+              onClick={openFromClick}
             >
               {machineName}
             </span>
