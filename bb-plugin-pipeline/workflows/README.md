@@ -44,7 +44,7 @@ The card also carries shape review, on or off, off by default. It is the user's 
 
 The user sets mode and size, on the card or during intake. The lead states them in one line and does not change them, except a bug's size: it is provisional until the RCA; you cannot size what you have not diagnosed. In manual the user sizes the diagnosed fix at the RCA stop; in auto the lead sizes it and tells the user.
 
-The user can change either setting mid-run. Pipeline tells the lead, which follows the new setting from its next stop or gate and records the change in `run.md`; passed gates are not redone.
+The user can change any of these settings mid-run. Pipeline tells the lead, which follows the new setting from its next stop or gate and records the change in `run.md`; passed gates are not redone.
 
 ## Non-negotiables
 

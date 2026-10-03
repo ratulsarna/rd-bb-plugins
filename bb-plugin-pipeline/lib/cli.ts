@@ -15,7 +15,7 @@ import type { GithubSync } from "./github-sync";
 import type { IssueImporter } from "./issue-import";
 import { ownerThread } from "./card";
 import type { MachineQueue } from "./contract";
-import { MODES, SIZES, type Card, type CardAttachment, type CardMode, type CardSize, type CardStore } from "./store";
+import { MODES, SHAPE_REVIEWS, SIZES, type Card, type CardAttachment, type CardMode, type CardSize, type CardStore } from "./store";
 import { readWorkflow } from "./workflow";
 import { readGuidelines, type GuidelinesSettings } from "./guidelines";
 import { USER_HANDOFF, userHandoff } from "./prompts";
@@ -135,7 +135,7 @@ function cardSettings(args: ParsedArgs): { mode?: CardMode; size?: CardSize } {
 function shapeReviewOption(args: ParsedArgs): { shapeReview?: boolean } {
   const shape = option(args, "shape");
   if (shape === undefined) return {};
-  if (shape !== "on" && shape !== "off") throw new Error(`unknown shape review ${shape}; use on or off`);
+  if (!(SHAPE_REVIEWS as readonly string[]).includes(shape)) throw new Error(`unknown shape review ${shape}; use ${SHAPE_REVIEWS.join(" or ")}`);
   return { shapeReview: shape === "on" };
 }
 

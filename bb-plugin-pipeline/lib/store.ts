@@ -14,7 +14,9 @@ export const MODES = ["manual", "auto"] as const;
 export type CardMode = typeof MODES[number];
 export const SIZES = ["small", "standard"] as const;
 export type CardSize = typeof SIZES[number];
-export const shapeReviewLabel = (on: boolean): "on" | "off" => (on ? "on" : "off");
+export const SHAPE_REVIEWS = ["off", "on"] as const;
+export type ShapeReview = typeof SHAPE_REVIEWS[number];
+export const shapeReviewLabel = (on: boolean): ShapeReview => (on ? "on" : "off");
 
 export interface CardAttachment {
   path: string;

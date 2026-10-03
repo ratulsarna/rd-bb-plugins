@@ -16,7 +16,7 @@ import {
 } from "./execution";
 import { intakePrompt, leadPrompt } from "./prompts";
 import { readWorkflow } from "./workflow";
-import { settingsChangeInstruction } from "./control-prompts";
+import { settingsChangeInstruction, settingsSummary } from "./control-prompts";
 import { resolveMachine } from "./machines";
 import {
   environmentFor,
@@ -24,14 +24,13 @@ import {
   type PipelineLaunchSettings,
   type PipelineRole,
 } from "./spawn";
-import {
-  shapeReviewLabel,
-  type Card,
-  type CardAttachment,
-  type CardMode,
-  type CardSize,
-  type CardStore,
-  type HistoryInput,
+import type {
+  Card,
+  CardAttachment,
+  CardMode,
+  CardSize,
+  CardStore,
+  HistoryInput,
 } from "./store";
 import { ownerThread, rejectBacklog, requireStarted, roleThread } from "./card";
 import { userAttentionReason, type AttentionCategory } from "./notifications";
@@ -988,8 +987,7 @@ export function createPipelineService(
         update(card.id, patch, {
           kind: "settings_changed",
           source,
-          note: `mode ${patch.mode ?? card.mode ?? "unset"}, size ${patch.size ?? card.size ?? "unset"}, `
-            + `shape review ${shapeReviewLabel(patch.shapeReview ?? card.shapeReview)}`,
+          note: settingsSummary({ ...card, ...patch }),
         });
       }
       // Queued behind launches: a thread still being linked gets the note once it exists,

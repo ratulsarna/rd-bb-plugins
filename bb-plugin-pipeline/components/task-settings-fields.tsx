@@ -1,8 +1,5 @@
-import { MODES, SIZES, shapeReviewLabel, type CardMode, type CardSize } from "@/lib/store";
+import { MODES, SHAPE_REVIEWS, SIZES, shapeReviewLabel, type CardMode, type CardSize, type ShapeReview } from "@/lib/store";
 import { PipelineSelect } from "./select";
-
-type ShapeReview = "on" | "off";
-const SHAPE_REVIEW: readonly ShapeReview[] = ["off", "on"];
 
 const LABELS: Record<CardMode | CardSize | ShapeReview, string> = {
   manual: "Manual",
@@ -54,7 +51,7 @@ export function TaskSettingsFields(props: {
         onChange={props.onModeChange} disabled={props.disabled} />
       <SettingSelect name="Size" label={`Size${suffix}`} options={SIZES} value={props.size}
         onChange={props.onSizeChange} disabled={props.disabled} />
-      <SettingSelect name="Shape review" label={`Shape review${suffix}`} options={SHAPE_REVIEW} value={shapeReviewLabel(props.shapeReview)}
+      <SettingSelect name="Shape review" label={`Shape review${suffix}`} options={SHAPE_REVIEWS} value={shapeReviewLabel(props.shapeReview)}
         onChange={(value) => props.onShapeReviewChange(value === "on")} disabled={props.disabled} />
     </>
   );

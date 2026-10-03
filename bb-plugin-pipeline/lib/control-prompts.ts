@@ -16,8 +16,12 @@ export function resumeInstruction(card: Card, documents?: Readonly<Record<string
   return `${resumeHandoff(card)}\n${workflowAccess(documents)}\nRun \`bb pipeline instructions ${phase}\` and read the current phase before continuing.`;
 }
 
+export function settingsSummary(card: Pick<Card, "mode" | "size" | "shapeReview">): string {
+  return `mode ${card.mode ?? "unset"}, size ${card.size ?? "unset"}, shape review ${shapeReviewLabel(card.shapeReview)}`;
+}
+
 export function settingsChangeInstruction(card: Card): string {
-  return `The user changed Pipeline task ${card.id} to mode ${card.mode ?? "unset"}, size ${card.size ?? "unset"}, shape review ${shapeReviewLabel(card.shapeReview)}. Follow the new settings from your next stop or gate, and record the change in run.md. Do not redo gates already passed.`;
+  return `The user changed Pipeline task ${card.id} to ${settingsSummary(card)}. Follow the new settings from your next stop or gate, and record the change in run.md. Do not redo gates already passed.`;
 }
 
 export function isResumeInstruction(card: Card, text: string): boolean {
