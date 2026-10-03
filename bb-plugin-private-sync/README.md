@@ -54,11 +54,30 @@ conflict without a copy, deleting the restored original closes it.
 
 Before each pass, the host checks that all its mapped roots are physically
 separate, including symlink aliases. A root moved, replaced, or retargeted
-during a scan is refused. Directory edits do not invalidate root identity.
+during or after a scan is refused. Each node persists the accepted canonical
+path/device/inode, and every file operation must match it. Retries and restarts
+keep that binding. Restore the original directory to resume, or explicitly change
+the mapped path to adopt a replacement as a fresh node. Directory edits do not
+invalidate root identity.
+
+The first full scan after upgrading trusts the already-configured directory:
+present entries retain their old bases and offline/tombstone semantics; absent
+entries lose their bases so they cannot delete hub copies. A pre-upgrade directory
+replacement cannot be detected retrospectively.
+
+Parents are rechecked before capture, publication, and staging. Portable pathname
+operations cannot atomically prevent a hostile local writer from redirecting a
+path after the last check. This is not an atomic OS security guarantee. Captures
+remain recoverable at the original directory when a root changes during a write.
 If a file becomes a directory or special entry during capture, that entry is
 preserved inside a visible sync-conflict directory without traversing it or
 replacing a newer save. Cancellation stops queued writes and publication that
 has not started; an atomic publication already in progress may finish.
+
+Creates wait for related ancestor/descendant removals, while unrelated downloads
+keep their newest-first ordering. Conflict names fit the 255-byte UTF-8 basename
+limit; truncated names include a digest of the original basename and retain
+collision suffixes.
 
 ## Layout
 
@@ -70,7 +89,8 @@ has not started; an atomic publication already in progress may finish.
 | `lib/reconcile.ts`                                        | One node's pass: upload local changes against the node's base, then apply hub changes.                                                 |
 | `lib/store.ts`                                            | Hub SQLite (head, tombstones, bases, history, conflicts) and content blobs beside `data.db`.                                           |
 | `host.ts`, `lib/host-fs.ts`                               | The per-machine worker: scan with a hash cache, chunked reads, temp-file writes with hash and expected-content checks, native watches. |
-| `lib/paths.ts`                                            | Path safety, default exclusions, symlink rules, conflict names.                                                                        |
+| `lib/paths.ts`                                            | Path safety, default exclusions, symlink rules.                                                                        |
+| `lib/conflict-path.ts` | Shared host/hub conflict naming with byte limits and collision suffixes. |
 | `app.tsx`                                                 | Physical folder mapping editor, connectivity, sync controls, and operating explanation.                                                                                       |
 
 Transfers move in 4 MiB chunks and yield between chunks, allowing small edits

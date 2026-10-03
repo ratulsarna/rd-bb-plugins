@@ -287,6 +287,20 @@ export const scanEntrySchema = z.union([
 ]);
 export type ScanEntry = z.infer<typeof scanEntrySchema>;
 
+/** Physical directory accepted by a scan; strings retain filesystem integer precision. */
+export const rootIdentitySchema = z.object({
+  canonical: absolutePath,
+  dev: z.string().regex(/^[0-9]+$/),
+  ino: z.string().regex(/^[0-9]+$/),
+}).strict();
+export type RootIdentity = z.infer<typeof rootIdentitySchema>;
+
+export function sameRoot(a: RootIdentity, b: RootIdentity): boolean {
+  return a.canonical === b.canonical && a.dev === b.dev && a.ino === b.ino;
+}
+
+const boundRootInput = { root: absolutePath, identity: rootIdentitySchema };
+
 const rootInput = {
   root: absolutePath,
   ignorePaths: z.array(relativePath).max(256),
@@ -314,6 +328,7 @@ export const hostContract = defineRpcContract({
     input: z
       .object({
         ...rootInput,
+        identity: rootIdentitySchema.nullable().default(null),
         paths: z.array(relativePath).max(512).optional(),
         /** Every other configured folder root on this host, checked before each pass. */
         otherRoots: z.array(absolutePath).max(31).default([]),
@@ -324,6 +339,7 @@ export const hostContract = defineRpcContract({
         .object({
           ok: z.literal(true),
           scanId: z.string(),
+          identity: rootIdentitySchema,
           pages: z.number().int().min(1),
           entries: z.array(scanEntrySchema),
           /** Symlinks leaving the root and special files, which are never mirrored. */
@@ -340,6 +356,10 @@ export const hostContract = defineRpcContract({
         .strict(),
     ]),
   },
+  checkRoot: {
+    input: z.object(boundRootInput).strict(),
+    output: z.null(),
+  },
   scanPage: {
     input: z
       .object({ scanId: z.string(), page: z.number().int().min(1) })
@@ -353,7 +373,7 @@ export const hostContract = defineRpcContract({
   read: {
     input: z
       .object({
-        root: absolutePath,
+        ...boundRootInput,
         ranges: z
           .array(
             z
@@ -397,7 +417,7 @@ export const hostContract = defineRpcContract({
   write: {
     input: z
       .object({
-        root: absolutePath,
+        ...boundRootInput,
         items: z
           .array(
             z
@@ -422,7 +442,7 @@ export const hostContract = defineRpcContract({
   link: {
     input: z
       .object({
-        root: absolutePath,
+        ...boundRootInput,
         path: relativePath,
         target: z.string().min(1).max(4096),
         expected,
@@ -433,7 +453,7 @@ export const hostContract = defineRpcContract({
   remove: {
     input: z
       .object({
-        root: absolutePath,
+        ...boundRootInput,
         path: relativePath,
         expected: contentSchema,
       })

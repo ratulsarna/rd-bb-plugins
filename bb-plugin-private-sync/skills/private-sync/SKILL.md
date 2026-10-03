@@ -122,6 +122,10 @@ special files are skipped. Sync never follows a symlink.
   a deleted file back unless it edited that file.
 - A new machine never loses its files. Files it has that the hub lacks are
   uploaded; files that differ become conflict copies.
+- Root identity persists across retries and restarts. Restore the original
+  directory to resume after replacement, or change the mapped path to adopt a
+  replacement as a fresh node. The first full scan after upgrade trusts the
+  configured directory, retains present bases, and drops absent-path bases.
 - A missing root or an unexpected empty root stops that machine with an
   error. An empty root can recover after a hub-requested deletion when the
   hub explicitly records every previously held path as deleted.

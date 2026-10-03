@@ -184,7 +184,7 @@ export function ComposeDialog({
                     hostId: destination.hostId,
                     workspace: { type: "unmanaged", path: destination.homePath },
                   }}
-                  initialPrompt={restartPrompt(replaceThreadId, { ...seeds, identity: destination.identity, vaultPath: destination.vaultPath, archiveSource: shouldArchive, crossMachine: !sameHost })}
+                  initialPrompt={restartPrompt(replaceThreadId, { ...seeds, identity: destination.identity, vaultPath: destination.vaultPath })}
                   draftKey={`restart-${replaceThreadId}-${hostId}-new`}
                   placeholder={`Message ${name}…`}
                   onSubmit={async (request) => {

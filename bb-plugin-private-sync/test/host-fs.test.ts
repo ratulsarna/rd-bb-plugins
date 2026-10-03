@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import { createHostEntry } from "../host";
-import type { Content } from "../contract";
+import type { Content, RootIdentity } from "../contract";
 import {
   HashCache,
   commitFile,
@@ -77,12 +77,16 @@ let base: string;
 let root: string;
 let target: string;
 let cache: HashCache;
+let identity: RootIdentity;
 beforeEach(async () => {
   base = await fs.mkdtemp(join(tmpdir(), "private-sync-host-"));
   root = join(base, "root");
   await fs.mkdir(root);
   target = join(root, "doc.md");
   cache = new HashCache(join(base, "data", "hashes.json"));
+  const scan = await scanRoot(cache, { root, ownDirs: [], ignorePaths: [] });
+  if (!scan.ok) throw new Error("Initial root scan failed");
+  identity = scan.identity;
 });
 afterEach(async () => {
   hooks.before = hooks.after = undefined;
@@ -100,7 +104,7 @@ async function apply(
   kind: "file" | "link" | "remove",
   expected: Content | null,
 ) {
-  const request = { root, path: "doc.md", expected };
+  const request = { root, identity, path: "doc.md", expected };
   if (kind === "link")
     return writeLink(cache, { ...request, target: "other.md" });
   if (kind === "remove")
@@ -376,7 +380,7 @@ describe("filesystem mutation interleavings", () => {
     ] as const)
       expect(
         await writeChunk({
-          root,
+          root, identity,
           path: "doc.md",
           tempId: "partial123",
           offset,
@@ -385,7 +389,7 @@ describe("filesystem mutation interleavings", () => {
       ).toEqual({ ok: true });
     expect(
       await commitFile(cache, {
-        root,
+        root, identity,
         path: "doc.md",
         tempId: "partial123",
         content: file(bytes, true),
@@ -396,7 +400,7 @@ describe("filesystem mutation interleavings", () => {
     expect((await fs.stat(target)).mode & 0o777).toBe(0o700);
     expect(
       await writeLink(cache, {
-        root,
+        root, identity,
         path: "doc.md",
         target: "other.md",
         expected: file(bytes, true),
@@ -615,7 +619,7 @@ it.each(["guard", "capture", "capture-save", "published"] as const)("SDK write b
     commit: { content: file("remote"), expected: path === "doc.md" ? file("expected") : null },
   }));
   try {
-    await expect(host.experimental_call("write", { root, items }, { signal: controller.signal })).rejects.toThrow();
+    await expect(host.experimental_call("write", { root, identity, items }, { signal: controller.signal })).rejects.toThrow();
     expect(controller.signal.aborted).toBe(true);
     expect(await fs.readFile(join(root, "later.md")).catch(() => null)).toBeNull();
     expect(await fs.lstat(join(root, `${TEMP_PREFIX}second1234`)).catch(() => null)).toBeNull();
@@ -624,7 +628,7 @@ it.each(["guard", "capture", "capture-save", "published"] as const)("SDK write b
     hooks.after = undefined;
     hash.mockRestore();
     const retry = { ...items[0]!, commit: { content: file("remote"), expected: file(phase === "published" ? "remote" : phase === "capture-save" ? "newer save" : "expected") } };
-    expect(await host.experimental_call("write", { root, items: [retry, items[1]!] })).toEqual({ results: [{ ok: true }, { ok: true }] });
+    expect(await host.experimental_call("write", { root, identity, items: [retry, items[1]!] })).toEqual({ results: [{ ok: true }, { ok: true }] });
     expect(await fs.readFile(target, "utf8")).toBe("remote");
     expect(await fs.readFile(join(root, "later.md"), "utf8")).toBe("remote");
   } finally { hash.mockRestore(); await host.experimental_dispose(); }
@@ -683,4 +687,139 @@ it("preserves a captured FIFO without reading it or wedging the next scan", asyn
   const result = await scanRoot(cache, { root, ownDirs: [], ignorePaths: [] });
   expect(result).toMatchObject({ ok: true, skipped: 1, entries: [] });
   expect((await fs.readdir(root)).some((name) => name.startsWith(TEMP_PREFIX))).toBe(false);
+});
+
+it.each(["file", "link", "remove"] as const)("%s refuses an alias retarget during its awaited guard and leaves both roots unchanged", async (kind) => {
+  await save("expected");
+  const replacement = join(base, "replacement");
+  const alias = join(base, "alias");
+  await fs.mkdir(replacement);
+  await fs.writeFile(join(replacement, "doc.md"), "expected");
+  await fs.symlink(root, alias);
+  const host = experimental_createHostEntryHarness(createHostEntry(), {
+    experimental_paths: { dataDir: join(base, "host-data"), tempDir: join(base, "host-tmp") },
+  });
+  const scanned = await host.experimental_call("scan", { root: alias, ignorePaths: [] });
+  if (!scanned.ok) throw new Error("Scan failed");
+  const original = HashCache.prototype.hash;
+  let swapped = false;
+  const spy = vi.spyOn(HashCache.prototype, "hash").mockImplementation(async function (this: HashCache, path, abs, stats) {
+    const result = await original.call(this, path, abs, stats);
+    if (!swapped && abs === target) {
+      swapped = true;
+      await fs.unlink(alias);
+      await fs.symlink(replacement, alias);
+    }
+    return result;
+  });
+  const bound = { root: alias, identity: scanned.identity };
+  try {
+    const operation = kind === "file"
+      ? host.experimental_call("write", { ...bound, items: [{ path: "doc.md", tempId: "swap12345", offset: 0, data: Buffer.from("remote").toString("base64"), commit: { content: file("remote"), expected: file("expected") } }] })
+      : kind === "link"
+        ? host.experimental_call("link", { ...bound, path: "doc.md", target: "other.md", expected: file("expected") })
+        : host.experimental_call("remove", { ...bound, path: "doc.md", expected: file("expected") });
+    await expect(operation).rejects.toThrow(/root identity changed/);
+    expect(swapped).toBe(true);
+    expect(await fs.readFile(target, "utf8")).toBe("expected");
+    expect(await fs.readFile(join(replacement, "doc.md"), "utf8")).toBe("expected");
+    expect(await fs.readdir(replacement)).toEqual(["doc.md"]);
+  } finally { spy.mockRestore(); await host.experimental_dispose(); }
+});
+
+it.each(["alias", "canonical"] as const)("retains captured bytes when the %s root changes after capture, then recovers on restoration", async (kind) => {
+  await save("expected");
+  const replacement = join(base, "replacement");
+  const alias = join(base, "alias");
+  const moved = `${root}-moved`;
+  await fs.mkdir(replacement);
+  await fs.writeFile(join(replacement, "doc.md"), "expected");
+  await fs.symlink(root, alias);
+  const host = experimental_createHostEntryHarness(createHostEntry(), {
+    experimental_paths: { dataDir: join(base, "host-data"), tempDir: join(base, "host-tmp") },
+  });
+  const scanned = await host.experimental_call("scan", { root: alias, ignorePaths: [] });
+  if (!scanned.ok) throw new Error("Scan failed");
+  let swapped = false;
+  hooks.after = async (op, args) => {
+    if (swapped || op !== "rename" || args[0] !== target) return;
+    swapped = true;
+    if (kind === "canonical") {
+      await fs.rename(root, moved);
+      await fs.symlink(replacement, root);
+    } else {
+      await fs.unlink(alias);
+      await fs.symlink(replacement, alias);
+    }
+  };
+  try {
+    await expect(host.experimental_call("remove", { root: alias, identity: scanned.identity, path: "doc.md", expected: file("expected") })).rejects.toThrow(/root identity changed/);
+    expect(swapped).toBe(true);
+    expect(await fs.readFile(join(replacement, "doc.md"), "utf8")).toBe("expected");
+    if (kind === "canonical") {
+      const capture = (await fs.readdir(moved)).find((name) => name.startsWith(`${TEMP_PREFIX}capture-`));
+      expect(await fs.readFile(join(moved, capture!, "doc.md"), "utf8")).toBe("expected");
+      await fs.unlink(root);
+      await fs.rename(moved, root);
+    } else {
+      expect(await fs.readFile(target, "utf8")).toBe("expected");
+      await fs.unlink(alias);
+      await fs.symlink(root, alias);
+    }
+    hooks.after = undefined;
+    const recovered = await host.experimental_call("scan", { root: alias, identity: scanned.identity, ignorePaths: [] });
+    expect(recovered.ok).toBe(true);
+    expect(await fs.readFile(target, "utf8")).toBe("expected");
+    expect((await fs.readdir(root)).some((name) => name.startsWith(`${TEMP_PREFIX}capture-`))).toBe(false);
+    expect(await host.experimental_call("remove", { root: alias, identity: scanned.identity, path: "doc.md", expected: file("expected") })).toEqual({ ok: true });
+    expect(await fs.readFile(join(replacement, "doc.md"), "utf8")).toBe("expected");
+  } finally { hooks.after = undefined; await host.experimental_dispose(); }
+});
+
+it("revalidates the parent chain after an awaited guard before symlink publication", async () => {
+  const dir = join(root, "links");
+  const outside = join(base, "outside");
+  await fs.mkdir(dir);
+  await fs.mkdir(outside);
+  await fs.writeFile(join(dir, "item"), "expected");
+  await fs.writeFile(join(outside, "item"), "outside");
+  const hash = cache.hash.bind(cache);
+  let redirected = false;
+  const spy = vi.spyOn(cache, "hash").mockImplementation(async (...args) => {
+    const result = await hash(...args);
+    if (!redirected && args[1] === join(dir, "item")) {
+      redirected = true;
+      await fs.rename(dir, `${dir}-moved`);
+      await fs.symlink(outside, dir);
+    }
+    return result;
+  });
+  try {
+    expect(await writeLink(cache, { root, identity, path: "links/item", expected: file("expected"), target: "elsewhere" })).toEqual({ ok: false, reason: "blocked" });
+    expect(redirected).toBe(true);
+    expect(await fs.readFile(join(outside, "item"), "utf8")).toBe("outside");
+    expect(await fs.readFile(join(`${dir}-moved`, "item"), "utf8")).toBe("expected");
+    expect(await fs.readdir(outside)).toEqual(["item"]);
+  } finally { spy.mockRestore(); }
+});
+
+it.each(["a".repeat(255), "界".repeat(83)])("preserves a real long-name capture and resolves repeated naming collisions (%s)", async (name) => {
+  const path = join(root, name);
+  await fs.writeFile(path, "expected");
+  let saves = 0;
+  hooks.before = async (op, args) => {
+    if (op === "rename" && args[0] === path) {
+      const editor = join(root, ".editor-save");
+      await fs.writeFile(editor, `save ${++saves}`);
+      await fs.rename(editor, path);
+    }
+  };
+  for (const expected of ["expected", "save 1"]) {
+    expect(await removePath(cache, { root, identity, path: name, expected: file(expected) })).toEqual({ ok: false, reason: "local-changed" });
+  }
+  const names = await fs.readdir(root);
+  expect(names.every((entry) => Buffer.byteLength(entry) <= 255)).toBe(true);
+  const contents = await Promise.all(names.filter((entry) => entry !== name).map((entry) => fs.readFile(join(root, entry), "utf8")));
+  expect(contents.sort()).toEqual(["save 1", "save 2"]);
+  expect((await scanRoot(cache, { root, ownDirs: [], ignorePaths: [] })).ok).toBe(true);
 });

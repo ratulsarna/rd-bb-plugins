@@ -1,4 +1,4 @@
-import { DatabaseSync } from "node:sqlite";
+import Database from "better-sqlite3";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import plugin from "@/server";
 
@@ -23,7 +23,7 @@ export interface ServerApiOptions {
 }
 
 export interface ServerApiHarness {
-  db: DatabaseSync;
+  db: Database.Database;
   /** The handlers the plugin registered, call them like the rpc would. */
   handlers: Record<string, (input: never) => Promise<unknown>>;
   publishes: Array<{ channel: string; payload: unknown }>;
@@ -35,7 +35,7 @@ export interface ServerApiHarness {
 }
 
 export function serverApi(initial: ServerApiOptions = {}): ServerApiHarness {
-  const db = new DatabaseSync(":memory:");
+  const db = new Database(":memory:");
   for (const statement of initial.preMigrate ?? []) db.exec(statement);
 
   const publishes: Array<{ channel: string; payload: unknown }> = [];

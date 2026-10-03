@@ -325,9 +325,12 @@ describe("two-way sync", () => {
     expect(await readdir(outside)).toEqual([]);
     expect(await read(b, "other.md")).toBe("fine");
 
+    const scanned = await b.harness.experimental_call("scan", { root: b.root, ignorePaths: [] });
+    if (!scanned.ok) throw new Error("Scan failed");
     await expect(
       b.harness.experimental_call("write", {
         root: b.root,
+        identity: scanned.identity,
         items: [
           {
             path: "../x",
@@ -342,6 +345,7 @@ describe("two-way sync", () => {
     await expect(
       b.harness.experimental_call("link", {
         root: b.root,
+        identity: scanned.identity,
         path: "l",
         target: "../../etc/passwd",
         expected: null,
@@ -1142,7 +1146,7 @@ describe("two-way sync", () => {
     });
     expect(probed).toBe(true);
     expect(await readdir(b.root)).toEqual([]);
-    await expect(coordinator.sync("notes", [b.id])).rejects.toThrow(/empty/);
+    await expect(coordinator.sync("notes", [b.id])).rejects.toThrow(/root changed|empty/);
     expect(store.seq("notes")).toBe(seq);
     expect(store.head("notes").get("original.txt")?.content?.kind).toBe("file");
     expect(store.node("notes", b.id).acked).toBeLessThan(seq);
@@ -1240,7 +1244,7 @@ describe("two-way sync", () => {
     });
 
     await mkdir(b.root);
-    await expect(coordinator.sync("notes", [b.id])).rejects.toThrow(/empty/);
+    await expect(coordinator.sync("notes", [b.id])).rejects.toThrow(/root changed|empty/);
     expect(await read(a, "one.md")).toBe("1");
     expect(await read(a, "two.md")).toBe("2");
     expect(coordinator.status().folders[0]!.headVersion).toBe(

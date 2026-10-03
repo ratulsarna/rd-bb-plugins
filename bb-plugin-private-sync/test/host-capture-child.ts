@@ -20,7 +20,7 @@ fs.rename = async (from, to) => {
 };
 syncBuiltinESMExports();
 
-const { HashCache, commitFile, writeChunk } = await import("../lib/host-fs");
+const { HashCache, commitFile, writeChunk, scanRoot } = await import("../lib/host-fs");
 const content = (bytes: string) => ({
   kind: "file" as const,
   hash: createHash("sha256").update(bytes).digest("hex"),
@@ -28,15 +28,19 @@ const content = (bytes: string) => ({
   exec: false,
 });
 await fs.writeFile(target, "expected");
+const cache = new HashCache(join(root, "..", "cache.json"));
+const scanned = await scanRoot(cache, { root, ownDirs: [], ignorePaths: [] });
+if (!scanned.ok) throw new Error("Scan failed");
+const identity = scanned.identity;
 await writeChunk({
-  root,
+  root, identity,
   path: "doc.md",
   tempId: "crashtest123",
   offset: 0,
   data: Buffer.from("incoming").toString("base64"),
 });
-await commitFile(new HashCache(join(root, "..", "cache.json")), {
-  root,
+await commitFile(cache, {
+  root, identity,
   path: "doc.md",
   tempId: "crashtest123",
   content: content("incoming"),

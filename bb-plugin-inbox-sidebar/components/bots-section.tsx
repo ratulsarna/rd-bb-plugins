@@ -10,7 +10,7 @@ import { ComposeDialog } from "@/components/compose-dialog";
 import { CollapsibleSection } from "@/components/section";
 import { SortableRows } from "@/components/sortable-rows";
 import type { RowReorder } from "@/components/sidebar-row";
-import { assistantDisplayOrder, orderableIdentities } from "@/lib/assistant-order";
+import { assistantDisplayOrder, projectAssistantReorder } from "@/lib/assistant-order";
 import { selectedAssistantsProjectId } from "@/lib/assistant-identity";
 import { useAssistantAvatars } from "@/lib/use-assistant-avatars";
 import { useAssistantIdentities } from "@/lib/use-assistant-identities";
@@ -110,23 +110,6 @@ export function BotsSection({
     [allRows],
   );
 
-  // A dropped row's projection arrives as thread ids; the store wants the
-  // durable assistant identities in that order.
-  const identityOrderOf = useCallback(
-    (threadIds: readonly string[]) => {
-      const byThread = new Map(
-        allRows.map((row) => [row.thread.id, row.identity]),
-      );
-      return orderableIdentities(
-        threadIds.map((threadId) => ({
-          identity: byThread.get(threadId) ?? null,
-          updatedAt: 0,
-        })),
-      );
-    },
-    [allRows],
-  );
-
   const rows = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (query === "") return allRows;
@@ -150,13 +133,18 @@ export function BotsSection({
   const avatars = useAssistantAvatars(environmentIds);
 
   const moveBot = useCallback(
-    (_activeId: string, projection: { ids: string[] }) => {
+    (activeId: string, projection: { ids: string[] }) => {
       // A drag that lands before identities resolve would store environment
       // ids over the saved order; the rows are not draggable until then.
-      if (!identitiesApi.ready) return;
-      order.set(identityOrderOf(projection.ids));
+      if (!identitiesApi.ready) return false;
+      const ids = projectAssistantReorder(
+        allRows.map((row) => ({ id: row.thread.id, identity: row.identity })),
+        activeId, projection.ids,
+      );
+      if (!ids) return false;
+      order.set(ids);
     },
-    [identitiesApi.ready, identityOrderOf, order],
+    [identitiesApi.ready, allRows, order],
   );
 
   // A search may only match a bot the cap hides — matches always show.

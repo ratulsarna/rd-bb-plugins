@@ -47,7 +47,7 @@ interface SortableRowsProps<T> {
   fullOrder: readonly string[];
   enabled: boolean;
   movePending: boolean;
-  onMove(activeId: string, projection: PinnedReorderProjection): void;
+  onMove(activeId: string, projection: PinnedReorderProjection): void | false;
   children: (item: T, reorder: RowReorder | undefined) => ReactNode;
 }
 
@@ -136,8 +136,9 @@ export function SortableRows<T>({
           )
         : null;
       if (projection) {
-        setProjectedOrder(projection.ids);
-        onMove(String(event.active.id), projection);
+        if (onMove(String(event.active.id), projection) !== false) {
+          setProjectedOrder(projection.ids);
+        }
       }
       finishGesture();
     },

@@ -3,6 +3,8 @@ import type { ExperimentalHostClient } from "@get-bb/plugin-sdk";
 import {
   CHUNK_BYTES,
   sameContent,
+  sameRoot,
+  type RootIdentity,
   type ApplyResult,
   type Content,
   type Conflict,
@@ -11,7 +13,8 @@ import {
   hostContract,
   hostSignals,
 } from "../contract";
-import { conflictPath, isIgnored, isWithin } from "./paths";
+import { isIgnored, isWithin } from "./paths";
+import { conflictPath } from "./conflict-path";
 import type { BlobWriter, Store } from "./store";
 
 export type HostClient = Pick<
@@ -137,7 +140,7 @@ function batch<T>(
 async function scanAll(
   request: PassRequest,
   paths: readonly string[] | undefined,
-): Promise<{ entries: Map<string, ScanEntry>; empty: boolean }> {
+): Promise<{ entries: Map<string, ScanEntry>; empty: boolean; identity: RootIdentity }> {
   const { host, hostId, root, folder, signal } = request;
   const first = await host.call(
     "scan",
@@ -145,6 +148,7 @@ async function scanAll(
       root,
       ignorePaths: folder.ignorePaths,
       otherRoots: [...(request.otherRoots ?? [])],
+      identity: request.store.rootIdentity(folder.id, hostId),
       ...(paths ? { paths: [...paths] } : {}),
     },
     { hostId, signal, timeoutMs: SCAN_TIMEOUT_MS },
@@ -154,7 +158,7 @@ async function scanAll(
       first.reason === "root-missing"
         ? "The folder root is missing on this machine. Nothing was changed."
         : first.reason === "root-changed"
-          ? "A configured folder root changed during the scan. Nothing was changed."
+          ? "Folder root changed. Restore the original directory or explicitly change the mapped path."
           : first.reason === "overlapping-roots"
             ? "Configured folder roots overlap on this machine. Nothing was changed."
             : "The folder root contains the plugin's own data directory.",
@@ -171,6 +175,7 @@ async function scanAll(
   return {
     entries: new Map(entries.map((entry) => [entry.path, entry])),
     empty: first.empty,
+    identity: first.identity,
   };
 }
 
@@ -181,6 +186,7 @@ async function scanAll(
 async function uploadAll(
   request: PassRequest,
   entries: FileEntry[],
+  identity: RootIdentity,
   sliceEnds: number,
 ): Promise<{ changed: Set<string>; deferred: Set<string> }> {
   const { store, host, hostId, root, signal, uploads, now } = request;
@@ -200,6 +206,7 @@ async function uploadAll(
     const entry = byHash.get(hash);
     if (
       !entry ||
+      !sameRoot(transfer.identity, identity) ||
       entry.path !== transfer.entry.path ||
       entry.size !== transfer.entry.size ||
       entry.mtimeMs !== transfer.entry.mtimeMs
@@ -231,7 +238,7 @@ async function uploadAll(
   ) => {
     let transfer = uploads.get(entry.hash);
     if (!transfer) {
-      transfer = { entry, writer: await store.blobWriter(), offset: 0 };
+      transfer = { entry, identity, writer: await store.blobWriter(), offset: 0 };
       uploads.set(entry.hash, transfer);
     }
     const { writer } = transfer;
@@ -260,7 +267,7 @@ async function uploadAll(
     (
       await host.call(
         "read",
-        { root, ranges },
+        { root, identity, ranges },
         { hostId, signal, timeoutMs: CHUNK_TIMEOUT_MS },
       )
     ).results.map((result) => (result.ok ? result.data : null));
@@ -284,6 +291,7 @@ async function uploadAll(
 }
 
 export interface UploadTransfer {
+  identity: RootIdentity;
   entry: FileEntry;
   writer: BlobWriter;
   offset: number;
@@ -296,6 +304,7 @@ interface Download {
 }
 
 export interface DownloadTransfer extends Download {
+  identity: RootIdentity;
   content: FileContent;
   tempId: string;
   offset: number;
@@ -311,9 +320,10 @@ export async function reconcileNode(request: PassRequest): Promise<PassResult> {
 }
 
 async function reconcile(request: PassRequest): Promise<PassResult> {
-  const { store, host, folder, hostId, root, scope, signal, now } = request;
+  const { store, host, folder, hostId, root, signal, now } = request;
   signal.throwIfAborted();
   store.prepareNode(folder.id, hostId, root);
+  const scope = store.rootIdentity(folder.id, hostId) === null ? "all" : request.scope;
   const retry = new Set<string>();
   let deferred = new Set<string>();
   let blocked = 0;
@@ -326,6 +336,14 @@ async function reconcile(request: PassRequest): Promise<PassResult> {
     request,
     scope === "all" ? undefined : (scope ?? []),
   );
+  signal.throwIfAborted();
+  const identity = scan.identity;
+  const checkRoot = async () => {
+    await host.call("checkRoot", { root, identity }, { hostId, signal });
+    signal.throwIfAborted();
+  };
+  await checkRoot();
+  store.bindRoot(folder.id, hostId, root, identity, new Set(scan.entries.keys()));
   if (scope !== null) {
     local = scan.entries;
     inScope =
@@ -374,10 +392,11 @@ async function reconcile(request: PassRequest): Promise<PassResult> {
     const uploaded = await uploadAll(
       request,
       changes.flatMap(({ entry }) => (entry?.kind === "file" ? [entry] : [])),
+      identity,
       sliceEnds,
     );
     deferred = uploaded.deferred;
-    signal.throwIfAborted();
+    await checkRoot();
 
     const head = store.head(folder.id);
     const taken = (path: string) => head.has(path) || local!.has(path);
@@ -462,11 +481,33 @@ async function reconcile(request: PassRequest): Promise<PassResult> {
     else if (result.reason === "local-changed") retry.add(download.path);
     else blocked += 1;
   };
+  // A create waits only for removals that free its ancestors or descendants.
+  const removals = downloads.filter((item) => item.content === null && item.expected !== null);
+  const removing = new Map<Download, Promise<boolean>>();
+  const remove = (item: Download): Promise<boolean> => {
+    let pending = removing.get(item);
+    if (!pending) {
+      pending = host.call("remove", {
+        root, identity, path: item.path, expected: item.expected!,
+      }, { hostId, signal }).then((result) => {
+        settle(item, result);
+        return result.ok;
+      });
+      removing.set(item, pending);
+    }
+    return pending;
+  };
+  const beforeCreate = async (item: Download): Promise<boolean> => {
+    for (const removal of removals)
+      if ((isWithin(item.path, removal.path) || isWithin(removal.path, item.path)) &&
+          !(await remove(removal))) return false;
+    return true;
+  };
   const write = async (items: WriteItem[]) =>
     (
       await host.call(
         "write",
-        { root, items },
+        { root, identity, items },
         { hostId, signal, timeoutMs: CHUNK_TIMEOUT_MS },
       )
     ).results;
@@ -485,8 +526,11 @@ async function reconcile(request: PassRequest): Promise<PassResult> {
   });
   const jobs = batches.map((group) =>
     jobFor(group[0]!, async () => {
+      const ready = [];
+      for (const item of group) if (await beforeCreate(item)) ready.push(item);
+      if (ready.length === 0) return;
       const items = await Promise.all(
-        group.map(async ({ path, content, expected }) => ({
+        ready.map(async ({ path, content, expected }) => ({
           path,
           tempId: randomBytes(12).toString("hex"),
           offset: 0,
@@ -497,22 +541,27 @@ async function reconcile(request: PassRequest): Promise<PassResult> {
         })),
       );
       const results = await write(items);
-      group.forEach((download, index) => settle(download, results[index]!));
+      ready.forEach((download, index) => settle(download, results[index]!));
     }),
   );
   for (const download of large)
     jobs.push(
       jobFor(download, async () => {
+        if (!(await beforeCreate(download))) return;
         const { path, content, expected } = download;
         let transfer = request.transfers.get(path);
         if (
           !transfer ||
+          !sameRoot(transfer.identity, identity) ||
           !sameContent(transfer.content, content) ||
           !sameContent(transfer.expected, expected)
         ) {
           transfer = {
             ...download,
-            tempId: transfer?.tempId ?? randomBytes(12).toString("hex"),
+            identity,
+            tempId: transfer && sameRoot(transfer.identity, identity)
+              ? transfer.tempId
+              : randomBytes(12).toString("hex"),
             offset: 0,
           };
           request.transfers.set(path, transfer);
@@ -548,31 +597,15 @@ async function reconcile(request: PassRequest): Promise<PassResult> {
   for (const download of downloads) {
     const { path, content, expected } = download;
     if (content?.kind === "symlink")
-      jobs.push(
-        jobFor(download, async () =>
-          settle(
-            download,
-            await host.call(
-              "link",
-              { root, path, target: content.target, expected },
-              { hostId, signal },
-            ),
-          ),
-        ),
-      );
+      jobs.push(jobFor(download, async () => {
+        if (!(await beforeCreate(download))) return;
+        settle(download, await host.call(
+          "link", { root, identity, path, target: content.target, expected },
+          { hostId, signal },
+        ));
+      }));
     else if (content === null && expected !== null)
-      jobs.push(
-        jobFor(download, async () =>
-          settle(
-            download,
-            await host.call(
-              "remove",
-              { root, path, expected },
-              { hostId, signal },
-            ),
-          ),
-        ),
-      );
+      jobs.push(jobFor(download, async () => { await remove(download); }));
   }
   signal.throwIfAborted();
   const started = await pool(
@@ -583,6 +616,7 @@ async function reconcile(request: PassRequest): Promise<PassResult> {
 
   const more = deferred.size > 0 || partial || started < jobs.length;
   const clean = retry.size === 0 && blocked === 0 && !more;
+  await checkRoot();
   if (clean) store.setAcked(folder.id, hostId, version, now());
   return {
     retry: [...retry],

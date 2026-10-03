@@ -11,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type Database from "better-sqlite3";
-import type { Conflict, Content } from "../contract";
+import { rootIdentitySchema, sameRoot, type RootIdentity, type Conflict, type Content } from "../contract";
 
 /** History rows and their blobs are kept this long for recovery. */
 export const HISTORY_RETENTION_MS = 30 * 24 * 60 * 60_000;
@@ -28,6 +28,7 @@ export const MIGRATIONS = [
   `CREATE TABLE history (id INTEGER PRIMARY KEY, folder TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL, hash TEXT, size INTEGER, exec INTEGER, target TEXT, version INTEGER NOT NULL, host TEXT NOT NULL, archived_at INTEGER NOT NULL)`,
   `CREATE INDEX history_archived ON history (archived_at)`,
   `CREATE TABLE conflicts (id INTEGER PRIMARY KEY, folder TEXT NOT NULL, path TEXT NOT NULL, conflict_path TEXT, host TEXT NOT NULL, kind TEXT NOT NULL, detected_at INTEGER NOT NULL, resolved_at INTEGER)`,
+  `ALTER TABLE nodes ADD COLUMN root_identity TEXT`,
 ];
 
 export interface HeadEntry {
@@ -201,6 +202,34 @@ export class Store {
           `INSERT OR REPLACE INTO nodes (folder, host, root, acked, last_sync_at) VALUES (?, ?, ?, 0, NULL)`,
         )
         .run(folder, host, root);
+    })();
+  }
+
+  rootIdentity(folder: string, host: string): RootIdentity | null {
+    const row = this.db.prepare(
+      `SELECT root_identity FROM nodes WHERE folder = ? AND host = ?`,
+    ).get(folder, host) as { root_identity: string | null } | undefined;
+    return row?.root_identity ? rootIdentitySchema.parse(JSON.parse(row.root_identity)) : null;
+  }
+
+  /** Bases belong to one physical directory, across retries, pauses, and server restarts. */
+  bindRoot(folder: string, host: string, root: string, identity: RootIdentity, present: ReadonlySet<string>): void {
+    this.db.transaction(() => {
+      const row = this.db.prepare(
+        `SELECT root FROM nodes WHERE folder = ? AND host = ?`,
+      ).get(folder, host) as { root: string } | undefined;
+      if (row?.root !== root) throw new Error("The sync mapping changed");
+      const saved = this.rootIdentity(folder, host);
+      if (saved) {
+        if (!sameRoot(saved, identity)) throw new Error("Folder root identity changed; restore the original directory or change the mapped path");
+        return;
+      }
+      // Initial adoption trusts present entries, but missing legacy paths cannot delete hub copies.
+      for (const path of this.bases(folder, host).keys())
+        if (!present.has(path)) this.setBase(folder, host, path, null);
+      this.db.prepare(
+        `UPDATE nodes SET root_identity = ?, acked = 0, last_sync_at = NULL WHERE folder = ? AND host = ?`,
+      ).run(JSON.stringify(identity), folder, host);
     })();
   }
 

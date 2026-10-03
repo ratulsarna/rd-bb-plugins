@@ -97,8 +97,8 @@ it.each(["absolute", "escape"])("an external %s symlink cannot hide a wiped root
   const { a, b, store, request } = await setup();
   const head = store.head("notes");
   const node = store.node("notes", a.id);
-  await rm(a.root, { recursive: true });
-  await mkdir(a.root);
+  await unlink(join(a.root, "a.txt"));
+  await unlink(join(a.root, "z.txt"));
   await writeFile(join(base, "outside"), "not mirrored");
   await symlink(kind === "absolute" ? join(base, "outside") : "../../outside", join(a.root, "external"));
   await expect(reconcileNode(request(a, ["a.txt", "z.txt"]))).rejects.toThrow(/root is empty/);

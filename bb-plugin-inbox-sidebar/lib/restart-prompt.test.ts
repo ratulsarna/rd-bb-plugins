@@ -46,27 +46,26 @@ describe("restartPrompt", () => {
     expect(prompt).toBe("Start a fresh root conversation. Use thread thr_old as context when needed.\n\n");
   });
 
-  it("places an explicit replacement automation review before the journal pointer", () => {
+  it("names automations without seeding a choice that can become stale", () => {
     const prompt = restartPrompt("thr_old", {
       ...sam,
-      archiveSource: true,
       targetingAutomations: [{ id: "auto_1", name: "heartbeat" }],
     });
-    expect(prompt.indexOf("replaces and archives the source")).toBeLessThan(
+    expect(prompt.indexOf("Automations currently targeting the source")).toBeLessThan(
       prompt.indexOf("Read /home/me/ObsidianVault"),
     );
     expect(prompt).toContain("- heartbeat (auto_1)");
   });
 });
 
-it("keeps server-only automation targets intact across machines", () => {
+it("keeps destination context while deferring automation policy to creation", () => {
   const prompt = restartPrompt("thr_old", {
-    ...sam, archiveSource: false, crossMachine: true,
+    ...sam,
     vaultPath: "/Users/me/vault",
     targetingAutomations: [{ id: "auto_server", name: "server heartbeat" }],
   });
-  expect(prompt).toContain("Keep their targets and machine/workspace requirements intact");
-  expect(prompt).toContain("server-only jobs");
+  expect(prompt).toContain("final guidance follows the selected creation mode");
+  expect(prompt).not.toContain("Keep their targets");
   expect(prompt).not.toContain("repointing");
   expect(prompt).toContain("Read /Users/me/vault/Notes/");
 });

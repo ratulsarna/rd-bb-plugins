@@ -85,26 +85,3 @@ export function isSafeSymlinkTarget(linkPath: string, target: string): boolean {
   const resolved = posix.normalize(posix.join(posix.dirname(linkPath), target));
   return resolved !== ".." && !resolved.startsWith("../");
 }
-
-/** `notes/a.md` → `notes/a.sync-conflict-20261003-012233-host1.md`. */
-export function conflictPath(
-  path: string,
-  hostId: string,
-  at: Date,
-  attempt = 0,
-): string {
-  const dir = posix.dirname(path);
-  const name = posix.basename(path);
-  const dot = name.lastIndexOf(".");
-  const stem = dot > 0 ? name.slice(0, dot) : name;
-  const ext = dot > 0 ? name.slice(dot) : "";
-  const stamp = at
-    .toISOString()
-    .replace(/[-:]/g, "")
-    .replace("T", "-")
-    .slice(0, 15);
-  const host = hostId.replace(/[^A-Za-z0-9_-]/g, "").slice(-12) || "node";
-  const suffix = attempt === 0 ? "" : `-${attempt}`;
-  const file = `${stem}.sync-conflict-${stamp}-${host}${suffix}${ext}`;
-  return dir === "." ? file : `${dir}/${file}`;
-}

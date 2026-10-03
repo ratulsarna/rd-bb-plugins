@@ -17,15 +17,17 @@ import {
   chmod,
 } from "node:fs/promises";
 import { dirname, join, posix, relative } from "node:path";
+import { conflictPath } from "./conflict-path";
 import {
   sameContent,
+  sameRoot,
+  type RootIdentity,
   type ApplyResult,
   type Content,
   type ScanEntry,
 } from "../contract";
 import {
   TEMP_PREFIX,
-  conflictPath,
   isIgnored,
   isSafeRelativePath,
   isSafeSymlinkTarget,
@@ -151,13 +153,14 @@ export interface ScanOptions {
   paths?: readonly string[];
   /** Every other configured folder root on this host, including offline mappings. */
   otherRoots?: readonly string[];
+  identity?: RootIdentity | null;
   /** Directories the plugin itself owns on this host; never inside a root. */
   ownDirs: readonly string[];
   now?: number;
 }
 
 export type ScanOutcome =
-  | { ok: true; entries: ScanEntry[]; skipped: number; empty: boolean }
+  | { ok: true; identity: RootIdentity; entries: ScanEntry[]; skipped: number; empty: boolean }
   | {
       ok: false;
       reason: "root-missing" | "unsafe-root" | "root-changed" | "overlapping-roots";
@@ -174,6 +177,38 @@ async function resolvedPath(path: string): Promise<string> {
     if (parent === path) throw error;
     return join(await resolvedPath(parent), posix.basename(path));
   }
+}
+
+const ROOT_CHANGED = "Folder root identity changed. Restore the original directory or explicitly change the mapped path.";
+
+interface BoundRoot {
+  root: string;
+  identity: RootIdentity;
+}
+
+async function directoryIdentity(path: string): Promise<RootIdentity | null> {
+  try {
+    const canonical = await realpath(path);
+    const stats = await lstat(canonical, { bigint: true });
+    return stats.isDirectory()
+      ? { canonical, dev: String(stats.dev), ino: String(stats.ino) }
+      : null;
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR", "ELOOP"].includes(errorCode(error) ?? "")) return null;
+    throw error;
+  }
+}
+
+/** Cleanup may use the original canonical directory even after its configured alias changes. */
+async function canonicalMatches(identity: RootIdentity): Promise<boolean> {
+  const current = await directoryIdentity(identity.canonical);
+  return current !== null && sameRoot(current, identity);
+}
+
+export async function requireRoot(request: BoundRoot): Promise<string> {
+  const current = await directoryIdentity(request.root);
+  if (!current || !sameRoot(current, request.identity)) throw new Error(ROOT_CHANGED);
+  return request.identity.canonical;
 }
 
 /**
@@ -194,6 +229,10 @@ export async function scanRoot(
   const before = await facts();
   const { canonical: root, stats: rootStats } = before[0]!;
   if (!rootStats?.isDirectory()) return { ok: false, reason: "root-missing" };
+  const identity = await directoryIdentity(options.root);
+  if (!identity || identity.canonical !== root ||
+      (options.identity && !sameRoot(identity, options.identity)))
+    return { ok: false, reason: "root-changed" };
   for (const [index, entry] of before.entries())
     if (before.slice(0, index).some((other) =>
       isWithin(entry.canonical, other.canonical) ||
@@ -201,7 +240,8 @@ export async function scanRoot(
     ))
       return { ok: false, reason: "overlapping-roots" };
   // Directory edits change mtime; only canonical location and identity define this root.
-  const stable = async () => (await facts()).every((entry, index) => {
+  const stable = async () => await canonicalMatches(identity) &&
+    (await facts()).every((entry, index) => {
     const original = before[index]!;
     return entry.canonical === original.canonical &&
       entry.stats?.dev === original.stats?.dev &&
@@ -276,7 +316,7 @@ export async function scanRoot(
     if (!(await stable())) return { ok: false, reason: "root-changed" };
     await cache.save(new Set(entries.map((entry) => entry.path)));
     if (!(await stable())) return { ok: false, reason: "root-changed" };
-    return { ok: true, entries, skipped, empty: entries.length === 0 };
+    return { ok: true, identity, entries, skipped, empty: entries.length === 0 };
   }
   for (const path of options.paths) {
     if (isIgnored(path, ignorePaths)) continue;
@@ -294,7 +334,7 @@ export async function scanRoot(
   const empty =
     entries.length === 0 && !(await holdsMirrored(root, "", ignorePaths));
   if (!(await stable())) return { ok: false, reason: "root-changed" };
-  return { ok: true, entries, skipped, empty };
+  return { ok: true, identity, entries, skipped, empty };
 }
 
 async function mirroredLink(root: string, path: string): Promise<string | null> {
@@ -445,7 +485,7 @@ async function preserveOpaque(
   const stats = await lstat(captured);
   if (stats.isFile() || stats.isSymbolicLink()) return false;
   const container = mkdtempSync(
-    `${join(root, conflictPath(path, "local", new Date()))}-`,
+    `${join(root, conflictPath(path, "local", new Date(), 0, 7))}-`,
   );
   try {
     await rename(captured, join(container, posix.basename(path)));
@@ -508,27 +548,32 @@ async function recoveredNames(root: string, rel: string): Promise<string[]> {
  */
 async function mutatePath(
   cache: HashCache,
-  request: { root: string; path: string; expected: Content | null },
-  publish: (() => Promise<void>) | null,
+  request: BoundRoot & { path: string; expected: Content | null },
+  publish: ((root: string) => Promise<void>) | null,
   signal?: AbortSignal,
 ): Promise<ApplyResult> {
   signal?.throwIfAborted();
   const { path, expected } = request;
-  const root = await realpath(request.root);
+  const root = await requireRoot(request);
   const result = await guard(cache, root, path, expected, publish !== null);
   if (!result.ok) return result;
   const apply = async (): Promise<ApplyResult> => {
     try {
+      await requireRoot(request);
+      if ((await walkParents(root, path, false)) !== "ok") return blocked;
       signal?.throwIfAborted();
-      await publish?.();
+      await publish?.(root);
+      await requireRoot(request);
       return ok;
     } catch (error) {
       if (errorCode(error) === "EEXIST") return localChanged;
       throw error;
     }
   };
+  await requireRoot(request);
   signal?.throwIfAborted();
   if (expected === null) return apply();
+  if ((await walkParents(root, path, false)) !== "ok") return blocked;
 
   const abs = join(root, path);
   // Register ownership without yielding to a scan that could recover an empty directory.
@@ -554,6 +599,8 @@ async function mutatePath(
         return blocked;
       throw error;
     }
+    await requireRoot(request);
+    if ((await walkParents(root, path, false)) !== "ok") return blocked;
     const current = await currentContent(cache, root, relative(root, captured));
     verified = current !== "blocked" && sameContent(current, expected);
     if (!verified) return localChanged;
@@ -562,20 +609,23 @@ async function mutatePath(
     return outcome;
   } finally {
     try {
-      if (moved && !applied && (await preserveOpaque(root, path, captured)))
-        moved = false;
-      if (moved && !applied) {
-        // Preserve before restoration: another save may immediately replace it again.
-        if (!verified) await preserveCaptured(root, path, captured);
-        try {
-          await publishCaptured(captured, abs);
-        } catch (error) {
-          if (errorCode(error) !== "EEXIST") throw error;
-          if (verified) await preserveCaptured(root, path, captured);
+      if (await canonicalMatches(request.identity) &&
+          (await walkParents(root, path, false)) === "ok") {
+        if (moved && !applied && (await preserveOpaque(root, path, captured)))
+          moved = false;
+        if (moved && !applied) {
+          // Preserve before restoration: another save may immediately replace it again.
+          if (!verified) await preserveCaptured(root, path, captured);
+          try {
+            await publishCaptured(captured, abs);
+          } catch (error) {
+            if (errorCode(error) !== "EEXIST") throw error;
+            if (verified) await preserveCaptured(root, path, captured);
+          }
         }
+        if (moved) await unlink(captured);
+        await rmdir(recovery);
       }
-      if (moved) await unlink(captured);
-      await rmdir(recovery);
     } finally {
       activeCaptures.delete(recovery);
       release();
@@ -583,8 +633,7 @@ async function mutatePath(
   }
 }
 
-export interface ReadRequest {
-  root: string;
+export interface ReadRequest extends BoundRoot {
   path: string;
   offset: number;
   length: number;
@@ -597,12 +646,16 @@ export async function readChunk(
   request: ReadRequest,
 ): Promise<{ ok: true; data: string } | { ok: false; reason: "changed" }> {
   requireSafe(request.path);
-  if ((await walkParents(request.root, request.path, false)) !== "ok")
+  const root = await requireRoot(request);
+  if ((await walkParents(root, request.path, false)) !== "ok")
+    return { ok: false, reason: "changed" };
+  await requireRoot(request);
+  if ((await walkParents(root, request.path, false)) !== "ok")
     return { ok: false, reason: "changed" };
   let handle;
   try {
     handle = await open(
-      join(request.root, request.path),
+      join(root, request.path),
       constants.O_RDONLY | constants.O_NOFOLLOW,
     );
   } catch (error) {
@@ -634,6 +687,7 @@ export async function readChunk(
     const after = await handle.stat();
     if (filled !== buffer.length || !matches(after) || !sameFile(before, after))
       return { ok: false, reason: "changed" };
+    await requireRoot(request);
     return { ok: true, data: buffer.toString("base64") };
   } finally {
     await handle.close();
@@ -645,17 +699,18 @@ function tempPath(root: string, path: string, tempId: string): string {
 }
 
 /** Append one chunk to the temporary file beside `path`; offset 0 starts it. */
-export async function writeChunk(request: {
-  root: string;
+export async function writeChunk(request: BoundRoot & {
   path: string;
   tempId: string;
   offset: number;
   data: string;
 }): Promise<ApplyResult> {
   requireSafe(request.path);
-  if ((await walkParents(request.root, request.path, true)) !== "ok")
-    return blocked;
-  const temp = tempPath(request.root, request.path, request.tempId);
+  const root = await requireRoot(request);
+  if ((await walkParents(root, request.path, true)) !== "ok") return blocked;
+  await requireRoot(request);
+  if ((await walkParents(root, request.path, false)) !== "ok") return blocked;
+  const temp = tempPath(root, request.path, request.tempId);
   const flags =
     request.offset === 0
       ? constants.O_WRONLY |
@@ -680,6 +735,7 @@ export async function writeChunk(request: {
       written += bytesWritten;
     }
     await handle.sync();
+    await requireRoot(request);
   } finally {
     await handle.close();
   }
@@ -689,8 +745,7 @@ export async function writeChunk(request: {
 /** Verify the assembled file, capture the target, and publish without overwriting a save. */
 export async function commitFile(
   cache: HashCache,
-  request: {
-    root: string;
+  request: BoundRoot & {
     path: string;
     tempId: string;
     content: Extract<Content, { kind: "file" }>;
@@ -699,7 +754,9 @@ export async function commitFile(
   signal?: AbortSignal,
 ): Promise<ApplyResult> {
   signal?.throwIfAborted();
-  const temp = tempPath(request.root, request.path, request.tempId);
+  const root = await requireRoot(request);
+  if ((await walkParents(root, request.path, false)) !== "ok") return blocked;
+  const temp = tempPath(root, request.path, request.tempId);
   try {
     const stats = await lstat(temp);
     if (
@@ -709,21 +766,24 @@ export async function commitFile(
     )
       throw new Error("Transferred file failed verification");
     // Mirrored files are private to the owner on every machine; only the exec bit travels.
+    await requireRoot(request);
+    if ((await walkParents(root, request.path, false)) !== "ok") return blocked;
     await chmod(temp, request.content.exec ? 0o700 : 0o600);
     return await mutatePath(
       cache, request,
-      () => link(temp, join(request.root, request.path)),
+      (canonical) => link(temp, join(canonical, request.path)),
       signal,
     );
   } finally {
-    await unlink(temp).catch(() => {});
+    if (await canonicalMatches(request.identity) &&
+        (await walkParents(root, request.path, false)) === "ok")
+      await unlink(temp).catch(() => {});
   }
 }
 
 export async function writeLink(
   cache: HashCache,
-  request: {
-    root: string;
+  request: BoundRoot & {
     path: string;
     target: string;
     expected: Content | null;
@@ -735,7 +795,7 @@ export async function writeLink(
     throw new Error("Refusing a symlink that leaves the root");
   return mutatePath(
     cache, request,
-    () => symlink(request.target, join(request.root, request.path)),
+    (canonical) => symlink(request.target, join(canonical, request.path)),
     signal,
   );
 }
@@ -743,7 +803,7 @@ export async function writeLink(
 /** Delete a path that still holds `expected`, then prune emptied parent directories. */
 export async function removePath(
   cache: HashCache,
-  request: { root: string; path: string; expected: Content },
+  request: BoundRoot & { path: string; expected: Content },
   signal?: AbortSignal,
 ): Promise<ApplyResult> {
   const result = await mutatePath(cache, request, null, signal);
@@ -751,11 +811,13 @@ export async function removePath(
   let dir = posix.dirname(request.path);
   while (dir !== ".") {
     try {
-      await rmdir(join(request.root, dir));
+      const root = await requireRoot(request);
+      await rmdir(join(root, dir));
     } catch {
       break;
     }
     dir = posix.dirname(dir);
   }
+  await requireRoot(request);
   return ok;
 }

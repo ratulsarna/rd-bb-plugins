@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assistantDisplayOrder, orderableIdentities } from "./assistant-order";
+import { assistantDisplayOrder, orderableIdentities, projectAssistantReorder } from "./assistant-order";
 
 const row = (identity: string | null, updatedAt: number) => ({
   identity,
@@ -50,4 +50,20 @@ describe("orderableIdentities", () => {
     const display = [row("a", 3), row(null, 2), row("b", 1)];
     expect(orderableIdentities(display)).toEqual(["a", "b"]);
   });
+});
+
+
+it("refuses unknown and unresolved drag identities and treats a same-group move as a noop", () => {
+  const rows = [{ id: "sam-server", identity: "fleet:sam" }, { id: "sam-mac", identity: "fleet:sam" }, { id: "pending", identity: null }];
+  expect(projectAssistantReorder(rows, "unknown", ["sam-server", "sam-mac", "pending"])).toBeNull();
+  expect(projectAssistantReorder(rows, "sam-mac", ["sam-mac", "sam-server", "pending"])).toBeNull();
+  expect(projectAssistantReorder(rows, "sam-mac", ["sam-server", "pending", "sam-mac"])).toBeNull();
+  expect(projectAssistantReorder(rows, "pending", ["pending", "sam-server", "sam-mac"])).toBeNull();
+});
+
+
+it("uses the dragged instance's direction when unsaved conversation groups are interleaved", () => {
+  const rows = [{ id: "sam-server", identity: "sam" }, { id: "forge-server", identity: "forge" }, { id: "sam-mac", identity: "sam" }, { id: "forge-mac", identity: "forge" }];
+  expect(projectAssistantReorder(rows, "sam-mac", ["sam-server", "sam-mac", "forge-server", "forge-mac"])).toBeNull();
+  expect(projectAssistantReorder(rows, "sam-mac", ["sam-server", "forge-server", "forge-mac", "sam-mac"])).toEqual(["forge", "sam"]);
 });

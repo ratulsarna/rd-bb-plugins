@@ -1,3 +1,5 @@
+import { projectPinnedReorder } from "./pinned-order";
+
 /**
  * Bot ordering. Unlike pins, bb has no notion of this order — the plugin's own
  * database stores the full list of assistant identities, and this is the
@@ -32,11 +34,29 @@ export function assistantDisplayOrder<T extends AssistantOrderRow>(
 }
 
 /**
- * What a drag writes back: every displayed row that can be addressed — rows
- * without an identity have no durable key and stay activity-sorted.
+ * One durable key per displayed assistant; rows without an identity stay
+ * activity-sorted.
  */
 export function orderableIdentities(
-  rows: readonly AssistantOrderRow[],
+  rows: readonly Pick<AssistantOrderRow, "identity">[],
 ): string[] {
-  return rows.flatMap((row) => (row.identity !== null ? [row.identity] : []));
+  return [...new Set(rows.flatMap((row) => (row.identity !== null ? [row.identity] : [])))];
+}
+
+/** A conversation drag moves its whole assistant group relative to the hovered group. */
+export function projectAssistantReorder(
+  rows: readonly { id: string; identity: string | null }[],
+  activeId: string,
+  projectedRowIds: readonly string[],
+): string[] | null {
+  const from = rows.findIndex((row) => row.id === activeId);
+  const active = rows[from]?.identity;
+  // The shared row projection inserts at the hovered row's original index.
+  const to = projectedRowIds.indexOf(activeId);
+  const over = rows[to]?.identity;
+  if (!active || !over || active === over) return null;
+  const ids = orderableIdentities(rows);
+  const otherGroups = ids.filter((identity) => identity !== active);
+  const destination = otherGroups.indexOf(over) + (from < to ? 1 : 0);
+  return projectPinnedReorder(ids, active, ids[destination]!)?.ids ?? null;
 }

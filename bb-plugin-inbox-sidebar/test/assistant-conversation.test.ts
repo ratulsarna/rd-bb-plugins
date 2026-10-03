@@ -7,6 +7,8 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import plugin from "../server";
 import { restartPrompt } from "../lib/restart-prompt";
 
+type PromptInput = NonNullable<Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0]["input"]>[number];
+
 const disposals: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const dispose of disposals.splice(0)) await dispose(); });
 
@@ -51,10 +53,12 @@ async function fixture() {
     if (inside.startsWith("../") || inside === "..") throw new Error("refused outside root");
     return { path, content: await readFile(resolved, "utf8"), contentEncoding: "utf8" };
   });
+  const automations = [{ automation: { id: "heartbeat", name: "server heartbeat", execution: { mode: "agent", targetThreadId: "old" } } }];
   let barrierFailure = false;
   let afterBarrier: (() => void) | undefined;
   harness.sdk.stub("plugins.callRpc", async ({ pluginId, method, input, outputSchema }: Parameters<BbPluginApi["sdk"]["plugins"]["callRpc"]>[0]) => {
-    if (pluginId !== "private-sync") throw new Error("no automation fixture");
+    if (pluginId === "automations") return outputSchema.parse({ automations });
+    if (pluginId !== "private-sync") throw new Error("unexpected plugin");
     let output: unknown;
     if (method === "status") output = status;
     else if (method === "machineDirectory") output = directory;
@@ -75,11 +79,11 @@ async function fixture() {
       projectId: "fleet", providerId: "codex", model: "dest-model", reasoningLevel: "high", permissionMode: "full",
       executionInputSources: { providerId: "explicit", model: "explicit" },
       environment: { type: "reuse", environmentId: "env-old" },
-      input: [{ type: "text", text: "Hello" }],
+      input: [{ type: "text", text: "Hello" }] as PromptInput[],
       parentThreadId: "spoofed-parent", lifecycleOwnerThreadId: "spoofed-owner", sourceThreadId: "old",
     },
   };
-  return { root, roots, vaults, status, directory, project, thread, env, harness, request,
+  return { automations, root, roots, vaults, status, directory, project, thread, env, harness, request,
     failBarrier: () => { barrierFailure = true; }, afterBarrier: (action: () => void) => { afterBarrier = action; },
     create: () => harness.behavior.callRpc("createReplacementThread", request),
     calls: (path: string) => harness.inspection.sdk.callsTo(path),
@@ -94,7 +98,7 @@ describe("assistant machine creation through the public SDK host", () => {
     const destination = await f.harness.behavior.callRpc("assistantDestination", { threadId: "old", hostId: "target" }) as { vaultPath: string; identity: string; providerAvailable: boolean };
     expect(destination.identity).toBe(seeds.identity);
     expect(destination.providerAvailable).toBe(false);
-    const prompt = restartPrompt("old", { ...seeds, ...destination, archiveSource: false, crossMachine: true });
+    const prompt = restartPrompt("old", { ...seeds, ...destination });
     expect(prompt).toContain(`${f.vaults.target}/Notes/`);
     expect(prompt).not.toContain(f.vaults.source);
     expect(await f.create()).toEqual({ newThreadId: "new", archivedSource: false });
@@ -218,4 +222,37 @@ describe("assistant machine creation through the public SDK host", () => {
     expect(await f.create()).toMatchObject({ newThreadId: "new", archivedSource: false, archiveError: "Error: archive refused" });
     expect(f.calls("threads.spawn")).toHaveLength(1);
   });
+});
+
+
+it.each([true, false])("adds current validated automation policy without changing edited inputs, archiveSource=%s", async (archiveSource) => {
+  const f = await fixture();
+  await f.harness.behavior.callRpc("assistantSeeds", { threadId: "old" });
+  f.automations[0].automation.name = "current server-only job";
+  f.automations.push({ automation: { id: "unrelated", name: "Other conversation", execution: { mode: "agent", targetThreadId: "elsewhere" } } });
+  f.request.destinationHostId = "source";
+  f.request.homePath = `${f.roots.source}/sam`;
+  f.request.archiveSource = archiveSource;
+  f.request.request.providerId = "pi";
+  f.request.request.model = "edited-model";
+  const input: PromptInput[] = [
+    { type: "text", text: "My edited message. Keep their targets on the existing conversation.", mentions: [] },
+    { type: "localFile", path: "/synthetic/notes.txt", name: "notes.txt", mimeType: "text/plain" },
+    { type: "image", url: "https://example.test/image.png" },
+  ];
+  f.request.request.input = input;
+  expect(await f.create()).toEqual({ newThreadId: "new", archivedSource: archiveSource });
+  const [spawn] = f.calls("threads.spawn")[0] as [{ input: PromptInput[]; executionInputSources: unknown }];
+  expect(spawn).toMatchObject({ providerId: "pi", model: "edited-model", executionInputSources: f.request.request.executionInputSources });
+  expect(spawn.input.slice(0, input.length)).toEqual(input);
+  const guidance = spawn.input.at(-1) as { type: string; text: string };
+  expect(guidance.type).toBe("text");
+  expect(guidance.text).toContain("Use thread old as context");
+  expect(guidance.text).toContain("supersedes any conflicting");
+  expect(guidance.text).toContain("current server-only job (heartbeat)");
+  expect(guidance.text).not.toContain("Other conversation");
+  expect(guidance.text).toContain("including server-only jobs");
+  expect(guidance.text).toContain("does not migrate automations");
+  expect(guidance.text).toContain(archiveSource ? "Review automations targeting the source before repointing them" : "Keep automation targets on the source intact");
+  expect(f.calls("threads.archive")).toHaveLength(archiveSource ? 1 : 0);
 });

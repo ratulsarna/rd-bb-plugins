@@ -10,6 +10,7 @@ import {
   HashCache,
   commitFile,
   readChunk,
+  requireRoot,
   removePath,
   scanRoot,
   writeChunk,
@@ -76,12 +77,13 @@ export function createHostEntry() {
     contract: hostContract,
     experimental_signals: hostSignals,
     handlers: {
-      scan: async ({ root, ignorePaths, paths, otherRoots }, context) => {
+      scan: async ({ root, ignorePaths, paths, otherRoots, identity }, context) => {
         const outcome = await scanRoot(cacheFor(context, root), {
           root,
           ignorePaths,
           paths,
           otherRoots,
+          identity,
           ownDirs: [
             context.experimental_paths.dataDir,
             context.experimental_paths.tempDir,
@@ -98,6 +100,7 @@ export function createHostEntry() {
         return {
           ok: true as const,
           scanId,
+          identity: outcome.identity,
           pages: pages.length,
           entries: pages[0]!,
           skipped: outcome.skipped,
@@ -111,22 +114,25 @@ export function createHostEntry() {
         if (page === pages.length - 1) scans.delete(scanId);
         return { entries: pages[page]! };
       },
-      read: async ({ root, ranges }) => {
+      checkRoot: async (request) => { await requireRoot(request); return null; },
+      read: async ({ root, identity, ranges }, context) => {
         const results = [];
-        for (const range of ranges)
-          results.push(await readChunk({ root, ...range }));
+        for (const range of ranges) {
+          context.signal.throwIfAborted();
+          results.push(await readChunk({ root, identity, ...range }));
+        }
         return { results };
       },
-      write: async ({ root, items }, context) => {
+      write: async ({ root, identity, items }, context) => {
         const results = [];
         for (const { commit, ...chunk } of items) {
           context.signal.throwIfAborted();
-          const written = await writeChunk({ root, ...chunk });
+          const written = await writeChunk({ root, identity, ...chunk });
           results.push(
             written.ok && commit
               ? await commitFile(
                   cacheFor(context, root),
-                  { root, ...chunk, ...commit },
+                  { root, identity, ...chunk, ...commit },
                   context.signal,
                 )
               : written,

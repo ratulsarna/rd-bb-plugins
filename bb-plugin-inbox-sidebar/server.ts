@@ -10,6 +10,7 @@ import { z } from "zod";
 // bundler's "@/" alias does not exist.
 import { pinnedRootIds } from "./lib/pinned-order";
 import { homeSegmentUnder } from "./lib/assistant-identity";
+import { restartAutomationPolicy } from "./lib/restart-prompt";
 import { assistantConversationContext, assistantDestinationSchema, assistantMachineSchema } from "./lib/assistant-conversation";
 import {
   getProjectPathError,
@@ -426,51 +427,55 @@ export default function plugin(bb: BbPluginApi) {
 
       // Past this point nothing awaits: re-read what actually is there now
       // and replace it in one synchronous sweep.
-      const subtitles = db
-        .prepare(`SELECT identity, subtitle, at FROM assistant_subtitles ORDER BY at`)
-        .all() as Array<{ identity: string; subtitle: string; at: number }>;
-      const order = db
-        .prepare(`SELECT identity, rank FROM assistant_order ORDER BY rank`)
-        .all() as Array<{ identity: string; rank: number }>;
-      // Two old environments can map to one identity; the newest subtitle
-      // wins, matching how the display treats stale ids. Keys the resolver
-      // did not translate (written after the pass began, or final
-      // no-identity keys) pass through unchanged.
-      const kept = new Map<string, { subtitle: string; at: number }>();
-      subtitles.forEach((row) => {
-        kept.set(translation.get(row.identity) ?? row.identity, row);
-      });
-      db.prepare(`DELETE FROM assistant_subtitles`).run();
-      const insertSubtitle = db.prepare(
-        `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)`,
-      );
-      for (const [identity, row] of kept) {
-        // Keep clears until every alias is resolved, including across restarts.
-        if (row.subtitle !== "" || pending.length > 0) {
-          insertSubtitle.run(identity, row.subtitle, row.at);
+      db.transaction(() => {
+        const subtitles = db
+          .prepare(`SELECT identity, subtitle, at FROM assistant_subtitles ORDER BY at`)
+          .all() as Array<{ identity: string; subtitle: string; at: number }>;
+        const order = db
+          .prepare(`SELECT identity, rank FROM assistant_order ORDER BY rank`)
+          .all() as Array<{ identity: string; rank: number }>;
+        // Two old environments can map to one identity; the newest subtitle
+        // wins, matching how the display treats stale ids. Keys the resolver
+        // did not translate (written after the pass began, or final
+        // no-identity keys) pass through unchanged.
+        const kept = new Map<string, { subtitle: string; at: number }>();
+        subtitles.forEach((row) => {
+          kept.set(translation.get(row.identity) ?? row.identity, row);
+        });
+        db.prepare(`DELETE FROM assistant_subtitles`).run();
+        const insertSubtitle = db.prepare(
+          `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)`,
+        );
+        for (const [identity, row] of kept) {
+          // Keep clears until every alias is resolved, including across restarts.
+          if (row.subtitle !== "" || pending.length > 0) {
+            insertSubtitle.run(identity, row.subtitle, row.at);
+          }
         }
-      }
-      const ranks = new Map<string, number>();
-      order.forEach((row) => {
-        ranks.set(translation.get(row.identity) ?? row.identity, row.rank);
-      });
-      db.prepare(`DELETE FROM assistant_order`).run();
-      const insertOrder = db.prepare(
-        `INSERT INTO assistant_order (identity, rank) VALUES (?, ?)`,
-      );
-      [...ranks.entries()]
-        .sort((a, b) => a[1] - b[1])
-        .forEach(([identity], rank) => insertOrder.run(identity, rank));
+        const ranks = new Map<string, number>();
+        order.forEach((row) => {
+          ranks.set(translation.get(row.identity) ?? row.identity, row.rank);
+        });
+        db.prepare(`DELETE FROM assistant_order`).run();
+        const insertOrder = db.prepare(
+          `INSERT INTO assistant_order (identity, rank) VALUES (?, ?)`,
+        );
+        [...ranks.entries()]
+          .sort((a, b) => a[1] - b[1])
+          .forEach(([identity], rank) => insertOrder.run(identity, rank));
 
+        if (pending.length === 0) {
+          db.prepare(`INSERT INTO assistant_key_migration (done) VALUES (1)`).run();
+        }
+      })();
+      bb.realtime.publish(SUBTITLE_CHANNEL, {});
+      bb.realtime.publish(ASSISTANT_ORDER_CHANNEL, {});
       if (pending.length > 0) {
         bb.log.warn(
           `assistant key migration deferred: ${pending.length} keys awaiting sources or lookups`,
         );
         return;
       }
-      db.prepare(`INSERT INTO assistant_key_migration (done) VALUES (1)`).run();
-      bb.realtime.publish(SUBTITLE_CHANNEL, {});
-      bb.realtime.publish(ASSISTANT_ORDER_CHANNEL, {});
     } catch (error) {
       // No flag row: the next start retries.
       bb.log.warn(
@@ -806,6 +811,9 @@ export default function plugin(bb: BbPluginApi) {
       if (archiveSource && destinationHostId !== context.env.hostId)
         throw new Error("Starting on another machine keeps the source conversation intact");
       await context.validate(destinationHostId, homePath);
+      const automationPolicy = restartAutomationPolicy(
+        replaceThreadId, archiveSource, await targetingAutomationsOf(bb, replaceThreadId),
+      );
       // Copy composer selections only. Filing and lifecycle always belong to this flow.
       const fresh = await bb.sdk.threads.spawn({
         projectId: request.projectId,
@@ -815,7 +823,7 @@ export default function plugin(bb: BbPluginApi) {
         permissionMode: request.permissionMode,
         serviceTier: request.serviceTier,
         executionInputSources: request.executionInputSources,
-        input: request.input,
+        input: [...request.input, { type: "text", text: automationPolicy }],
         sendAt: request.sendAt,
         title: context.thread.title ?? undefined,
         environment: { type: "host", hostId: destinationHostId, workspace: { type: "unmanaged", path: homePath } },

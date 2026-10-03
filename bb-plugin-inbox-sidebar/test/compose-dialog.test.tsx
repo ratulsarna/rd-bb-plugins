@@ -98,7 +98,7 @@ it("selects the destination machine/home/vault and submits without the original 
   expect(lastComposerProps?.defaultProviderId).toBeUndefined();
   expect(lastComposerProps?.defaultModel).toBeUndefined();
   expect(lastComposerProps?.defaultPermissionMode).toBe("full");
-  expect(lastComposerProps?.initialPrompt).toContain("Keep their targets");
+  expect(lastComposerProps?.initialPrompt).toContain("final guidance follows the selected creation mode");
   expect(lastComposerProps?.initialPrompt).toContain("Read /Users/me/vault/Notes/");
   expect(lastComposerProps?.initialPrompt).not.toContain("/srv/vault");
   fireEvent.click(screen.getByRole("button", { name: "Send conversation" }));
@@ -162,4 +162,24 @@ it("defaults to retaining the source even after opting into replacement and retu
   fireEvent.click(screen.getByRole("button", { name: "Send conversation" }));
   await waitFor(() => expect(rpcCalls.some((call) => call.method === "createReplacementThread")).toBe(true));
   expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({ destinationHostId: "srv", archiveSource: false });
+});
+
+
+it.each([true, false])("keeps an untouched seed mode-neutral after toggles, archiveSource=%s", async (archiveSource) => {
+  render(<ComposeDialog replaceThreadId="old" onClose={() => {}} onNavigate={() => {}} />);
+  const prompt = await screen.findByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  const initial = prompt.value;
+  expect(initial).toContain("server heartbeat (server-only)");
+  expect(initial).not.toContain("Keep their targets");
+  expect(initial).not.toContain("replaces and archives");
+  const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
+  fireEvent.click(checkbox);
+  if (!archiveSource) fireEvent.click(checkbox);
+  expect(screen.getByRole("textbox", { name: "Prompt" })).toBe(prompt);
+  expect(prompt.value).toBe(initial);
+  fireEvent.click(screen.getByRole("button", { name: "Send conversation" }));
+  await waitFor(() => expect(rpcCalls.some((call) => call.method === "createReplacementThread")).toBe(true));
+  expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({
+    archiveSource, request: { input: [{ type: "text", text: initial, mentions: [] }] },
+  });
 });
