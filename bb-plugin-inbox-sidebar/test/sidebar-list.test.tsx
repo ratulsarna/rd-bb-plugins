@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import {
   act,
   cleanup,
@@ -1419,6 +1419,13 @@ describe("row context menu", () => {
     });
 
     it("lets the dismissing tap only dismiss, on another row's title or control", async () => {
+      // bb's own handler: an Escape nobody claimed closes the mobile drawer.
+      let drawerDismissals = 0;
+      const hostEscape = (event: KeyboardEvent) => {
+        if (event.key === "Escape" && !event.defaultPrevented) drawerDismissals += 1;
+      };
+      window.addEventListener("keydown", hostEscape);
+      onTestFinished(() => window.removeEventListener("keydown", hostEscape));
       configureFakeSdk({
         threads: [thread("thr_a", { title: "Row A" }), thread("thr_b", { title: "Row B" })],
       });
@@ -1438,6 +1445,7 @@ describe("row context menu", () => {
       tap(within(rowB).getByRole("button", { name: "Settle", hidden: true }));
       await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
       expect(rpcCalls.some((c) => c.method === "settle")).toBe(false);
+      expect(drawerDismissals).toBe(0);
 
       // With the menu gone, the next tap and a keyboard activation open rows.
       tap(screen.getByRole("link", { name: "Row B" }));

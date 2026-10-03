@@ -408,9 +408,15 @@ function useOpenMenuShield() {
       const menu = openMenu();
       pressBeganInMenu.current = menu !== null;
       // Isolated controls stop this press before Radix's document listener
-      // sees it, so dismiss the menu here the way Escape would.
+      // sees it, so dismiss the menu here the way Escape would. Cancelable,
+      // so Radix can claim it: bb closes the mobile drawer on any Escape
+      // that reaches it unclaimed.
       menu?.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
       );
     },
     onClickCapture: (event: MouseEvent<HTMLDivElement>) => {
