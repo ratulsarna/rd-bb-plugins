@@ -20,7 +20,7 @@ export function AddCard(props: {
     hostId: string,
     intake: ExecutionSelection,
     lead: ExecutionSelection,
-    settings: { mode: CardMode; size: CardSize },
+    settings: { mode: CardMode; size: CardSize; shapeReview: boolean },
     start: boolean,
   ): Promise<void>;
 }) {
@@ -33,6 +33,7 @@ export function AddCard(props: {
   const [lead, setLead] = useState<ExecutionSelection | null>(null);
   const [mode, setMode] = useState<CardMode>("manual");
   const [size, setSize] = useState<CardSize>("standard");
+  const [shapeReview, setShapeReview] = useState(false);
   const [pending, setPending] = useState(false);
   const [pendingIntent, setPendingIntent] = useState<"save" | "start">("save");
   const [error, setError] = useState<string | null>(null);
@@ -74,7 +75,7 @@ export function AddCard(props: {
     setPendingIntent(intent);
     setError(null);
     try {
-      await props.onAdd(title.trim(), body, files, selectedHostId, intake, lead, { mode, size }, intent === "start");
+      await props.onAdd(title.trim(), body, files, selectedHostId, intake, lead, { mode, size, shapeReview }, intent === "start");
       setTitle("");
       setBody("");
       setFiles([]);
@@ -83,6 +84,7 @@ export function AddCard(props: {
       setLead(null);
       setMode("manual");
       setSize("standard");
+      setShapeReview(false);
       setOpen(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -163,6 +165,8 @@ export function AddCard(props: {
                 size={size}
                 onModeChange={setMode}
                 onSizeChange={setSize}
+                shapeReview={shapeReview}
+                onShapeReviewChange={setShapeReview}
                 disabled={pending || props.disabled}
               />
               <label className="pipeline-attach">

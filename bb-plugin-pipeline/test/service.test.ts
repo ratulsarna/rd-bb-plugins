@@ -1704,7 +1704,7 @@ describe("card settings", () => {
   it("defaults new cards to manual and standard unless the user picks", async () => {
     const { service } = setup();
     await expect(service.createCard({ projectId: "proj_1", hostId: "host_mac", title: "Default", source: "cli" }))
-      .resolves.toMatchObject({ mode: "manual", size: "standard" });
+      .resolves.toMatchObject({ mode: "manual", size: "standard", shapeReview: false });
   });
 
   it("tells the running lead about a change with the new settings", async () => {
@@ -1720,6 +1720,22 @@ describe("card settings", () => {
       input: [expect.objectContaining({ text: expect.stringContaining("to mode auto, size standard") })],
     }));
     expect(store.history("card_1").filter((entry) => entry.kind === "settings_changed")).toHaveLength(1);
+  });
+
+  it("records and tells the lead when only shape review changes", async () => {
+    const { store, service, send } = setup();
+    seed(store);
+    store.update("card_1", { leadThreadId: "lead", ownerRole: "lead", column: "implementing", mode: "auto", size: "standard" });
+
+    await expect(service.setSettings("card_1", { shapeReview: true }, "ui")).resolves.toMatchObject({ shapeReview: true, mode: "auto" });
+
+    expect(send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      threadId: "lead",
+      input: [expect.objectContaining({ text: expect.stringContaining("to mode auto, size standard, shape review on") })],
+    }));
+    const changes = store.history("card_1").filter((entry) => entry.kind === "settings_changed");
+    expect(changes).toHaveLength(1);
+    expect(changes[0]?.note).toContain("shape review on");
   });
 
   it("saves without a message when no owner thread exists yet", async () => {

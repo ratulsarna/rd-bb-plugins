@@ -567,6 +567,7 @@ describe("pipeline board", () => {
       attachments: [{ path: "/attachments/spec.md", filename: "spec.md", sizeBytes: 12, isImage: false }],
       mode: "manual",
       size: "standard",
+      shapeReview: false,
       start: false,
     }));
     expect(fetch).toHaveBeenCalledExactlyOnceWith(
@@ -623,6 +624,7 @@ describe("pipeline board", () => {
       attachments: [],
       mode: "manual",
       size: "standard",
+      shapeReview: false,
       start: true,
     }));
     fireEvent.click(await screen.findByRole("button", { name: "New task" }));
@@ -682,6 +684,7 @@ describe("pipeline board", () => {
     fireEvent.click(within(lead).getByRole("button", { name: "Apply execution selection" }));
     await chooseSelectOption(screen.getByRole("combobox", { name: "Mode" }), "Auto");
     await chooseSelectOption(screen.getByRole("combobox", { name: "Size" }), "Small");
+    await chooseSelectOption(screen.getByRole("combobox", { name: "Shape review" }), "On");
     fireEvent.click(screen.getByRole("button", { name: "Save and start" }));
 
     await waitFor(() => expect(addCard).toHaveBeenCalledExactlyOnceWith({
@@ -704,8 +707,13 @@ describe("pipeline board", () => {
       attachments: [],
       mode: "auto",
       size: "small",
+      shapeReview: true,
       start: true,
     }));
+
+    // The next task starts from off, not from the last task's choice.
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    expect(screen.getByRole("combobox", { name: "Shape review" }).textContent).toContain("Off");
   });
 
   it("fetches remembered execution choices again whenever the dialog reopens", async () => {

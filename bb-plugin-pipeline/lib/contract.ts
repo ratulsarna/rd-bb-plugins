@@ -42,6 +42,7 @@ export const cardSchema = z
     reportSignal: z.enum(["needs_you", "working"]).nullable(),
     mode: modeSchema.nullable(),
     size: sizeSchema.nullable(),
+    shapeReview: z.boolean(),
     issueUrl: z.string().nullable(),
     importedIssue: importedIssueSchema.nullable(),
     prUrl: z.string().nullable(),
@@ -165,6 +166,7 @@ export const rpcContract = defineRpcContract({
         attachments: z.array(attachmentSchema).max(20),
         mode: modeSchema.optional(),
         size: sizeSchema.optional(),
+        shapeReview: z.boolean().optional(),
         start: z.boolean().optional(),
       })
       .strict(),
@@ -221,7 +223,7 @@ export const rpcContract = defineRpcContract({
     output: cardSchema,
   },
   setCardSettings: {
-    input: z.object({ cardId: z.string(), mode: modeSchema.optional(), size: sizeSchema.optional() }).strict(),
+    input: z.object({ cardId: z.string(), mode: modeSchema.optional(), size: sizeSchema.optional(), shapeReview: z.boolean().optional() }).strict(),
     output: cardSchema,
   },
   removeCard: {

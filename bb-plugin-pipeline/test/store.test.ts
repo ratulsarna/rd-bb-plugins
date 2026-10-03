@@ -38,6 +38,26 @@ describe("card migrations", () => {
     }
   });
 
+  it("reads existing cards as shape review off and keeps a card's choice through writes", () => {
+    const db = new Database(":memory:");
+    try {
+      const last = MIGRATIONS.findIndex((migration) => migration.includes("ADD COLUMN shape_review"));
+      for (const migration of MIGRATIONS.slice(0, last)) db.exec(migration);
+      db.prepare(`INSERT INTO cards (id, project_id, title, "column", created_at, updated_at) VALUES ('old', 'proj_1', 'Old card', 'todo', 1, 1)`).run();
+      for (const migration of MIGRATIONS.slice(last)) db.exec(migration);
+      const store = createCardStore(db);
+      expect(store.get("old")?.shapeReview).toBe(false);
+      expect(store.update("old", { shapeReview: true }).shapeReview).toBe(true);
+      // An unrelated write must not reset it.
+      expect(store.update("old", { size: "small" }).shapeReview).toBe(true);
+      const fresh = store.create({ id: "new", projectId: "proj_1", hostId: null, title: "New", body: "", attachments: [], source: "cli", shapeReview: true });
+      expect(fresh.shapeReview).toBe(true);
+      expect(createCardStore(db).get("new")?.shapeReview).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
   it("migrates running cards and persists an acknowledged pause without losing task data", () => {
     const db = new Database(":memory:");
     try {

@@ -21,7 +21,7 @@
     "app": "./app.tsx"
   },
   "dependencies": {
-    "@ratulsarna/agent-models": "file:vendor/ratulsarna-agent-models-0.3.0.tgz",
+    "@ratulsarna/agent-models": "file:vendor/ratulsarna-agent-models-0.4.0.tgz",
     "zod": "^4.3.6"
   },
   "devDependencies": {

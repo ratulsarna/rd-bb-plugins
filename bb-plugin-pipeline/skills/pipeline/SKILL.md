@@ -14,10 +14,10 @@ Every task is a card on the pipeline board: a title, a note, a machine, attachme
 - `bb pipeline instructions kickoff --file <name.md> [--card <id>]` — read a kickoff template or shared prompt fragment.
 - `bb pipeline instructions guidelines [--card <id>]` — print the guidelines every role builds to: Pipeline's own, or the file and section chosen in Settings.
 
-- `bb pipeline add --title <t> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project. Mode and size are the user's call; omit them unless the user names them.
+- `bb pipeline add --title <t> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--shape <on|off>] [--project <id>]` — create a card on the explicitly chosen machine. `--project` defaults to the current project. Mode, size, and shape review are the user's call; omit them unless the user names them.
 - `bb pipeline start <card-id> [--machine <id-or-name>] [execution overrides]` — start intake for a saved task using its stored machine, models, notes, and attachments; the flags accept the same machine and execution overrides as `add`. Repeated Start requests do not launch again; use Retry after a failed start.
 - `bb pipeline set-machine <card-id> --machine <id-or-name>` — assign a machine to a card that has none. An assigned machine cannot be changed.
-- `bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>]` — change a card's mode or size for the user. A running owner is told and follows the new setting from its next stop or gate.
+- `bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>] [--shape <on|off>]` — change a card's mode, size, or shape review for the user. A running owner is told and follows the new setting from its next stop or gate.
 - `bb pipeline list [--project <id>] [--all]` — the board's cards; `done` is hidden unless `--all`.
 - `bb pipeline issues [--project <id>] [--page <n>]` — the project's open GitHub issues assigned to the BB server's account, page by page, each with the card it is imported to, if any.
 - `bb pipeline import-issues <number>... [--project <id>]` — import issues as Backlog cards carrying the full issue snapshot; up to 50 per call, and an already-imported issue returns its existing card.

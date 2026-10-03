@@ -24,7 +24,7 @@ const USAGE = `Usage:
   bb pipeline instructions [overview|intake|plan|implement|debug|close-out] [--file <relative-path>] [--card <id>] [--json]
   bb pipeline instructions kickoff --file <name.md> [--card <id>] [--json]
   bb pipeline instructions guidelines [--card <id>] [--json]
-  bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--project <id>] [--json]
+  bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--shape <on|off>] [--project <id>] [--json]
   bb pipeline start <card-id> [--machine <id-or-name>] [execution options] [--json]
   bb pipeline issues [--project <id>] [--page <number>] [--json]
   bb pipeline import-issues <number>... [--project <id>] [--json]
@@ -43,7 +43,7 @@ const USAGE = `Usage:
   bb pipeline stop <card-id> [--json]
   bb pipeline report --paused <request-id> [--card <id>] [--json]
   bb pipeline set-machine <card-id> --machine <id-or-name> [--json]
-  bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>] [--json]
+  bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>] [--shape <on|off>] [--json]
   bb pipeline remove <card-id> [--json]
 
 Add/start execution options (optional; omitted fields use saved choices or Pipeline settings):
@@ -76,6 +76,7 @@ const VALUE_OPTIONS = new Set([
   "pr",
   "mode",
   "size",
+  "shape",
   "paused",
   "handled",
   "file",
@@ -129,6 +130,13 @@ function cardSettings(args: ParsedArgs): { mode?: CardMode; size?: CardSize } {
     ...(mode === undefined ? {} : { mode: mode as CardMode }),
     ...(size === undefined ? {} : { size: size as CardSize }),
   };
+}
+
+function shapeReviewOption(args: ParsedArgs): { shapeReview?: boolean } {
+  const shape = option(args, "shape");
+  if (shape === undefined) return {};
+  if (shape !== "on" && shape !== "off") throw new Error(`unknown shape review ${shape}; use on or off`);
+  return { shapeReview: shape === "on" };
 }
 
 function jsonEnabled(args: ParsedArgs): boolean {
@@ -218,6 +226,7 @@ function formatCard(
     queue.runNext ? "run next" : null,
     card.mode === null ? "mode: unset" : `mode: ${card.mode}`,
     card.size === null ? "size: unset" : `size: ${card.size}`,
+    card.shapeReview ? "shape review: on" : null,
     card.hostId === null ? "machine: unassigned" : `machine: ${card.hostId}`,
     card.needsUser ? `needs you: ${card.attentionReason ?? "unknown"}` : null,
     card.attentionUnknown ? "idle, unchecked" : null,
@@ -289,7 +298,7 @@ export function createPipelineCli(input: {
       { name: "resume", summary: "Resume a paused task", usage: "bb pipeline resume <card-id> [--json]" },
       { name: "stop", summary: "Stop task execution now and hold queued work", usage: "bb pipeline stop <card-id> [--json]" },
       { name: "set-machine", summary: "Assign a machine to a card that has none", usage: "bb pipeline set-machine <card-id> --machine <id-or-name> [--json]" },
-      { name: "set", summary: "Change a card's mode or size", usage: "bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>] [--json]" },
+      { name: "set", summary: "Change a card's mode, size, or shape review", usage: "bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>] [--shape <on|off>] [--json]" },
       { name: "remove", summary: "Remove a card", usage: "bb pipeline remove <card-id> [--json]" },
     ],
     async run(argv, context) {
@@ -325,6 +334,10 @@ export function createPipelineCli(input: {
       if (args.options.has("file") && args.command !== "instructions") return failure("--file is only accepted by instructions", USAGE);
       if ((args.options.has("mode") || args.options.has("size")) && !["add", "report", "set"].includes(args.command)) {
         return failure("--mode and --size are only accepted by add, report, and set", USAGE);
+      }
+      // Only the user turns shape review on or off; a lead's report never carries it.
+      if (args.options.has("shape") && !["add", "set"].includes(args.command)) {
+        return failure("--shape is only accepted by add and set", USAGE);
       }
 
       try {
@@ -363,6 +376,7 @@ export function createPipelineCli(input: {
               body: option(args, "body") ?? "",
               attachments: (args.options.get("attachment") ?? []).map(attachment),
               ...cardSettings(args),
+              ...shapeReviewOption(args),
               source: "cli",
               start: args.options.has("start"),
             });
@@ -563,8 +577,8 @@ export function createPipelineCli(input: {
           }
           case "set": {
             if (args.positionals.length !== 1) return failure("set requires one card id", USAGE);
-            const settings = cardSettings(args);
-            if (Object.keys(settings).length === 0) return failure("set requires --mode or --size", USAGE);
+            const settings = { ...cardSettings(args), ...shapeReviewOption(args) };
+            if (Object.keys(settings).length === 0) return failure("set requires --mode, --size, or --shape", USAGE);
             const card = await input.service.setSettings(args.positionals[0]!, settings, "cli");
             return success(args, card, formatCard(card));
           }

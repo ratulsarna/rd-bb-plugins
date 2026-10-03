@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { Card } from "./store";
+import { shapeReviewLabel, type Card } from "./store";
 import type { IssueDetails } from "./issue";
 import type { ImportedIssue } from "./issue-types";
 import { renderInstructionTemplate } from "./prompt-template";
@@ -47,7 +47,7 @@ function formatComments(comments: ImportedIssue["comments"]): string {
 function values(card: Card, documents: Readonly<Record<string, string>>): Record<string, string> {
   return {
     card_id: card.id, card_title: card.title, card_body: card.body,
-    mode: card.mode ?? "unset", size: card.size ?? "unset",
+    mode: card.mode ?? "unset", size: card.size ?? "unset", shape_review: shapeReviewLabel(card.shapeReview),
     local_notes: card.body.trim() || "(none)",
     workflow_access: workflowAccess(documents),
     imported_issue_rules: document("imported-issue", documents),

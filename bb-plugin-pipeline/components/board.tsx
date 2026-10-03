@@ -305,7 +305,7 @@ function PipelineTasks() {
     hostId: string,
     intake: ExecutionSelection,
     lead: ExecutionSelection,
-    settings: { mode: CardMode; size: CardSize },
+    settings: { mode: CardMode; size: CardSize; shapeReview: boolean },
     start: boolean,
   ) {
     const targetProjectId = projectIdRef.current;

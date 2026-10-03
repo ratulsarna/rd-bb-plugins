@@ -40,7 +40,9 @@ The card carries two settings, both the user's call: mode and size.
 | **Small** | The lead writes the code. |
 | **Standard** | A developer worker writes the code, per `bb pipeline instructions implement`. |
 
-The user sets both, on the card or during intake. The lead states them in one line and does not change them, except a bug's size: it is provisional until the RCA; you cannot size what you have not diagnosed. In manual the user sizes the diagnosed fix at the RCA stop; in auto the lead sizes it and tells the user.
+The card also carries shape review, on or off, off by default. It is the user's call too, set on the card; intake does not ask. When it is on, implementation review adds a shape pass, as `bb pipeline instructions implement` describes.
+
+The user sets mode and size, on the card or during intake. The lead states them in one line and does not change them, except a bug's size: it is provisional until the RCA; you cannot size what you have not diagnosed. In manual the user sizes the diagnosed fix at the RCA stop; in auto the lead sizes it and tells the user.
 
 The user can change either setting mid-run. Pipeline tells the lead, which follows the new setting from its next stop or gate and records the change in `run.md`; passed gates are not redone.
 
@@ -63,7 +65,7 @@ Working files live at `~/.ai/artifacts/<project>/YYYY-MM-DD-<topic>/`, out of th
 - `run.md` — the lead's run card, created at kickoff before any plan and updated at every gate and every waiver:
 
   ```
-  ticket: #NNNN            mode: manual | auto      size: small | standard
+  ticket: #NNNN            mode: manual | auto      size: small | standard      shape: on | off
   base branch: <name>      work branch: <name>
   scope: <platforms, variants, device at hand>
   deadline: <none | date, reason>

@@ -2,7 +2,7 @@
 
 ## Shared agent model settings
 
-`vendor/ratulsarna-agent-models-0.3.0.tgz` is the standalone `@ratulsarna/agent-models` package. Its source lives in `agents/skills/pair-review/agent-models` in `ratulsarna/scratchpad-mbp16-m3max`. The package owns the file format, defaults, validation, and safe writes. Pipeline installs the checked-in archive through `package.json`; it has no runtime dependency on a scratchpad checkout. The general skill runs the same package's CLI directly.
+`vendor/ratulsarna-agent-models-0.4.0.tgz` is the standalone `@ratulsarna/agent-models` package. Its source lives in `agents/skills/pair-review/agent-models` in `ratulsarna/scratchpad-mbp16-m3max`. The package owns the file format, defaults, validation, and safe writes. Pipeline installs the checked-in archive through `package.json`; it has no runtime dependency on a scratchpad checkout. The general skill runs the same package's CLI directly.
 
 To update it, change and test the source package, bump its version, run `npm pack --ignore-scripts --pack-destination <pipeline>/vendor` there, and install the archive in Pipeline with `npm install --save-exact ./vendor/<archive>.tgz --ignore-scripts`. Remove the old archive and commit the new archive, dependency, and lockfile together.
 
@@ -19,7 +19,7 @@ The forked bodies now live as plugin-owned documents under `workflows/`, stored 
 | `nexus-README.md` | `workflows/README.md` (overview) | renames; mode and size replace sizing; implementation walkthrough gate and run state; Board section; phase-map references rewritten to `bb pipeline instructions` commands |
 | `nexus-plan/SKILL.md` | `workflows/plan/README.md` | renames; 4 report lines added (below); the run.md reference, Oracle brief, and exit rewritten to commands |
 | `nexus-plan/templates/oracle.md` | `workflows/plan/templates/oracle.md` | a Guidelines section; the standard judges against that file instead of "the user's stated taste in the environment's guidance" |
-| `nexus-implement/SKILL.md` | `workflows/implement/README.md` | renames; review configuration through `pair-review`; implementation walkthrough before QA; board reports; template dispatch and exit rewritten to commands |
+| `nexus-implement/SKILL.md` | `workflows/implement/README.md` | renames; review configuration through `pair-review`; required checks before review; a shape pass when the card turns it on; implementation walkthrough before QA; board reports; template dispatch and exit rewritten to commands |
 | `nexus-implement/templates/developer.md` | `workflows/implement/templates/developer.md` | a Guidelines section naming the run's `guidelines.md` |
 | `nexus-implement/templates/oracle.md` | `workflows/implement/templates/oracle.md` | the guidelines path is attached; the standard judges against it instead of "the user's stated taste in the environment's guidance" |
 | `nexus-implement/templates/qa.md` | `workflows/implement/templates/qa.md` | none — byte-for-byte |

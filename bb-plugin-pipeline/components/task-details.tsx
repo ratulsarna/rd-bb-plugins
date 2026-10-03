@@ -119,6 +119,8 @@ export function TaskDetails(props: PipelineCardProps) {
               size={card.size}
               onModeChange={(mode) => props.onSetSettings({ mode })}
               onSizeChange={(size) => props.onSetSettings({ size })}
+              shapeReview={card.shapeReview}
+              onShapeReviewChange={(shapeReview) => props.onSetSettings({ shapeReview })}
               disabled={props.pending || card.column === "done"}
               taskTitle={card.title}
             />

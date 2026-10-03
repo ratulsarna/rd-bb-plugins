@@ -7,7 +7,7 @@ import type { ExecutionSelection } from "../lib/execution";
 import { REVIEWER_ROLES, SUBAGENT_ROLES } from "../lib/agent-models";
 
 const GROUPS = [
-  { key: "review", title: "Review", help: "Shared with pair-review.", roles: REVIEWER_ROLES },
+  { key: "review", title: "Review", help: "Shared with pair-review. Shape runs only on cards with shape review on.", roles: REVIEWER_ROLES },
   { key: "subagents", title: "Subagents", help: "Added to every new BB thread's instructions. Running threads keep their table.", roles: SUBAGENT_ROLES },
 ] as const;
 

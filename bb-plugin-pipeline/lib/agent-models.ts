@@ -2,12 +2,12 @@ import { z } from "zod";
 import { parseAgentModels } from "@ratulsarna/agent-models/schema";
 import type { AgentModels, ModelSelection } from "@ratulsarna/agent-models/schema";
 
-export const REVIEWER_ROLES = [["first", "Reviewer 1"], ["second", "Reviewer 2"]] as const;
+export const REVIEWER_ROLES = [["first", "Reviewer 1"], ["second", "Reviewer 2"], ["shape", "Shape"]] as const;
 export const SUBAGENT_ROLES = [["oracle", "Oracle"], ["complex", "Complex"], ["workhorse", "Workhorse"], ["qa", "QA & computer use"]] as const;
 
 const selectionSchema = z.object({ providerId: z.string(), model: z.string(), reasoningLevel: z.string(), serviceTier: z.enum(["default", "fast"]).optional() }).strict();
 export const agentModelsSchema = z.object({
-  review: z.object({ first: selectionSchema, second: selectionSchema }).strict(),
+  review: z.object({ first: selectionSchema, second: selectionSchema, shape: selectionSchema }).strict(),
   subagents: z.object({ oracle: selectionSchema, complex: selectionSchema, workhorse: selectionSchema, qa: selectionSchema }).strict(),
 }).strict().superRefine((value, context) => {
   try { parseAgentModels(value); }

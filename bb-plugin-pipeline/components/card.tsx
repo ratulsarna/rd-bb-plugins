@@ -24,7 +24,7 @@ export interface PipelineCardProps extends CardActionProps {
   actionError?: string | null;
   machines: PipelineMachine[];
   onSetMachine(hostId: string): void;
-  onSetSettings(settings: { mode?: CardMode; size?: CardSize }): void;
+  onSetSettings(settings: { mode?: CardMode; size?: CardSize; shapeReview?: boolean }): void;
   questionOpen: boolean;
   dragging: boolean;
   onDragStart: DragEventHandler<HTMLElement>;

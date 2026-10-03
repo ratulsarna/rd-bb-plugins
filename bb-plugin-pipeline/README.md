@@ -81,10 +81,10 @@ Work on an imported card changes the source issue only after you approve each ch
 ## Commands
 
 ```text
-bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--project <id>]
+bb pipeline add --title <text> --machine <id-or-name> [--start] [--body <text>] [--attachment <uploaded-path>]... [--mode <manual|auto>] [--size <small|standard>] [--shape <on|off>] [--project <id>]
 bb pipeline start <card-id> [--machine <id-or-name>] [execution overrides]
 bb pipeline set-machine <card-id> --machine <id-or-name>
-bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>]
+bb pipeline set <card-id> [--mode <manual|auto>] [--size <small|standard>] [--shape <on|off>]
 bb pipeline list [--project <id>] [--all]
 bb pipeline show <card-id>
 bb pipeline issues [--project <id>] [--page <n>]
@@ -106,7 +106,7 @@ bb pipeline remove <card-id>
 
 `add` saves a task in Backlog. Pass `--start` to place it in To do and launch intake. Start a saved task with `bb pipeline start <card-id>`; repeated Start requests do not create another thread. `start` accepts the same machine and execution overrides as `add`, which is how an imported card without saved choices launches from the CLI. A failed start uses the existing Retry action. Saved tasks retain their machine, execution choices, notes, and attachments across reloads.
 
-Each card has a mode and a size. Set them in New task, in task details, with `add --mode --size`, or with `bb pipeline set`. New tasks start manual and standard; imported cards start unset, and intake asks. Manual stops for you at every workflow stop. Auto stops for the implementation walkthrough, after QA, and for decisions only you can make. On small, the lead writes the code; on standard, a developer worker does. Changing either on a started task tells its intake or lead, which follows the new setting from its next stop or gate.
+Each card has a mode and a size. Set them in New task, in task details, with `add --mode --size`, or with `bb pipeline set`. New tasks start manual and standard; imported cards start unset, and intake asks. Manual stops for you at every workflow stop. Auto stops for the implementation walkthrough, after QA, and for decisions only you can make. On small, the lead writes the code; on standard, a developer worker does. Each card also has shape review, off by default. Turn it on in New task, in task details, with `add --shape on`, or with `bb pipeline set --shape on`; intake does not ask. When it is on, implementation review adds a shape pass that judges the change's shape against the run's guidelines. Changing any of these on a started task tells its intake or lead, which follows the new setting from its next stop or gate.
 
 `issues` pages through open issues assigned to the BB server's GitHub account; `import-issues` imports up to 50 at a time as Backlog cards. `report --body <text>` or `--body-file <path>` stores local scope notes on the card — `--body-file` requires a BB thread and reads the file from that thread's machine — and intake and the lead receive those notes.
 
@@ -143,7 +143,7 @@ Open **Settings** from the Pipeline header to configure execution defaults, capa
 
 Settings saves update only edited fields. Leave the TypeSafe key blank to retain it, enter a replacement, or explicitly clear it. Integration status checks GitHub authentication on the BB server and Notify availability; Jev’s status says whether a key is configured, not whether a request has succeeded.
 
-**Review models** sets the harness, model, reasoning level, and optional service tier for Reviewer 1 and Reviewer 2 in `pair-review`. Its separate Save button writes `~/.config/agent-models/config.json` on the BB server. The standalone skill reads the same file on the machine running the review. Install `pair-review` on each review machine. Each round reads both choices once, so a settings change takes effect on the next round.
+**Review models** sets the harness, model, reasoning level, and optional service tier for Reviewer 1, Reviewer 2, and Shape in `pair-review`. Choosing a Shape model never turns the pass on; only a card's shape review does. Its separate Save button writes `~/.config/agent-models/config.json` on the BB server. The standalone skill reads the same file on the machine running the review. Install `pair-review` on each review machine. Each round reads the choices once, so a settings change takes effect on the next round.
 
 A fresh install uses the shared package's defaults. The file is created on the first save. `$XDG_CONFIG_HOME` changes the config directory; `AGENT_MODELS_CONFIG` selects an explicit file. Invalid files show an error instead of falling back. If another save or a file sync changes the file while Settings is open, reload review models before saving again.
 

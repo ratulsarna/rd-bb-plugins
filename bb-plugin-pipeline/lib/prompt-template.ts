@@ -1,4 +1,4 @@
-const CARD_FIELDS = ["card_id", "card_title", "card_body", "mode", "size", "local_notes", "workflow_access", "imported_issue_rules"];
+const CARD_FIELDS = ["card_id", "card_title", "card_body", "mode", "size", "shape_review", "local_notes", "workflow_access", "imported_issue_rules"];
 const ISSUE_FIELDS = ["issue_number", "issue_title", "issue_url", "issue_state", "issue_updated_at", "labels", "comments"];
 
 export const INSTRUCTION_FIELDS: Readonly<Record<string, readonly string[]>> = {

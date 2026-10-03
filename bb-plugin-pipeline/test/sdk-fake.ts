@@ -150,6 +150,7 @@ export function makeCard(overrides: Partial<Card> = {}): Card {
     reportSignal: null,
     mode: null,
     size: null,
+    shapeReview: false,
     issueUrl: null,
     importedIssue: null,
     prUrl: null,

@@ -138,7 +138,7 @@ describe("mode and size", () => {
     try {
       expect((await cli.run(["set", s.card.id, "--mode", "trivial"], {})).stderr).toContain("unknown mode trivial");
       expect((await cli.run(["report", "--size", "tiny"], { threadId: "intake" })).stderr).toContain("unknown size tiny");
-      expect((await cli.run(["set", s.card.id], {})).stderr).toContain("set requires --mode or --size");
+      expect((await cli.run(["set", s.card.id], {})).stderr).toContain("set requires --mode, --size, or --shape");
       expect((await cli.run(["move", s.card.id, "qa", "--mode", "auto"], {})).stderr).toContain("only accepted by add, report, and set");
       expect(setSettings).not.toHaveBeenCalled();
       expect(report).not.toHaveBeenCalled();
@@ -147,6 +147,32 @@ describe("mode and size", () => {
       expect(result.exitCode).toBe(0);
       expect(setSettings).toHaveBeenCalledExactlyOnceWith(s.card.id, { mode: "auto", size: "small" }, "cli");
       expect(result.stdout).toContain("mode: auto; size: small");
+    } finally {
+      s.db.close();
+    }
+  });
+
+  it("lets only add and set turn shape review on, and never lets a lead's report carry it", async () => {
+    const s = setup();
+    const setSettings = vi.fn(async (id: string, settings: object) => s.store.update(id, settings));
+    const report = vi.fn();
+    const cli = createPipelineCli({
+      service: { setSettings, report } as never, store: s.store, sdk: {} as never,
+      controls: {} as never, github: {} as never, issues: {} as never, capacity: {} as never, getSettings: async () => ({}),
+    });
+    try {
+      // report shares the mode and size parser; without the guard it would accept --shape and drop it.
+      expect((await cli.run(["report", "--working", "--shape", "on"], { threadId: "lead" })).stderr).toContain("--shape is only accepted by add and set");
+      expect((await cli.run(["set", s.card.id, "--shape", "yes"], {})).stderr).toContain("unknown shape review yes");
+      expect(report).not.toHaveBeenCalled();
+      expect(setSettings).not.toHaveBeenCalled();
+
+      const on = await cli.run(["set", s.card.id, "--shape", "on"], {});
+      expect(setSettings).toHaveBeenLastCalledWith(s.card.id, { shapeReview: true }, "cli");
+      expect(on.stdout).toContain("shape review: on");
+      const off = await cli.run(["set", s.card.id, "--shape", "off"], {});
+      expect(setSettings).toHaveBeenLastCalledWith(s.card.id, { shapeReview: false }, "cli");
+      expect(off.stdout).not.toContain("shape review");
     } finally {
       s.db.close();
     }

@@ -1,14 +1,19 @@
-import { MODES, SIZES, type CardMode, type CardSize } from "@/lib/store";
+import { MODES, SIZES, shapeReviewLabel, type CardMode, type CardSize } from "@/lib/store";
 import { PipelineSelect } from "./select";
 
-const LABELS: Record<CardMode | CardSize, string> = {
+type ShapeReview = "on" | "off";
+const SHAPE_REVIEW: readonly ShapeReview[] = ["off", "on"];
+
+const LABELS: Record<CardMode | CardSize | ShapeReview, string> = {
   manual: "Manual",
   auto: "Auto",
   small: "Small",
   standard: "Standard",
+  off: "Off",
+  on: "On",
 };
 
-function SettingSelect<T extends CardMode | CardSize>(props: {
+function SettingSelect<T extends CardMode | CardSize | ShapeReview>(props: {
   name: string;
   label: string;
   options: readonly T[];
@@ -36,6 +41,8 @@ export function TaskSettingsFields(props: {
   size: CardSize | null;
   onModeChange(mode: CardMode): void;
   onSizeChange(size: CardSize): void;
+  shapeReview: boolean;
+  onShapeReviewChange(on: boolean): void;
   disabled: boolean;
   /** Names the task in accessible labels when several are on screen. */
   taskTitle?: string;
@@ -47,6 +54,8 @@ export function TaskSettingsFields(props: {
         onChange={props.onModeChange} disabled={props.disabled} />
       <SettingSelect name="Size" label={`Size${suffix}`} options={SIZES} value={props.size}
         onChange={props.onSizeChange} disabled={props.disabled} />
+      <SettingSelect name="Shape review" label={`Shape review${suffix}`} options={SHAPE_REVIEW} value={shapeReviewLabel(props.shapeReview)}
+        onChange={(value) => props.onShapeReviewChange(value === "on")} disabled={props.disabled} />
     </>
   );
 }

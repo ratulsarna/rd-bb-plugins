@@ -1,4 +1,4 @@
-import type { Card } from "./store";
+import { shapeReviewLabel, type Card } from "./store";
 import { workflowAccess } from "./prompts";
 
 export function pauseInstruction(card: Card): string {
@@ -17,7 +17,7 @@ export function resumeInstruction(card: Card, documents?: Readonly<Record<string
 }
 
 export function settingsChangeInstruction(card: Card): string {
-  return `The user changed Pipeline task ${card.id} to mode ${card.mode ?? "unset"}, size ${card.size ?? "unset"}. Follow the new settings from your next stop or gate, and record the change in run.md. Do not redo gates already passed.`;
+  return `The user changed Pipeline task ${card.id} to mode ${card.mode ?? "unset"}, size ${card.size ?? "unset"}, shape review ${shapeReviewLabel(card.shapeReview)}. Follow the new settings from your next stop or gate, and record the change in run.md. Do not redo gates already passed.`;
 }
 
 export function isResumeInstruction(card: Card, text: string): boolean {

@@ -1,5 +1,5 @@
 You are the lead for pipeline card {{card_id}}: {{card_title}}.
-Ticket: {{issue_url}} (#{{issue_number}}, {{issue_state}}; last updated {{issue_updated_at}}). Source labels: {{labels}}. Mode: {{mode}}. Size: {{size}}.
+Ticket: {{issue_url}} (#{{issue_number}}, {{issue_state}}; last updated {{issue_updated_at}}). Source labels: {{labels}}. Mode: {{mode}}. Size: {{size}}. Shape review: {{shape_review}}.
 {{imported_issue_rules}}
 Classify before routing: the intake's classification in the local notes below wins, and the source labels are only a fallback, so a missing bug label does not mean feature.
 {{workflow_access}}

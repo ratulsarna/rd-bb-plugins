@@ -24,13 +24,14 @@ import {
   type PipelineLaunchSettings,
   type PipelineRole,
 } from "./spawn";
-import type {
-  Card,
-  CardAttachment,
-  CardMode,
-  CardSize,
-  CardStore,
-  HistoryInput,
+import {
+  shapeReviewLabel,
+  type Card,
+  type CardAttachment,
+  type CardMode,
+  type CardSize,
+  type CardStore,
+  type HistoryInput,
 } from "./store";
 import { ownerThread, rejectBacklog, requireStarted, roleThread } from "./card";
 import { userAttentionReason, type AttentionCategory } from "./notifications";
@@ -66,6 +67,7 @@ export interface ReportInput {
 export interface CardSettings {
   mode?: CardMode;
   size?: CardSize;
+  shapeReview?: boolean;
 }
 
 export interface StartOptions {
@@ -86,6 +88,7 @@ export interface PipelineService {
     attachments?: CardAttachment[];
     mode?: CardMode;
     size?: CardSize;
+    shapeReview?: boolean;
     start?: boolean;
     source: "ui" | "cli";
   }): Promise<Card>;
@@ -948,6 +951,7 @@ export function createPipelineService(
           attachments: input.attachments ?? [],
           mode: input.mode ?? "manual",
           size: input.size ?? "standard",
+          shapeReview: input.shapeReview === true,
           source: input.source,
         }),
       );
@@ -978,12 +982,14 @@ export function createPipelineService(
       const patch: CardSettings = {};
       if (settings.mode !== undefined && settings.mode !== card.mode) patch.mode = settings.mode;
       if (settings.size !== undefined && settings.size !== card.size) patch.size = settings.size;
+      if (settings.shapeReview !== undefined && settings.shapeReview !== card.shapeReview) patch.shapeReview = settings.shapeReview;
       // An unchanged request still notifies, so repeating it retries a failed delivery.
-      if (patch.mode !== undefined || patch.size !== undefined) {
+      if (Object.keys(patch).length > 0) {
         update(card.id, patch, {
           kind: "settings_changed",
           source,
-          note: `mode ${patch.mode ?? card.mode ?? "unset"}, size ${patch.size ?? card.size ?? "unset"}`,
+          note: `mode ${patch.mode ?? card.mode ?? "unset"}, size ${patch.size ?? card.size ?? "unset"}, `
+            + `shape review ${shapeReviewLabel(patch.shapeReview ?? card.shapeReview)}`,
         });
       }
       // Queued behind launches: a thread still being linked gets the note once it exists,

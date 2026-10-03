@@ -43,6 +43,7 @@ describe("lead prompt", () => {
       body: "Keep scope to the list view; the timeline page is out.",
       mode: "auto",
       size: "small",
+      shapeReview: true,
       issueUrl: sourceIssue.url,
     });
     const prompt = leadPrompt(card, {
@@ -51,7 +52,7 @@ describe("lead prompt", () => {
       labels: ["bug"],
     });
 
-    expect(prompt).toContain("Mode: auto. Size: small.");
+    expect(prompt).toContain("Mode: auto. Size: small. Shape review: on.");
     expect(prompt).toContain(sourceIssue.url);
     expect(prompt).not.toContain("Kind:");
     expect(prompt).toContain("Source labels: bug");

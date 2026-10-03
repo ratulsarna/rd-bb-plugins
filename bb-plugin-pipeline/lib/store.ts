@@ -14,6 +14,7 @@ export const MODES = ["manual", "auto"] as const;
 export type CardMode = typeof MODES[number];
 export const SIZES = ["small", "standard"] as const;
 export type CardSize = typeof SIZES[number];
+export const shapeReviewLabel = (on: boolean): "on" | "off" => (on ? "on" : "off");
 
 export interface CardAttachment {
   path: string;
@@ -42,6 +43,7 @@ export interface Card {
   reportSignal: "needs_you" | "working" | null;
   mode: CardMode | null;
   size: CardSize | null;
+  shapeReview: boolean;
   issueUrl: string | null;
   importedIssue: ImportedIssue | null;
   prUrl: string | null;
@@ -95,6 +97,7 @@ export type CardPatch = Partial<
     | "reportSignal"
     | "mode"
     | "size"
+    | "shapeReview"
     | "issueUrl"
     | "prUrl"
     | "intakeThreadId"
@@ -127,6 +130,7 @@ interface CardRow {
   report_signal: "needs_you" | "working" | null;
   mode: CardMode | null;
   size: CardSize | null;
+  shape_review: number;
   issue_url: string | null;
   imported_issue: string | null;
   pr_url: string | null;
@@ -214,6 +218,7 @@ export const MIGRATIONS = [
     card_id TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
     snapshot TEXT NOT NULL
   );`,
+  `ALTER TABLE cards ADD COLUMN shape_review INTEGER NOT NULL DEFAULT 0 CHECK (shape_review IN (0, 1));`,
 ] as const;
 
 function parseAttachments(value: string): CardAttachment[] {
@@ -254,6 +259,7 @@ function cardFromRow(row: CardRow): Card {
     reportSignal: row.report_signal,
     mode: row.mode,
     size: row.size,
+    shapeReview: row.shape_review === 1,
     issueUrl: row.issue_url,
     importedIssue: row.imported_issue == null ? null : JSON.parse(row.imported_issue) as ImportedIssue,
     prUrl: row.pr_url,
@@ -301,6 +307,7 @@ export interface CardStore {
     importedIssue?: ImportedIssue;
     mode?: CardMode;
     size?: CardSize;
+    shapeReview?: boolean;
   }): Card;
   /** Refuses to move an assigned card. */
   setHost(id: string, hostId: string): Card;
@@ -380,7 +387,7 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       db.prepare(
         `UPDATE cards SET
           "column" = ?, needs_user = ?, attention_reason = ?, attention_source = ?, attention_unknown = ?,
-          report_signal = ?, mode = ?, size = ?, issue_url = ?, pr_url = ?, intake_thread_id = ?, lead_thread_id = ?,
+          report_signal = ?, mode = ?, size = ?, shape_review = ?, issue_url = ?, pr_url = ?, intake_thread_id = ?, lead_thread_id = ?,
           owner_role = ?, start_requested = ?, run_state = ?, pause_request_id = ?, control_error = ?, thread_error = ?, launch_error = ?,
           body = ?, host_id = ?, intake_execution = ?, lead_execution = ?, revision = revision + 1, updated_at = ?
          WHERE id = ?`,
@@ -393,6 +400,7 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         next.reportSignal,
         next.mode,
         next.size,
+        next.shapeReview ? 1 : 0,
         next.issueUrl,
         next.prUrl,
         next.intakeThreadId,
@@ -442,8 +450,8 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
       }
       db.prepare(
         `INSERT INTO cards
-          (id, project_id, host_id, intake_execution, lead_execution, start_requested, title, body, attachments, "column", issue_url, imported_issue, mode, size, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, project_id, host_id, intake_execution, lead_execution, start_requested, title, body, attachments, "column", issue_url, imported_issue, mode, size, shape_review, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         input.id,
         input.projectId,
@@ -459,6 +467,7 @@ export function createCardStore(db: Database, now = Date.now): CardStore {
         input.importedIssue === undefined ? null : JSON.stringify(input.importedIssue),
         input.mode ?? null,
         input.size ?? null,
+        input.shapeReview === true ? 1 : 0,
         at,
         at,
       );
