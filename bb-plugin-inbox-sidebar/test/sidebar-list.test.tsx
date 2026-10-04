@@ -1997,6 +1997,35 @@ describe("snooze", () => {
     );
   });
 
+  // A subagent's question wakes its root; answering it in the subagent is
+  // looking at the root's tree, so the root's marker must clear.
+  it("acknowledges a woken root once from its open subagents", async () => {
+    const until = NOW - HOUR;
+    configureFakeSdk({
+      threads: [
+        thread("thr_root", { title: "Root" }),
+        thread("thr_child", { title: "Child", parentThreadId: "thr_root" }),
+        thread("thr_grandchild", { title: "Grandchild", parentThreadId: "thr_child" }),
+      ],
+      overrides: [{ threadId: "thr_root", override: "snoozed", at: NOW - DAY, until }],
+      splitLayout: {
+        panes: [
+          { paneId: "a", rect: { x: 0, y: 0, width: 0.5, height: 1 }, threadId: "thr_child", isFocused: true },
+          { paneId: "b", rect: { x: 0.5, y: 0, width: 0.5, height: 1 }, threadId: "thr_grandchild", isFocused: false },
+        ],
+      },
+    });
+    renderList({ activeThreadId: "thr_child" });
+
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({
+        method: "acknowledgeWake",
+        input: { threadId: "thr_root", until },
+      }),
+    );
+    expect(rpcCalls.filter((c) => c.method === "acknowledgeWake")).toHaveLength(1);
+  });
+
   // Pinned rows never carry the woken marker, so the acknowledgement must not
   // depend on where the row sits: unpinned later, it would come back woken.
   it("acknowledges an expired snooze on a pinned thread open in a split pane", async () => {

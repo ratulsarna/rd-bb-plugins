@@ -89,12 +89,25 @@ export function useBoardState(
   // in any section: pinned or nested, its marker would otherwise come back.
   // Keys are id:until, so a later snooze of the same thread is acknowledged
   // again, and a re-render is not. A failed call forgets its key, so the next
-  // run (at the latest the minute tick) retries it.
+  // run (at the latest the minute tick) retries it. A snooze sits on a root, so
+  // an open subagent acknowledges its ancestors too: answering the question
+  // that woke the root is looking at it.
   const acknowledgeWake = settledApi.acknowledgeWake;
   const acknowledged = useRef(new Set<string>());
+  const parentOf = useMemo(
+    () => new Map(threads.map((thread) => [thread.id, thread.parentThreadId])),
+    [threads],
+  );
   useEffect(() => {
+    const lineage = new Set<string>();
+    for (const openId of openThreadIds) {
+      // The `has` check also stops on corrupt cyclic ancestry.
+      for (let id = openId; id && !lineage.has(id); id = parentOf.get(id) ?? "") {
+        lineage.add(id);
+      }
+    }
     const sent = new Set<string>();
-    for (const threadId of openThreadIds) {
+    for (const threadId of lineage) {
       const mark = overrides.get(threadId);
       if (mark?.override !== "snoozed" || mark.until > now) continue;
       const key = `${threadId}:${mark.until}`;
@@ -105,7 +118,7 @@ export function useBoardState(
       );
     }
     acknowledged.current = sent;
-  }, [acknowledgeWake, now, openThreadIds, overrides]);
+  }, [acknowledgeWake, now, openThreadIds, overrides, parentOf]);
 
   // Pinning happens outside our RPC — our own context menu pins through the
   // host — so nothing publishes on the pinned-order channel. Watch which
