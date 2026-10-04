@@ -55,6 +55,9 @@ export interface SidebarRowProps {
   onCancelRename: () => void;
   onRename: (threadId: string, title: string) => Promise<void>;
   pullRequests: ReadonlyMap<string, PipelinePullRequest | null>;
+  /** The list's project filter; "" means every project. */
+  filteredProjectId: string;
+  onToggleProjectFilter: (projectId: string) => void;
   /** Settle / Unsettle / Wake, provided by the list for root rows only. */
   action?: { label: string; run: () => void };
   /** Offered on top-level Inbox rows only. */
@@ -93,6 +96,8 @@ export function SidebarRow({
   onCancelRename,
   onRename,
   pullRequests,
+  filteredProjectId,
+  onToggleProjectFilter,
   action,
   onSnooze,
   wakeAt,
@@ -180,6 +185,8 @@ export function SidebarRow({
         action={action}
         onSnooze={onSnooze && (() => setSnoozeOpen(true))}
         onRename={startRename}
+        filteredProjectId={filteredProjectId}
+        onToggleProjectFilter={onToggleProjectFilter}
       >
         <SnoozeAnchor asChild>
         <div
@@ -328,6 +335,8 @@ export function SidebarRow({
               onCancelRename={onCancelRename}
               onRename={onRename}
               pullRequests={pullRequests}
+              filteredProjectId={filteredProjectId}
+              onToggleProjectFilter={onToggleProjectFilter}
             />
           ))}
         </ul>
