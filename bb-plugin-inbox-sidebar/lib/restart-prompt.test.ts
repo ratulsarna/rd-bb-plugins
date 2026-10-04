@@ -6,7 +6,6 @@ const sam = {
   projectId: PROJECT,
   identity: `${PROJECT}:sam`,
   vaultPath: "/home/me/ObsidianVault",
-  targetingAutomations: [],
 };
 
 describe("restartPrompt", () => {
@@ -38,22 +37,11 @@ describe("restartPrompt", () => {
       ...sam,
       identity: `${PROJECT}:forge`,
     });
-    expect(prompt).toBe("Start a fresh root conversation. Use thread thr_old as context when needed.\n\n");
+    expect(prompt).toBe("New chat. Your last one was thread thr_old. Check it if you need something from it.\n\n");
   });
 
   it("skips the reading when the target host has no vault source", () => {
     const prompt = restartPrompt("thr_old", { ...sam, vaultPath: null });
-    expect(prompt).toBe("Start a fresh root conversation. Use thread thr_old as context when needed.\n\n");
-  });
-
-  it("names automations without seeding a choice that can become stale", () => {
-    const prompt = restartPrompt("thr_old", {
-      ...sam,
-      targetingAutomations: [{ id: "auto_1", name: "heartbeat" }],
-    });
-    expect(prompt.indexOf("Automations currently targeting the source")).toBeLessThan(
-      prompt.indexOf("Read /home/me/ObsidianVault"),
-    );
-    expect(prompt).toContain("- heartbeat (auto_1)");
+    expect(prompt).toBe("New chat. Your last one was thread thr_old. Check it if you need something from it.\n\n");
   });
 });

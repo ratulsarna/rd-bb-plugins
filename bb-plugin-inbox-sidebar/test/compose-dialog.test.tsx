@@ -12,7 +12,6 @@ const seeds = {
   title: "Sam", projectId: "fleet", environmentId: "env-old", sourceHostId: "srv", machines,
   identity: "fleet:sam", vaultPath: "/srv/vault", providerId: "retired-provider", model: "retired-model", reasoningLevel: "high", permissionMode: "full", serviceTier: "priority",
   homePath: "/srv/assistants/sam", homes: [{ name: "sam", path: "/srv/assistants/sam" }],
-  targetingAutomations: [{ id: "server-only", name: "server heartbeat" }],
 };
 function destination(hostId: "srv" | "mac", providerAvailable = true) {
   const machine = machines.find((machine) => machine.hostId === hostId)!;
@@ -24,7 +23,7 @@ beforeEach(() => configureFakeSdk({
 }));
 afterEach(cleanup);
 
-it.each([true, false])("retains edited composition through archive toggles and submits archiveSource=%s", async (archiveSource) => {
+it("submits the edited composition, not the seeds", async () => {
   const onClose = vi.fn();
   render(<ComposeDialog replaceThreadId="old" onClose={onClose} onNavigate={() => {}} />);
   const prompt = await screen.findByRole("textbox", { name: "Prompt" });
@@ -32,19 +31,11 @@ it.each([true, false])("retains edited composition through archive toggles and s
   fireEvent.change(prompt, { target: { value: "Use my edited context, not the initial prompt" } });
   fireEvent.change(screen.getByRole("textbox", { name: "Provider" }), { target: { value: "pi" } });
   fireEvent.change(screen.getByRole("textbox", { name: "Model" }), { target: { value: "edited-model" } });
-  const checkbox = screen.getByRole("checkbox");
-  for (const checked of [true, false, archiveSource]) {
-    if ((checkbox as HTMLInputElement).checked !== checked) fireEvent.click(checkbox);
-    expect(screen.getByRole("textbox", { name: "Prompt" })).toBe(prompt);
-    expect((prompt as HTMLTextAreaElement).value).toBe("Use my edited context, not the initial prompt");
-    expect((screen.getByRole("textbox", { name: "Provider" }) as HTMLInputElement).value).toBe("pi");
-    expect((screen.getByRole("textbox", { name: "Model" }) as HTMLInputElement).value).toBe("edited-model");
-    expect(lastComposerProps!.draftKey).toBe(draftKey);
-  }
+  expect(lastComposerProps!.draftKey).toBe(draftKey);
   fireEvent.click(screen.getByRole("button", { name: "Send conversation" }));
   await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({
-    archiveSource, destinationHostId: "srv", homePath: "/srv/assistants/sam",
+    destinationHostId: "srv", homePath: "/srv/assistants/sam",
     request: { providerId: "pi", model: "edited-model", input: [{ type: "text", text: "Use my edited context, not the initial prompt", mentions: [] }] },
   });
 });
@@ -73,11 +64,10 @@ it.each(["machine", "source"])("still changes the composer draft and seeds when 
   expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({
     replaceThreadId: change === "machine" ? "old" : "other",
     destinationHostId: change === "machine" ? "mac" : "srv",
-    archiveSource: false,
   });
 });
 
-it("selects the destination machine/home/vault and submits without the original host or archive behavior", async () => {
+it("selects the destination machine/home/vault and submits without the original host", async () => {
   const onClose = vi.fn();
   configureFakeSdk({
     assistantSeeds: { old: seeds }, assistantDestinations: { srv: destination("srv"), mac: destination("mac", false) },
@@ -89,21 +79,18 @@ it("selects the destination machine/home/vault and submits without the original 
   render(<ComposeDialog replaceThreadId="old" onClose={onClose} onNavigate={() => {}} />);
   await screen.findByRole("button", { name: "Send conversation" });
   expect(lastComposerProps?.defaultModel).toBe("retired-model");
-  expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
   fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "mac" } });
   await waitFor(() => expect((screen.getByRole("combobox", { name: "Home" }) as HTMLSelectElement).value).toBe("/Users/me/assistants/sam"));
   expect(screen.getByText("Vault: /Users/me/vault")).toBeTruthy();
-  expect(screen.queryByRole("checkbox")).toBeNull();
   expect(lastComposerProps?.defaultEnvironment).toEqual({ type: "host", hostId: "mac", workspace: { type: "unmanaged", path: "/Users/me/assistants/sam" } });
   expect(lastComposerProps?.defaultProviderId).toBeUndefined();
   expect(lastComposerProps?.defaultModel).toBeUndefined();
   expect(lastComposerProps?.defaultPermissionMode).toBe("full");
-  expect(lastComposerProps?.initialPrompt).toContain("final guidance follows the selected creation mode");
-  expect(lastComposerProps?.initialPrompt).toContain("Read /Users/me/vault/Notes/");
+  expect(lastComposerProps?.initialPrompt).toContain("- /Users/me/vault/Notes/Dated/");
   expect(lastComposerProps?.initialPrompt).not.toContain("/srv/vault");
   fireEvent.click(screen.getByRole("button", { name: "Send conversation" }));
   await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
-  expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({ destinationHostId: "mac", homePath: "/Users/me/assistants/sam", archiveSource: false, request: { environment: { type: "reuse", environmentId: "env-old" } } });
+  expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({ destinationHostId: "mac", homePath: "/Users/me/assistants/sam", request: { environment: { type: "reuse", environmentId: "env-old" } } });
   expect(navigateCalls).toEqual([{ method: "toThread", arg: "new-conversation" }]);
 });
 
@@ -120,7 +107,7 @@ it("does not submit a stale target when machine responses arrive out of order", 
   expect((screen.getByRole("combobox", { name: "Home" }) as HTMLSelectElement).value).toBe("/Users/me/assistants/sam");
   fireEvent.click(screen.getByRole("button", { name: "Send conversation" }));
   await waitFor(() => expect(rpcCalls.some((call) => call.method === "createReplacementThread")).toBe(true));
-  expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({ destinationHostId: "mac", archiveSource: false });
+  expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({ destinationHostId: "mac" });
 });
 
 it("ignores late source seeds after choosing another assistant conversation", async () => {
@@ -143,43 +130,4 @@ it("withholds the composer for an unready target and shows its reason", async ()
   await screen.findByText("Private Sync is paused");
   expect(screen.queryByRole("button", { name: "Send conversation" })).toBeNull();
   expect(rpcCalls.filter((call) => call.method === "createReplacementThread")).toEqual([]);
-});
-
-it("defaults to retaining the source even after opting into replacement and returning to its machine", async () => {
-  render(<ComposeDialog replaceThreadId="old" onClose={() => {}} onNavigate={() => {}} />);
-  await screen.findByRole("button", { name: "Send conversation" });
-  const checkbox = screen.getByRole("checkbox", { name: "Replace and archive the selected conversation after creation" });
-  expect((checkbox as HTMLInputElement).checked).toBe(false);
-  fireEvent.click(checkbox);
-  expect((checkbox as HTMLInputElement).checked).toBe(true);
-  expect(screen.getByText(/Sending replaces and archives/)).toBeTruthy();
-  fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "mac" } });
-  await waitFor(() => expect((screen.getByRole("combobox", { name: "Home" }) as HTMLSelectElement).value).toBe("/Users/me/assistants/sam"));
-  fireEvent.change(screen.getByRole("combobox", { name: "Machine" }), { target: { value: "srv" } });
-  await waitFor(() => expect((screen.getByRole("combobox", { name: "Home" }) as HTMLSelectElement).value).toBe("/srv/assistants/sam"));
-  expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
-  expect(screen.getByText(/The existing conversation stays intact/)).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Send conversation" }));
-  await waitFor(() => expect(rpcCalls.some((call) => call.method === "createReplacementThread")).toBe(true));
-  expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({ destinationHostId: "srv", archiveSource: false });
-});
-
-
-it.each([true, false])("keeps an untouched seed mode-neutral after toggles, archiveSource=%s", async (archiveSource) => {
-  render(<ComposeDialog replaceThreadId="old" onClose={() => {}} onNavigate={() => {}} />);
-  const prompt = await screen.findByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
-  const initial = prompt.value;
-  expect(initial).toContain("server heartbeat (server-only)");
-  expect(initial).not.toContain("Keep their targets");
-  expect(initial).not.toContain("replaces and archives");
-  const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
-  fireEvent.click(checkbox);
-  if (!archiveSource) fireEvent.click(checkbox);
-  expect(screen.getByRole("textbox", { name: "Prompt" })).toBe(prompt);
-  expect(prompt.value).toBe(initial);
-  fireEvent.click(screen.getByRole("button", { name: "Send conversation" }));
-  await waitFor(() => expect(rpcCalls.some((call) => call.method === "createReplacementThread")).toBe(true));
-  expect(rpcCalls.find((call) => call.method === "createReplacementThread")?.input).toMatchObject({
-    archiveSource, request: { input: [{ type: "text", text: initial, mentions: [] }] },
-  });
 });

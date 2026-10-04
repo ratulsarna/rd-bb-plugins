@@ -36,7 +36,6 @@ export function ComposeDialog({
   const [hostId, setHostId] = useState<string | null>(null);
   const [destinationResult, setDestinationResult] = useState<{ key: string; value: AssistantDestination } | null>(null);
   const [homePath, setHomePath] = useState<string | null>(null);
-  const [archiveSource, setArchiveSource] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const destinationKey = `${replaceThreadId}:${hostId}:${attempt}`;
@@ -55,7 +54,6 @@ export function ComposeDialog({
         if (!live) return;
         setSeedResult({ threadId: replaceThreadId, value: result });
         setHostId(result.sourceHostId);
-        setArchiveSource(false);
       }).catch((cause: unknown) => {
         if (live) setError(String(cause));
       });
@@ -80,8 +78,6 @@ export function ComposeDialog({
     return () => { live = false; };
   }, [replaceThreadId, hostId, seeds, destinationKey, rpc]);
 
-  const sameHost = seeds?.sourceHostId === hostId;
-  const shouldArchive = sameHost && archiveSource;
   const name = seeds?.title ?? "assistant";
   return (
     <Dialog.Root
@@ -117,7 +113,8 @@ export function ComposeDialog({
             </Dialog.Title>
             <Dialog.Description className="mt-1.5 pr-8 text-sm leading-relaxed text-muted-foreground">
               Start a fresh root conversation with an empty session. Machine and Home
-              set its destination. {shouldArchive ? "Sending replaces and archives the selected conversation." : "The existing conversation stays intact."}
+              set its destination. Sending archives the current conversation and moves
+              its automations to the new one.
             </Dialog.Description>
 
             {seeds && (
@@ -125,11 +122,7 @@ export function ComposeDialog({
                 <label className="mt-3 flex items-center gap-2 text-sm">
                   <span className="shrink-0 text-muted-foreground">Machine</span>
                   <select aria-label="Machine" value={hostId ?? ""} disabled={submitting}
-                    onChange={(event) => {
-                      const next = event.target.value;
-                      setHostId(next);
-                      setArchiveSource(false);
-                    }}
+                    onChange={(event) => setHostId(event.target.value)}
                     className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5">
                     {seeds.machines.map((machine) => (
                       <option key={machine.hostId} value={machine.hostId}>
@@ -153,10 +146,6 @@ export function ComposeDialog({
                     {!destination.providerAvailable && destination.ready && <p className="mt-2 text-xs text-muted-foreground">Choose an available provider and model below.</p>}
                   </>
                 )}
-                {sameHost && <label className="mt-3 flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={archiveSource} disabled={submitting} onChange={(event) => setArchiveSource(event.target.checked)} />
-                  Replace and archive the selected conversation after creation
-                </label>}
                 <button type="button" disabled={submitting} onClick={() => setAttempt((value) => value + 1)} className="mt-2 text-xs text-muted-foreground underline">Refresh destination</button>
               </>
             )}
@@ -198,9 +187,8 @@ export function ComposeDialog({
                         request,
                         destinationHostId: hostId,
                         homePath,
-                        archiveSource: shouldArchive,
                       });
-                      if (result.archiveError) toast.error(`New conversation created; source was kept: ${result.archiveError}`);
+                      if (result.warning) toast.error(`New conversation created. ${result.warning}`);
                       if (currentKey.current !== key) return;
                       onClose();
                       navigate.toThread(result.newThreadId);

@@ -64,7 +64,6 @@ it.each(cases)("serializes restart seeds with execution options: $options, unava
       vaultPath: "/test/vault",
       homePath: "/test/assistants/sam",
       homes: [{ name: "sam", path: "/test/assistants/sam" }],
-      targetingAutomations: [],
     });
     if (options === null) {
       for (const key of ["model", "permissionMode", "reasoningLevel", "serviceTier"]) {

@@ -1,6 +1,10 @@
 import { useCallback, useMemo, useState } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
+import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  useBbNavigate,
+  useRpc,
   experimental_useSidebarThreadActions as useSidebarThreadActions,
   experimental_useSidebarThreads as useSidebarThreads,
   experimental_useSidebarThreadSplit as useSidebarThreadSplit,
@@ -16,6 +20,8 @@ import { useAssistantAvatars } from "@/lib/use-assistant-avatars";
 import { useAssistantIdentities } from "@/lib/use-assistant-identities";
 import { useAssistantOrder } from "@/lib/use-assistant-order";
 import { useAssistantSubtitles } from "@/lib/use-assistant-subtitles";
+import { usePortalScopeProps } from "@/lib/portal-scope";
+import type { boardRpcContract } from "@/server";
 
 interface BotsSectionProps {
   activeThreadId: string | null;
@@ -44,6 +50,7 @@ export function BotsSection({
 }: BotsSectionProps) {
   const { threads, projects } = useSidebarThreads();
   const actions = useSidebarThreadActions();
+  const navigate = useBbNavigate();
   const { subtitles, set: setSubtitle } = useAssistantSubtitles();
   const order = useAssistantOrder();
   const [restartThreadId, setRestartThreadId] = useState<string | null>(null);
@@ -126,6 +133,15 @@ export function BotsSection({
     [actions, onNavigate],
   );
 
+  // Archived threads are not in the sidebar list, which `actions.open` ignores.
+  const openPastThread = useCallback(
+    (threadId: string) => {
+      navigate.toThread(threadId);
+      onNavigate();
+    },
+    [navigate, onNavigate],
+  );
+
   const restartThread = useCallback((threadId: string) => {
     setRestartThreadId(threadId);
   }, []);
@@ -201,6 +217,7 @@ export function BotsSection({
               isEditingSubtitle={row.thread.id === editingThreadId}
               reorder={reorder}
               onOpen={openThread}
+              onOpenPast={openPastThread}
               onRestart={restartThread}
               onEditSubtitle={() => setEditingThreadId(row.thread.id)}
               onSaveSubtitle={(value) => {
@@ -229,6 +246,7 @@ function AssistantRow({
   isEditingSubtitle,
   reorder,
   onOpen,
+  onOpenPast,
   onRestart,
   onEditSubtitle,
   onSaveSubtitle,
@@ -241,6 +259,7 @@ function AssistantRow({
   isEditingSubtitle: boolean;
   reorder: RowReorder | undefined;
   onOpen: (threadId: string) => void;
+  onOpenPast: (threadId: string) => void;
   onRestart: (threadId: string) => void;
   onEditSubtitle: () => void;
   onSaveSubtitle: (value: string) => void;
@@ -363,6 +382,7 @@ function AssistantRow({
             >
               Edit subtitle
             </ContextMenu.Item>
+            <PastChats threadId={thread.id} onOpen={onOpenPast} />
           </ContextMenu.Content>
         </ContextMenu.Portal>
       </ContextMenu.Root>
@@ -376,6 +396,67 @@ function AssistantRow({
         ↻
       </button>
     </li>
+  );
+}
+
+const PAST_SPAN = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+/** The assistant's archived conversations, fetched each time the submenu opens. */
+function PastChats({
+  threadId,
+  onOpen,
+}: {
+  threadId: string;
+  onOpen: (threadId: string) => void;
+}) {
+  const rpc = useRpc<typeof boardRpcContract>();
+  const portalScope = usePortalScopeProps();
+  const [rows, setRows] = useState<Array<{ id: string; createdAt: number; archivedAt: number }> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const itemClass =
+    "cursor-pointer rounded-md px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground";
+  return (
+    <ContextMenu.Sub
+      onOpenChange={(open: boolean) => {
+        if (!open) return;
+        setRows(null);
+        setError(null);
+        rpc.call("pastAssistantThreads", { threadId }).then(
+          (result) => setRows(result.rows),
+          (cause: unknown) => setError(String(cause)),
+        );
+      }}
+    >
+      <ContextMenu.SubTrigger className={`flex items-center ${itemClass} data-[state=open]:bg-accent`}>
+        Past chats
+        <HugeiconsIcon icon={ArrowRight01Icon} className="ml-auto size-4 opacity-60" />
+      </ContextMenu.SubTrigger>
+      <ContextMenu.Portal>
+        <ContextMenu.SubContent
+          {...portalScope}
+          aria-label="Past chats"
+          sideOffset={4}
+          className="z-50 max-h-80 min-w-44 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+        >
+          {error || rows === null || rows.length === 0 ? (
+            <p className="px-2 py-1.5 text-sm text-muted-foreground">
+              {error ?? (rows === null ? "Loading…" : "No past chats")}
+            </p>
+          ) : (
+            rows.map((row) => (
+              <ContextMenu.Item key={row.id} onSelect={() => onOpen(row.id)} className={itemClass}>
+                {PAST_SPAN.formatRange(row.createdAt, row.archivedAt)}
+              </ContextMenu.Item>
+            ))
+          )}
+        </ContextMenu.SubContent>
+      </ContextMenu.Portal>
+    </ContextMenu.Sub>
   );
 }
 

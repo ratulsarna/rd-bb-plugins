@@ -9,12 +9,13 @@ The dialog shows the destination **Vault**, connection status, and readiness
 reason. Source history is a reference in the first message; the new session
 starts empty.
 
-Starting on another machine keeps the source conversation intact. On the
-same machine, **Replace and archive the selected conversation after creation**
-is unchecked by default and must be selected deliberately. Opening the dialog
-or changing machines clears it. A synchronous creation refusal keeps the source.
-An archive failure returns the created conversation's id and displays a
-warning, allowing navigation without another creation attempt.
+Sending replaces the source on any machine. The plugin creates the new
+conversation, points every agent automation that targeted the source at it,
+then archives the source. A refusal before creation keeps the source. If an
+automation cannot be moved, the source stays live so its runs keep working,
+and the dialog warns with the automation's name. An archive failure also
+returns the new conversation's id with a warning, so the composer does not
+create it twice.
 
 The provider/model/reasoning and permission controls are BB's stock composer.
 When the old provider is unavailable on the destination, its provider, model,
@@ -41,10 +42,11 @@ runs for `assistants` and `vault`, each with only the destination host and a
 30-second timeout. Both results must confirm the mapped ready nodes. The
 plugin then rereads source metadata, mappings, readiness, and destination files.
 Disabled sync permits a same-machine local start after destination checks.
-The flow performs no file copying and changes no automation targets. Sam's
-journal pointers use the destination vault.
+The flow copies no files. Sam's journal pointers use the destination vault.
 
 Bots renders each unarchived root conversation with its SDK machine name.
+Right-click a row and open **Past chats** to list that assistant's archived
+conversations from every machine, newest first. Each one opens read-only.
 Assistant titles, identity-based subtitles and ordering stay shared across
 machines. Bots uses the first project whose lowercase name is `assistants`;
 a second project named `Assistants` is not hidden by capitalization.
@@ -72,7 +74,6 @@ standard `{ ok: true, result }` envelope.
   serviceTier?: string;
   homePath: string | null;
   homes: Array<{ name: string; path: string }>;
-  targetingAutomations: Array<{ id: string; name: string }>;
   machines: Array<{
     hostId: string;
     name: string;
@@ -112,43 +113,51 @@ assistants mapping produces an empty `homePath` and `homes`.
   title: string | null; // accepted; server preserves the source thread title
   destinationHostId: string;
   homePath: string; // exact mapped destination root + source home segment
-  archiveSource: boolean; // must be false across machines
   request: NewThreadRequest; // stock public SDK composer request
 }
 ```
 
-It returns `{ newThreadId: string, archivedSource: boolean, archiveError?: string }`.
+It returns `{ newThreadId: string, warning?: string }`. `warning` is set when
+an automation could not be moved (source kept) or the archive failed.
 The server forwards the composer's project, provider, model, reasoning,
 permission, service tier, execution provenance, prompt inputs, and optional
 `sendAt`. It supplies `environment: { type: "host", hostId: destinationHostId,
 workspace: { type: "unmanaged", path: homePath } }` to `threads.spawn`, with
 the source title. Parent, source-session, and lifecycle-owner fields are not
-forwarded. No native session moves or forks are used.
+forwarded. No native session moves or forks are used. Automations move through
+the automations plugin's `automations_update` RPC with
+`agent.target = { type: "target-thread", threadId: newThreadId }`, in each
+automation's own project.
 
 Malformed RPC inputs produce HTTP 400 with
 `{ ok: false, error: { code: "invalid_input", message: string } }`.
 Policy refusals, missing/offline/unready destinations, failed barriers, and
 synchronous `threads.spawn` errors throw through BB's RPC layer: HTTP 500 with
 `{ ok: false, error: { code: "handler_error", message: string } }`.
-Policy checks and barriers fail before `threads.spawn`. A synchronous spawn
-error keeps the source and composer draft. Archive failure occurs after creation
-and is a success result with `archivedSource: false` and `archiveError`, rather
-than a thrown failure.
+Policy checks, barriers, and listing automations fail before `threads.spawn`.
+A synchronous spawn error keeps the source and composer draft. Automation and
+archive failures occur after creation and are success results with `warning`,
+rather than thrown failures.
 
 HTTP success confirms conversation creation; provider provisioning can fail
 afterward, leaving a created thread with `thread_provisioning_failed`. Inspect
-that thread's status to verify startup. With `archiveSource: false`, the source
-stays intact after such a failure. Explicit replacement archives the source
-after creation succeeds and does not wait for successful provider startup.
+that thread's status to verify startup. The source is archived once creation
+succeeds, without waiting for provider startup; reopen it from **Past chats**.
+
+`pastAssistantThreads({ threadId: string })` returns
+`{ rows: Array<{ id: string; createdAt: number; archivedAt: number }> }`: the
+archived root conversations in the same project whose home resolves to the
+same assistant identity, newest archive first.
 
 ## Disposable verification
 
 Use a new isolated assistants project and temporary canonical mapped roots
 containing the same synthetic `sam/.pi/SYSTEM.md` home on each host, plus
-temporary vaults. Keep `archiveSource: false` for live QA starts. Discover and
+temporary vaults. Every start archives its source, so start from disposable
+conversations. Discover and
 select destination provider/model options in the normal composer. Verify
 distinct conversation/session ids, actual destination cwd and vault reads,
-source preservation, and refused spoofed roots, offline destinations,
+moved automation targets, the archived source under **Past chats**, and refused spoofed roots, offline destinations,
 disabled/paused/unready sync, and core execution failures.
 
 Source tests use the official public SDK plugin harness and temporary files;

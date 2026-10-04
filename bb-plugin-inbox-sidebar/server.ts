@@ -12,7 +12,6 @@ import { z } from "zod";
 // bundler's "@/" alias does not exist.
 import { pinnedRootIds } from "./lib/pinned-order";
 import { homeSegmentUnder } from "./lib/assistant-identity";
-import { restartAutomationPolicy } from "./lib/restart-prompt";
 import { assistantConversationContext, assistantDestinationSchema, assistantMachineSchema } from "./lib/assistant-conversation";
 import {
   getProjectPathError,
@@ -28,14 +27,15 @@ const threadIdInput = z.object({ threadId: z.string().trim().min(1) });
 const snoozeInput = threadIdInput.extend({ until: z.number().int().positive() });
 const pinnedOrderOutput = z.object({ ids: z.array(z.string()) });
 
-// The automations plugin's overview RPC. Read-only, cross-plugin: this shape
-// is a subset of its real output, enough to name every automation whose
-// agent execution still points at a thread being restarted.
+// The automations plugin's overview RPC. Cross-plugin: this shape is a
+// subset of its real output, enough to find every automation whose agent
+// execution points at a thread being replaced.
 const automationsOverviewOutput = z.object({
   automations: z.array(
     z.object({
       automation: z.object({
         id: z.string(),
+        projectId: z.string(),
         name: z.string(),
         execution: z
           .object({
@@ -48,37 +48,25 @@ const automationsOverviewOutput = z.object({
   ),
 });
 
-/**
- * Every automation whose agent execution targets `threadId`. Falls back to
- * an empty list when the automations plugin is down — the restart dialog
- * must never be blocked by a naming nicety.
- */
+/** Every automation whose agent execution targets `threadId`. */
 async function targetingAutomationsOf(
   bb: BbPluginApi,
   threadId: string,
-): Promise<Array<{ id: string; name: string }>> {
-  try {
-    const { automations } = await bb.sdk.plugins.callRpc({
-      pluginId: "automations",
-      method: "automations_overview",
-      input: null,
-      outputSchema: automationsOverviewOutput,
-    });
-    return automations
-      .map((row) => row.automation)
-      .filter(
-        (automation) =>
-          automation.execution.mode === "agent" &&
-          automation.execution.targetThreadId === threadId,
-      )
-      .map((automation) => ({ id: automation.id, name: automation.name }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  } catch (error) {
-    bb.log.warn(
-      `Could not list automations targeting ${threadId} from automations plugin: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return [];
-  }
+): Promise<Array<{ id: string; projectId: string; name: string }>> {
+  const { automations } = await bb.sdk.plugins.callRpc({
+    pluginId: "automations",
+    method: "automations_overview",
+    input: null,
+    outputSchema: automationsOverviewOutput,
+  });
+  return automations
+    .map((row) => row.automation)
+    .filter(
+      (automation) =>
+        automation.execution.mode === "agent" &&
+        automation.execution.targetThreadId === threadId,
+    )
+    .map(({ id, projectId, name }) => ({ id, projectId, name }));
 }
 
 export const boardRpcContract = defineRpcContract({
@@ -182,9 +170,6 @@ export const boardRpcContract = defineRpcContract({
       serviceTier: z.string().optional(),
       homePath: z.string().nullable(),
       homes: z.array(z.object({ name: z.string(), path: z.string() })),
-      targetingAutomations: z.array(
-        z.object({ id: z.string(), name: z.string() }),
-      ),
     }),
   },
   assistantDestination: {
@@ -254,9 +239,14 @@ export const boardRpcContract = defineRpcContract({
       }),
       destinationHostId: z.string().trim().min(1),
       homePath: z.string().min(1),
-      archiveSource: z.boolean(),
     }),
-    output: z.object({ newThreadId: z.string(), archivedSource: z.boolean(), archiveError: z.string().optional() }),
+    output: z.object({ newThreadId: z.string(), warning: z.string().optional() }),
+  },
+  pastAssistantThreads: {
+    input: threadIdInput,
+    output: z.object({
+      rows: z.array(z.object({ id: z.string(), createdAt: z.number(), archivedAt: z.number() })),
+    }),
   },
 });
 
@@ -824,7 +814,6 @@ export default function plugin(bb: BbPluginApi) {
         } : {}),
         homePath: context.env.path,
         homes: [{ name: context.segment, path: context.env.path! }],
-        targetingAutomations: await targetingAutomationsOf(bb, threadId),
       };
     },
     async assistantDestination({ threadId, hostId }) {
@@ -909,16 +898,14 @@ export default function plugin(bb: BbPluginApi) {
       bb.realtime.publish(ASSISTANT_ORDER_CHANNEL, {});
       return { ids: readAssistantOrder() };
     },
-    async createReplacementThread({ replaceThreadId, request, destinationHostId, homePath, archiveSource }) {
+    async createReplacementThread({ replaceThreadId, request, destinationHostId, homePath }) {
       const context = await assistantConversationContext(bb, replaceThreadId);
       if (request.projectId !== context.thread.projectId)
         throw new Error("Keep the assistants project selected");
-      if (archiveSource && destinationHostId !== context.env.hostId)
-        throw new Error("Starting on another machine keeps the source conversation intact");
       await context.validate(destinationHostId, homePath);
-      const automationPolicy = restartAutomationPolicy(
-        replaceThreadId, archiveSource, await targetingAutomationsOf(bb, replaceThreadId),
-      );
+      // Listed before spawning, so an unreachable automations plugin refuses
+      // the restart instead of stranding jobs on an archived thread.
+      const automations = await targetingAutomationsOf(bb, replaceThreadId);
       // Copy composer selections only. Filing and lifecycle always belong to this flow.
       const fresh = await bb.sdk.threads.spawn({
         projectId: request.projectId,
@@ -928,20 +915,58 @@ export default function plugin(bb: BbPluginApi) {
         permissionMode: request.permissionMode,
         serviceTier: request.serviceTier,
         executionInputSources: request.executionInputSources,
-        input: [...request.input, { type: "text", text: automationPolicy }],
+        input: request.input,
         sendAt: request.sendAt,
         title: context.thread.title ?? undefined,
         environment: { type: "host", hostId: destinationHostId, workspace: { type: "unmanaged", path: homePath } },
       } as Parameters<typeof bb.sdk.threads.spawn>[0]);
-      if (archiveSource) {
+      const stuck: string[] = [];
+      for (const automation of automations) {
         try {
-          await bb.sdk.threads.archive({ threadId: replaceThreadId });
+          await bb.sdk.plugins.callRpc({
+            pluginId: "automations",
+            method: "automations_update",
+            input: {
+              projectId: automation.projectId,
+              automationId: automation.id,
+              agent: { target: { type: "target-thread", threadId: fresh.id } },
+            },
+            outputSchema: z.unknown(),
+          });
         } catch (error) {
-          return { newThreadId: fresh.id, archivedSource: false, archiveError: String(error) };
+          stuck.push(`${automation.name}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      return { newThreadId: fresh.id, archivedSource: archiveSource };
+      // Runs against an archived thread are skipped, so the old one stays
+      // live until every automation follows the new one.
+      if (stuck.length > 0)
+        return { newThreadId: fresh.id, warning: `Old conversation kept, these automations still target it: ${stuck.join("; ")}` };
+      try {
+        await bb.sdk.threads.archive({ threadId: replaceThreadId });
+      } catch (error) {
+        return { newThreadId: fresh.id, warning: `Old conversation could not be archived: ${error instanceof Error ? error.message : String(error)}` };
+      }
+      return { newThreadId: fresh.id };
     },
+    async pastAssistantThreads({ threadId }) {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (!thread.environmentId) return { rows: [] };
+      const identity = await storageKeyOfEnvironment(thread.environmentId, true);
+      const archived = (await bb.sdk.threads.list({ archived: true, projectId: thread.projectId, hasParent: false }))
+        .filter((past) => past.environmentId && past.archivedAt != null);
+      // One lookup per home, not per thread: a busy assistant has dozens.
+      const environmentIds = [...new Set(archived.map((past) => past.environmentId!))];
+      const keys = new Map(await Promise.all(
+        environmentIds.map(async (id) => [id, await storageKeyOfEnvironment(id)] as const),
+      ));
+      return {
+        rows: archived
+          .filter((past) => keys.get(past.environmentId!) === identity)
+          .sort((a, b) => b.archivedAt! - a.archivedAt!)
+          .map((past) => ({ id: past.id, createdAt: past.createdAt, archivedAt: past.archivedAt! })),
+      };
+    },
+
   });
 
   // A deleted thread must not leave an override behind that would park a

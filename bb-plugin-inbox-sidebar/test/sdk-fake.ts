@@ -266,7 +266,7 @@ const rpc = {
     }
     if (method === "assistantSeeds") return config.assistantSeeds[(input as { threadId: string }).threadId];
     if (method === "assistantDestination") return config.assistantDestinations[(input as { hostId: string }).hostId];
-    if (method === "createReplacementThread") return { newThreadId: "new-conversation", archivedSource: (input as { archiveSource: boolean }).archiveSource };
+    if (method === "createReplacementThread") return { newThreadId: "new-conversation" };
     if (method === "threadPullRequests") {
       const { threadIds } = input as { threadIds: string[] };
       return { rows: threadIds.map((threadId) => ({ threadId, pullRequest: config.pullRequests[threadId] ?? null })) };
