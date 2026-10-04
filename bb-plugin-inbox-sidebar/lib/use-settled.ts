@@ -93,11 +93,14 @@ export function useSettledOverrides(): SettledApi {
           toast.error("Could not snooze thread");
           void refresh();
         }),
+      // Re-read on success too: a snooze that ran out after our last clock
+      // tick is already over on the server, so the wake changes and
+      // publishes nothing, and the row would sit in Snoozed until the tick.
       wake: (threadId) =>
-        void rpc.call("wake", { threadId }).catch(() => {
-          toast.error("Could not wake thread");
-          void refresh();
-        }),
+        void rpc
+          .call("wake", { threadId })
+          .catch(() => toast.error("Could not wake thread"))
+          .then(refresh),
       acknowledgeWake: (threadId, until) =>
         rpc.call("acknowledgeWake", { threadId, until }),
     }),

@@ -308,7 +308,7 @@ const rpc = {
     if (method === "wake") {
       const { threadId } = input as { threadId: string };
       config.overrides = config.overrides.map((row) =>
-        row.threadId === threadId && row.override === "snoozed"
+        row.threadId === threadId && row.override === "snoozed" && row.until > Date.now()
           ? { ...row, until: Date.now() }
           : row,
       );

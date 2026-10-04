@@ -1957,6 +1957,27 @@ describe("snooze", () => {
     expect(screen.queryByRole("region", { name: "Snoozed" })).toBeNull();
   });
 
+  // The server already counts this snooze as over, so Wake changes nothing
+  // and publishes nothing; the row must still leave Snoozed at once.
+  it("moves a snooze that ran out between clock ticks when Wake is pressed", async () => {
+    const until = Date.now() + 100;
+    configureFakeSdk({
+      threads: [thread("thr_late", { title: "Late" })],
+      overrides: [{ threadId: "thr_late", override: "snoozed", at: NOW - HOUR, until }],
+    });
+    renderList();
+
+    const snoozed = await screen.findByRole("region", { name: "Snoozed" });
+    // Past `until`, and past dnd-kit's 50 ms click swallow after earlier drags.
+    await act(() => new Promise((resolve) => window.setTimeout(resolve, 150)));
+    fireEvent.click(within(snoozed).getByRole("button", { name: "Snoozed (1)" }));
+    fireEvent.click(within(snoozed).getByRole("button", { name: "Wake" }));
+
+    const inbox = screen.getByRole("region", { name: "Inbox" });
+    await waitFor(() => expect(within(inbox).getByText("Late")).toBeDefined());
+    expect(screen.queryByRole("region", { name: "Snoozed" })).toBeNull();
+  });
+
   it("acknowledges a woken thread once when it is the open thread", async () => {
     const until = NOW - HOUR;
     configureFakeSdk({
