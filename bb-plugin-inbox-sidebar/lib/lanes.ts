@@ -37,6 +37,7 @@ export type BoardThread = Pick<
   | "isArchived"
   | "environment"
   | "host"
+  | "href"
   | "createdAt"
   | "latestAttentionAt"
 > & {

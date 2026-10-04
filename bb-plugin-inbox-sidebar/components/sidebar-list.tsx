@@ -66,6 +66,11 @@ export function BoardSidebar({
     () => new Map(state.projects.map((project) => [project.id, project.name])),
     [state.projects],
   );
+  const toggleProjectFilter = useCallback(
+    (rowProjectId: string) =>
+      setProjectId(rowProjectId === projectId ? "" : rowProjectId),
+    [projectId, setProjectId],
+  );
 
   const isSearching = searchQuery.trim().length > 0;
   const menuShield = useOpenMenuShield();
@@ -158,6 +163,8 @@ export function BoardSidebar({
         onCancelRename={cancelRename}
         onRename={renameThread}
         pullRequests={state.pullRequests}
+        filteredProjectId={projectId}
+        onToggleProjectFilter={toggleProjectFilter}
         {...extras}
       />
     ),
@@ -167,12 +174,14 @@ export function BoardSidebar({
       renamingThreadId,
       visibleExpandedIds,
       openThread,
+      projectId,
       projectNames,
       renameThread,
       startRename,
       state.now,
       state.pullRequests,
       toggleExpanded,
+      toggleProjectFilter,
     ],
   );
 
@@ -209,6 +218,8 @@ export function BoardSidebar({
           onCancelRename={cancelRename}
           onRename={renameThread}
           pullRequests={state.pullRequests}
+          filteredProjectId={projectId}
+          onToggleProjectFilter={toggleProjectFilter}
           pinnedMove={pinnedMove}
           reorder={reorder}
         />
@@ -220,6 +231,7 @@ export function BoardSidebar({
       movePinned,
       openThread,
       pinnedIds,
+      projectId,
       projectNames,
       renamingThreadId,
       renameThread,
@@ -229,6 +241,7 @@ export function BoardSidebar({
       state.pinnedOrderReady,
       state.pullRequests,
       toggleExpanded,
+      toggleProjectFilter,
       visibleExpandedIds,
     ],
   );

@@ -41,6 +41,7 @@ export function thread(
     isArchived: false,
     environment: null,
     host: null,
+    href: `/projects/${overrides.projectId ?? "project-1"}/threads/${id}`,
     createdAt: NOW - DAY,
     latestAttentionAt: NOW,
     ...overrides,

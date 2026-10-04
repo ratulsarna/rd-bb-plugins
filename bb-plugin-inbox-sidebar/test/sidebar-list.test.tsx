@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, onTestFinished } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   act,
   cleanup,
@@ -10,6 +10,7 @@ import {
   within,
 } from "@testing-library/react";
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
+import { toast } from "sonner";
 import {
   configureFakeSdk,
   emitRealtime,
@@ -30,6 +31,9 @@ import { formatWakeTime } from "@/lib/snooze";
 // Importing the plugin entry is what registers the slots, exactly as bb loads
 // it — so these tests exercise the component the host would actually mount.
 import "@/app";
+
+// The host renders the toasts; these tests only need to see what was asked.
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const list = registrations.threadLists[0]!;
 
@@ -1358,6 +1362,8 @@ describe("row context menu", () => {
       "Mark unread",
       "Pin",
       "Rename",
+      "Filter by this project",
+      "Copy",
       "Archive",
       "Delete",
     ]);
@@ -1552,6 +1558,174 @@ describe("row context menu", () => {
     expect(sidebarActionCalls.some((call) => call.method === "open")).toBe(
       false,
     );
+  });
+
+  describe("project filter", () => {
+    const projects = [
+      sidebarProject("project-1", "bb"),
+      sidebarProject("project-2", "other"),
+    ];
+    const menuItem = async (title: string, name: string) => {
+      fireEvent.contextMenu(await screen.findByText(title));
+      const menu = await screen.findByRole("menu", { name: "Thread actions" });
+      return within(menu).getByRole("menuitem", { name });
+    };
+
+    it("scopes the list to the row's project, then back to all", async () => {
+      configureFakeSdk({
+        threads: [
+          thread("a", { title: "In bb", projectId: "project-1" }),
+          thread("b", { title: "In other", projectId: "project-2" }),
+        ],
+        projects,
+      });
+      renderList();
+
+      fireEvent.click(await menuItem("In other", "Filter by this project"));
+      await waitFor(() => expect(screen.queryByText("In bb")).toBeNull());
+      const select = screen.getByLabelText("Filter by project") as HTMLSelectElement;
+      expect(select.value).toBe("project-2");
+
+      fireEvent.click(await menuItem("In other", "Show all projects"));
+      expect(await screen.findByText("In bb")).toBeDefined();
+      expect(select.value).toBe("");
+    });
+
+    // Pinned and nested rows render through their own paths; each must see
+    // the live filter, or the item offers to filter what is already filtered.
+    it("knows the filter on pinned and nested rows", async () => {
+      configureFakeSdk({
+        threads: [
+          thread("pin", { title: "Pinned other", projectId: "project-2", isPinned: true }),
+          thread("root", { title: "Root bb", projectId: "project-1" }),
+          thread("kid", {
+            title: "Kid other",
+            projectId: "project-2",
+            parentThreadId: "root",
+          }),
+        ],
+        projects,
+        pinnedOrder: ["pin"],
+      });
+      renderList({ searchQuery: "other" });
+      fireEvent.change(await screen.findByLabelText("Filter by project"), {
+        target: { value: "project-2" },
+      });
+
+      expect(await menuItem("Pinned other", "Show all projects")).toBeDefined();
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      fireEvent.click(await menuItem("Kid other", "Show all projects"));
+      expect(
+        (screen.getByLabelText("Filter by project") as HTMLSelectElement).value,
+      ).toBe("");
+    });
+  });
+
+  describe("copy", () => {
+    let clipboardText = "";
+    const writeText = vi.fn(async (text: string) => {
+      clipboardText = text;
+    });
+    const stubClipboard = () => {
+      clipboardText = "before";
+      writeText.mockClear();
+      vi.mocked(toast.success).mockClear();
+      vi.mocked(toast.error).mockClear();
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText },
+      });
+      onTestFinished(() => {
+        Reflect.deleteProperty(navigator, "clipboard");
+      });
+    };
+    // Radix marks everything outside the root menu aria-hidden, the submenu's
+    // portal included, so its items are found by text.
+    const openCopyMenu = async (title: string) => {
+      fireEvent.contextMenu(await screen.findByText(title));
+      const menu = await screen.findByRole("menu", { name: "Thread actions" });
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Copy" }));
+      const link = await screen.findByText("Copy thread link");
+      const copyMenu = link.closest<HTMLElement>('[aria-label="Copy thread data"]')!;
+      return Array.from(copyMenu.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    };
+    const copy = async (title: string, name: string) => {
+      const items = await openCopyMenu(title);
+      fireEvent.click(items.find((item) => item.textContent === name)!);
+    };
+
+    it("copies bb's own link and the thread's checkout", async () => {
+      stubClipboard();
+      configureFakeSdk({
+        threads: [
+          thread("thr_wt", {
+            title: "Worktree thread",
+            href: "/threads/thr_wt",
+            environment: {
+              id: "env-wt",
+              name: "Worktree",
+              branchName: "feat/menu",
+              path: "/work/thr_wt",
+              isWorktree: true,
+              providerId: null,
+              workspaceDisplayKind: "managed-worktree",
+            },
+          }),
+        ],
+      });
+      renderList();
+
+      await copy("Worktree thread", "Copy thread link");
+      await waitFor(() =>
+        expect(clipboardText).toBe(`${window.location.origin}/threads/thr_wt`),
+      );
+      await copy("Worktree thread", "Copy path");
+      await waitFor(() => expect(clipboardText).toBe("/work/thr_wt"));
+      await copy("Worktree thread", "Copy branch");
+      await waitFor(() => expect(clipboardText).toBe("feat/menu"));
+      expect(toast.success).toHaveBeenLastCalledWith("Branch copied");
+    });
+
+    // A path or branch item with nothing behind it would copy "null".
+    it("offers only what the thread has", async () => {
+      stubClipboard();
+      configureFakeSdk({
+        threads: [
+          thread("thr_new", {
+            title: "No folder yet",
+            environment: {
+              id: "env-new",
+              name: null,
+              branchName: null,
+              path: null,
+              isWorktree: null,
+              providerId: null,
+              workspaceDisplayKind: null,
+            },
+          }),
+        ],
+      });
+      renderList();
+
+      const items = await openCopyMenu("No folder yet");
+      expect(items.map((item) => item.textContent)).toEqual([
+        "Copy thread link",
+        "Copy thread ID",
+      ]);
+    });
+
+    it("says so when the clipboard refuses", async () => {
+      stubClipboard();
+      writeText.mockRejectedValueOnce(new Error("Document is not focused"));
+      configureFakeSdk({ threads: [thread("thr_id", { title: "Copy my id" })] });
+      renderList();
+
+      await copy("Copy my id", "Copy thread ID");
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith("Could not copy to the clipboard"),
+      );
+      expect(toast.success).not.toHaveBeenCalled();
+    });
   });
 });
 
