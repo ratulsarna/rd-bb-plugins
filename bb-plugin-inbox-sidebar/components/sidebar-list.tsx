@@ -398,20 +398,29 @@ const openMenu = () =>
  */
 function useOpenMenuShield() {
   const pressBeganInMenu = useRef(false);
+  // Whether the first click of the current click pair was swallowed: the
+  // browser still pairs it with the next one into a dblclick (title rename).
+  const firstClickSwallowed = useRef(false);
   // React delivers events from portaled menu content through this element
   // too; those are the menu's own and must be left alone.
   const fromList = (event: SyntheticEvent<HTMLDivElement>) =>
     event.currentTarget.contains(event.target as Node);
+  const swallow = (event: SyntheticEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
   return {
     onPointerDownCapture: (event: PointerEvent<HTMLDivElement>) => {
       if (!fromList(event)) return;
       const menu = openMenu();
       pressBeganInMenu.current = menu !== null;
-      // Isolated controls stop this press before Radix's document listener
-      // sees it, so dismiss the menu here the way Escape would. Cancelable,
-      // so Radix can claim it: bb closes the mobile drawer on any Escape
-      // that reaches it unclaimed.
-      menu?.dispatchEvent(
+      if (!menu) return;
+      // The press is the menu's: no row drag, split, or control sees it, so
+      // Radix does not either; dismiss the menu here the way Escape would.
+      // Cancelable, so Radix can claim it: bb closes the mobile drawer on
+      // any Escape that reaches it unclaimed.
+      swallow(event);
+      menu.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "Escape",
           bubbles: true,
@@ -424,10 +433,12 @@ function useOpenMenuShield() {
       pressBeganInMenu.current = false;
       // A keyboard activation (detail 0) is never a stray tap.
       if (!fromList(event) || event.detail === 0) return;
-      if (began || openMenu() !== null) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
+      const stray = began || openMenu() !== null;
+      if (event.detail === 1) firstClickSwallowed.current = stray;
+      if (stray) swallow(event);
+    },
+    onDoubleClickCapture: (event: MouseEvent<HTMLDivElement>) => {
+      if (fromList(event) && firstClickSwallowed.current) swallow(event);
     },
   };
 }

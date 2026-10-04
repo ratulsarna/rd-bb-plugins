@@ -1453,6 +1453,30 @@ describe("row context menu", () => {
       expect(opens()).toEqual(["thr_b", "thr_a"]);
     });
 
+    it("keeps the dismissing press from rows and pairs it with no rename", async () => {
+      configureFakeSdk({
+        threads: [thread("thr_a", { title: "Row A" }), thread("thr_b", { title: "Row B" })],
+      });
+      renderList();
+      const titleB = await screen.findByText("Row B");
+
+      // Row drags and split drags start on pointerdown; this one must not.
+      await openMenuOn(screen.getByText("Row A"));
+      fireEvent.pointerDown(titleB);
+      expect(splitPointerDownCalls).toEqual([]);
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+      // A quick second click on the same title: the browser pairs the
+      // swallowed first click with it into a dblclick, which must not rename.
+      fireEvent.click(titleB, { detail: 1 });
+      fireEvent.pointerDown(titleB);
+      fireEvent.click(titleB, { detail: 2 });
+      fireEvent.doubleClick(titleB, { detail: 2 });
+      await passDoubleClickWindow();
+      expect(screen.queryByRole("textbox", { name: "Rename Row B" })).toBeNull();
+      expect(opens()).toEqual(["thr_b"]);
+    });
+
     it("still runs the menu's own items, and guards Bots rows the same way", async () => {
       configureFakeSdk({
         projects: [sidebarProject("assist-1", "assistants"), sidebarProject("project-1", "bb")],
