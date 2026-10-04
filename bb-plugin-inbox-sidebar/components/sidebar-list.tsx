@@ -144,10 +144,11 @@ export function BoardSidebar({
 
   // Settling or snoozing the row the user is reading moves them on, the way a
   // mail inbox does: to the visible row below, else the one above, else a new
-  // thread. Only the route's thread counts; split panes stay put. The path
-  // comes from the full board, so a subagent hidden by search still counts.
+  // thread. Never while split: the route follows the focused pane, and moving
+  // a pane on would swap it out from under the user. The path comes from the
+  // full board, so a subagent hidden by search still counts.
   const moveOnIfOpen = (item: BoardItem) => {
-    if (!activeThreadId) return;
+    if (!activeThreadId || splitLayout) return;
     const openRootId =
       ancestorIdsOf(state.board, activeThreadId)?.[0] ?? activeThreadId;
     if (openRootId !== item.thread.id) return;

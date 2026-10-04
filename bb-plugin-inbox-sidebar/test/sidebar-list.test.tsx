@@ -762,7 +762,7 @@ describe("BoardSidebar moves on from a settled open thread", () => {
     expect(navigated).toBe(1);
   });
 
-  it("leaves a thread open only in a split pane where it is", async () => {
+  it("moves no pane while split, even the focused one", async () => {
     configureFakeSdk({
       threads: rows("a", "b", "c"),
       splitLayout: {
@@ -772,7 +772,7 @@ describe("BoardSidebar moves on from a settled open thread", () => {
         ],
       },
     });
-    renderList({ activeThreadId: "a" });
+    renderList({ activeThreadId: "b" });
 
     await settleRow("Row b");
     expect(navigation()).toEqual([]);
