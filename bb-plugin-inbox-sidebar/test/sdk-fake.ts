@@ -7,9 +7,10 @@ import type { ComponentType, PointerEvent as ReactPointerEvent } from "react";
 import type {
   PluginRealtimeConnectionState,
   PluginSidebarProject,
+  PluginSidebarSplitLayout,
   PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
-import type { BoardThread, SettledOverride } from "@/lib/lanes";
+import type { BoardThread, ThreadOverride } from "@/lib/lanes";
 import { project } from "./fixtures";
 
 /**
@@ -28,7 +29,9 @@ export interface FakeSdkConfig {
   projects: PluginSidebarProject[];
   /** Reported by Pipeline; a missing key reports null. */
   pullRequests: Record<string, PipelinePullRequest | null>;
-  overrides: Array<{ threadId: string } & SettledOverride>;
+  overrides: Array<{ threadId: string } & ThreadOverride>;
+  /** What `useSidebarSplitLayout` reports; null means no split. */
+  splitLayout: PluginSidebarSplitLayout | null;
   failRpc: boolean;
   /** What `pinnedOrder` returns; `setFakePinnedOrder` changes it mid-test. */
   pinnedOrder: string[];
@@ -69,6 +72,7 @@ const DEFAULTS: FakeSdkConfig = {
   projects: [project("project-1", "bb")],
   pullRequests: {},
   overrides: [],
+  splitLayout: null,
   failRpc: false,
   pinnedOrder: [],
   assistantOrder: [],
@@ -299,14 +303,19 @@ const rpc = {
     if (method === "listAssistantAvatars") {
       return { rows: [] };
     }
+    // Stamped with the clock at call time, like the server: the client must
+    // not need a minute tick to see it.
+    if (method === "wake") {
+      const { threadId } = input as { threadId: string };
+      config.overrides = config.overrides.map((row) =>
+        row.threadId === threadId && row.override === "snoozed" && row.until > Date.now()
+          ? { ...row, until: Date.now() }
+          : row,
+      );
+      return { ok: true };
+    }
     if (method === "listOverrides") {
-      return {
-        rows: config.overrides.map((row) => ({
-          threadId: row.threadId,
-          override: row.override,
-          at: row.at,
-        })),
-      };
+      return { rows: config.overrides.map((row) => ({ ...row })) };
     }
     if (method === "projectCreationContext") {
       return {
@@ -362,9 +371,25 @@ export const experimental_useSidebarThreadSplit = (threadId: string) => ({
   },
 });
 
+export const useSidebarSplitLayout = () => config.splitLayout;
+
 export const useRpc = () => rpc;
 
-export const useRealtime = () => {};
+const realtimeHandlers = new Map<string, Set<() => void>>();
+
+export const useRealtime = (channel: string, handler: () => void) => {
+  useEffect(() => {
+    const handlers = realtimeHandlers.get(channel) ?? new Set();
+    handlers.add(handler);
+    realtimeHandlers.set(channel, handlers);
+    return () => void handlers.delete(handler);
+  }, [channel, handler]);
+};
+
+/** Deliver a realtime publish to every mounted subscriber of `channel`. */
+export function emitRealtime(channel: string): void {
+  for (const handler of realtimeHandlers.get(channel) ?? []) handler();
+}
 
 export const useRealtimeConnectionState = () => config.connectionState;
 

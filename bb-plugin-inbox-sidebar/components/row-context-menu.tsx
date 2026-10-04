@@ -14,12 +14,18 @@ import type { PinnedMove } from "@/lib/pinned-order";
 export function RowContextMenu({
   thread,
   pinnedMove,
+  action,
+  onSnooze,
   onRename,
   children,
 }: {
   thread: BoardThread;
   /** Present only on pinned roots, and only once bb's order is known. */
   pinnedMove?: PinnedMove;
+  /** The row's hover action (Settle / Unsettle / Wake), repeated here. */
+  action?: { label: string; run: () => void };
+  /** Opens the row's snooze picker. */
+  onSnooze?: () => void;
   onRename: () => void;
   children: ReactNode;
 }) {
@@ -49,6 +55,24 @@ export function RowContextMenu({
               >
                 Move down
               </Item>
+              <ContextMenu.Separator className="my-1 h-px bg-border" />
+            </>
+          )}
+          {/* A phone has no hover, so a long-press here is the only way to
+              reach the row's hover controls. */}
+          {(onSnooze || action) && (
+            <>
+              {onSnooze && (
+                <Item
+                  onSelect={() => {
+                    // Let Radix close the menu before the picker takes focus.
+                    window.setTimeout(onSnooze, 0);
+                  }}
+                >
+                  Snooze…
+                </Item>
+              )}
+              {action && <Item onSelect={action.run}>{action.label}</Item>}
               <ContextMenu.Separator className="my-1 h-px bg-border" />
             </>
           )}

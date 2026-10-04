@@ -18,6 +18,11 @@ import { isolatedRowGestureProps } from "@/components/row-gesture";
 import { OpenPrLink, StatusSlot } from "@/components/row-parts";
 import { RowContextMenu } from "@/components/row-context-menu";
 import {
+  SnoozeAnchor,
+  SnoozeButton,
+  SnoozeMenu,
+} from "@/components/snooze-menu";
+import {
   statusLabelForItem,
   threadDisplayTitle,
   type BoardItem,
@@ -36,7 +41,7 @@ export interface RowReorder {
   style: CSSProperties;
 }
 
-interface SidebarRowProps {
+export interface SidebarRowProps {
   item: BoardItem;
   projectNames: ReadonlyMap<string, string>;
   depth?: number;
@@ -50,8 +55,12 @@ interface SidebarRowProps {
   onCancelRename: () => void;
   onRename: (threadId: string, title: string) => Promise<void>;
   pullRequests: ReadonlyMap<string, PipelinePullRequest | null>;
-  /** Settle / Unsettle, provided by the list for root rows only. */
+  /** Settle / Unsettle / Wake, provided by the list for root rows only. */
   action?: { label: string; run: () => void };
+  /** Offered on top-level Inbox rows only. */
+  onSnooze?: (until: number) => void;
+  /** Set on Snoozed rows: when the thread comes back. */
+  wakeAt?: number;
   /** Pinned-root reordering, for the context menu and pointer gesture. */
   pinnedMove?: PinnedMove;
   /** Absent on compact viewports and off the Pinned section. */
@@ -85,15 +94,23 @@ export function SidebarRow({
   onRename,
   pullRequests,
   action,
+  onSnooze,
+  wakeAt,
   pinnedMove,
   reorder,
 }: SidebarRowProps) {
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const hasHoverControls = action !== undefined || onSnooze !== undefined;
   const title = threadDisplayTitle(item.thread);
   const expanded = expandedIds.has(item.thread.id);
   const isActive = item.thread.id === activeThreadId;
-  // Unread beats quiet: an unread running row stays bright.
+  // Unread beats quiet: an unread running row stays bright. So does a woken
+  // snooze, which the user asked to see now.
   const quiet =
-    item.lane !== "needs-you" && !item.thread.isUnread && !isActive;
+    item.lane !== "needs-you" &&
+    !item.thread.isUnread &&
+    item.wokeAt === undefined &&
+    !isActive;
   const projectName =
     projectNames.get(item.thread.projectId) ?? "Unknown project";
   const machineName = item.thread.host?.name ?? "Unknown machine";
@@ -152,11 +169,19 @@ export function SidebarRow({
       data-pinned-reordering={reorder?.isDragging || undefined}
       style={reorder?.style}
     >
+      <SnoozeMenu
+        open={snoozeOpen}
+        onOpenChange={setSnoozeOpen}
+        onSnooze={onSnooze}
+      >
       <RowContextMenu
         thread={item.thread}
         pinnedMove={pinnedMove}
+        action={action}
+        onSnooze={onSnooze && (() => setSnoozeOpen(true))}
         onRename={startRename}
       >
+        <SnoozeAnchor asChild>
         <div
           ref={setInteractionRef}
           className={`group/row relative flex h-[54px] flex-col justify-center gap-0.5 rounded-md pr-1.5 text-xs ${
@@ -234,10 +259,10 @@ export function SidebarRow({
               </button>
             )}
           </div>
-          {/* Settle shares the status cell instead of following it. Its own
-              column would push the status off every other row's, and at this
-              width there is nothing to spare. Rendered, not hidden, so it
-              stays on the tab order. */}
+          {/* The hover controls share the status cell instead of following
+              it. Their own column would push the status off every other
+              row's, and at this width there is nothing to spare. Rendered,
+              not hidden, so they stay on the tab order. */}
           <div className="pointer-events-none relative flex h-[18px] w-full min-w-0 items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
             <span
               className="pointer-events-auto max-w-[45%] min-w-0 shrink cursor-pointer truncate rounded bg-foreground/[0.07] px-1.5 py-px font-medium text-muted-foreground"
@@ -254,26 +279,37 @@ export function SidebarRow({
               {machineName}
             </span>
             <span className="pointer-events-none relative flex shrink-0 items-center gap-1.5">
-              <span className={action ? "group-hover/row:opacity-0" : undefined}>
-                <StatusSlot item={item} now={now} />
+              <span
+                className={
+                  hasHoverControls ? "group-hover/row:opacity-0" : undefined
+                }
+              >
+                <StatusSlot item={item} now={now} wakeAt={wakeAt} />
               </span>
-              {action && (
-                <button
-                  type="button"
-                  className="pointer-events-auto absolute right-0 top-1/2 -translate-y-1/2 whitespace-nowrap rounded bg-sidebar-accent px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/row:opacity-100"
-                  {...isolatedRowGestureProps}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    action.run();
-                  }}
-                >
-                  {action.label}
-                </button>
+              {hasHoverControls && (
+                <span className="absolute right-0 top-1/2 flex -translate-y-1/2 items-center gap-1">
+                  {onSnooze && <SnoozeButton title={title} />}
+                  {action && (
+                    <button
+                      type="button"
+                      className="pointer-events-auto whitespace-nowrap rounded bg-sidebar-accent px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/row:opacity-100"
+                      {...isolatedRowGestureProps}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        action.run();
+                      }}
+                    >
+                      {action.label}
+                    </button>
+                  )}
+                </span>
               )}
             </span>
           </div>
         </div>
+        </SnoozeAnchor>
       </RowContextMenu>
+      </SnoozeMenu>
       {expanded && item.children.length > 0 && (
         <ul className="flex flex-col gap-1">
           {item.children.map((child) => (

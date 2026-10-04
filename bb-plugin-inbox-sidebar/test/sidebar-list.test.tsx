@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import {
   act,
   cleanup,
@@ -12,7 +12,9 @@ import {
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import {
   configureFakeSdk,
+  emitRealtime,
   pullRequestLookupCalls,
+  rejectPendingRpc,
   registrations,
   resolvePendingRpc,
   rpcCalls,
@@ -24,6 +26,7 @@ import {
 } from "./sdk-fake";
 import { DAY, HOUR, NOW, project as sidebarProject, thread } from "./fixtures";
 import type { BoardThread } from "@/lib/lanes";
+import { formatWakeTime } from "@/lib/snooze";
 // Importing the plugin entry is what registers the slots, exactly as bb loads
 // it — so these tests exercise the component the host would actually mount.
 import "@/app";
@@ -1349,7 +1352,170 @@ describe("row context menu", () => {
       within(menu)
         .getAllByRole("menuitem")
         .map((item) => item.textContent),
-    ).toEqual(["Mark unread", "Pin", "Rename", "Archive", "Delete"]);
+    ).toEqual([
+      "Snooze…",
+      "Settle",
+      "Mark unread",
+      "Pin",
+      "Rename",
+      "Archive",
+      "Delete",
+    ]);
+  });
+
+  // On a phone this menu (long-press) is the only way to snooze or settle,
+  // and opening the row by accident would close the drawer on the user.
+  it("snoozes from the menu through the picker without opening the thread", async () => {
+    configureFakeSdk({ threads: [thread("thr_nap", { title: "Nap me" })] });
+    renderList();
+
+    fireEvent.contextMenu(await screen.findByText("Nap me"));
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    fireEvent.click(within(menu).getByText("Snooze…"));
+
+    const picker = await screen.findByRole("dialog", { name: "Snooze until" });
+    await waitFor(() => expect(picker.contains(document.activeElement)).toBe(true));
+    const before = Date.now();
+    fireEvent.click(within(picker).getByRole("button", { name: "1 hour" }));
+
+    const call = rpcCalls.find((c) => c.method === "snooze");
+    expect(call?.input).toMatchObject({ threadId: "thr_nap" });
+    const until = (call?.input as { until: number }).until;
+    expect(until - before).toBeGreaterThanOrEqual(HOUR - 1_000);
+    expect(until - before).toBeLessThanOrEqual(HOUR + 1_000);
+    expect(screen.queryByRole("dialog", { name: "Snooze until" })).toBeNull();
+    expect(sidebarActionCalls.some((c) => c.method === "open")).toBe(false);
+  });
+
+  // While a row menu is open, a press on the list only dismisses it. On a
+  // phone the long-press that opened the menu releases into a click on the
+  // row, and the next tap usually lands on another row; neither may open a
+  // thread (closing the drawer) or run a row control.
+  describe("while a row menu is open", () => {
+    // fireEvent.click defaults to detail 0, which is what keyboard
+    // activation sends; a finger or mouse sends detail >= 1.
+    const tap = (target: HTMLElement) => {
+      fireEvent.pointerDown(target);
+      fireEvent.click(target, { detail: 1 });
+    };
+    const opens = () =>
+      sidebarActionCalls.filter((c) => c.method === "open").map((c) => c.threadId);
+    const openMenuOn = async (target: HTMLElement) => {
+      fireEvent.contextMenu(target);
+      return screen.findByRole("menu");
+    };
+
+    it("ignores the long-press release on the title, and leaves the menu up", async () => {
+      configureFakeSdk({ threads: [thread("thr_a", { title: "Row A" })] });
+      renderList({ isCompactViewport: true });
+      const title = await screen.findByText("Row A");
+
+      await openMenuOn(title);
+      fireEvent.click(title, { detail: 1 });
+      await passDoubleClickWindow();
+
+      expect(opens()).toEqual([]);
+      expect(screen.getByRole("menu")).toBeDefined();
+    });
+
+    it("lets the dismissing tap only dismiss, on another row's title or control", async () => {
+      // bb's own handler: an Escape nobody claimed closes the mobile drawer.
+      let drawerDismissals = 0;
+      const hostEscape = (event: KeyboardEvent) => {
+        if (event.key === "Escape" && !event.defaultPrevented) drawerDismissals += 1;
+      };
+      window.addEventListener("keydown", hostEscape);
+      onTestFinished(() => window.removeEventListener("keydown", hostEscape));
+      configureFakeSdk({
+        threads: [thread("thr_a", { title: "Row A" }), thread("thr_b", { title: "Row B" })],
+      });
+      renderList({ isCompactViewport: true });
+      const rowB = (await screen.findByText("Row B")).closest("li")!;
+
+      await openMenuOn(screen.getByText("Row A"));
+      tap(within(rowB).getByText("Row B"));
+      await passDoubleClickWindow();
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(opens()).toEqual([]);
+
+      // Settle stops the press itself, so Radix never hears it; the menu
+      // must still close and Settle must not run.
+      await openMenuOn(screen.getByText("Row A"));
+      // The open modal menu hides the rest of the page from the a11y tree.
+      tap(within(rowB).getByRole("button", { name: "Settle", hidden: true }));
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+      expect(rpcCalls.some((c) => c.method === "settle")).toBe(false);
+      expect(drawerDismissals).toBe(0);
+
+      // With the menu gone, the next tap and a keyboard activation open rows.
+      tap(screen.getByRole("link", { name: "Row B" }));
+      fireEvent.click(screen.getByRole("link", { name: "Row A" }));
+      expect(opens()).toEqual(["thr_b", "thr_a"]);
+    });
+
+    it("keeps the dismissing press from rows and pairs it with no rename", async () => {
+      configureFakeSdk({
+        threads: [thread("thr_a", { title: "Row A" }), thread("thr_b", { title: "Row B" })],
+      });
+      renderList();
+      const titleB = await screen.findByText("Row B");
+
+      // Row drags and split drags start on pointerdown; this one must not.
+      await openMenuOn(screen.getByText("Row A"));
+      fireEvent.pointerDown(titleB);
+      expect(splitPointerDownCalls).toEqual([]);
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+      // A quick second click on the same title: the browser pairs the
+      // swallowed first click with it into a dblclick, which must not rename.
+      fireEvent.click(titleB, { detail: 1 });
+      fireEvent.pointerDown(titleB);
+      fireEvent.click(titleB, { detail: 2 });
+      fireEvent.doubleClick(titleB, { detail: 2 });
+      await passDoubleClickWindow();
+      expect(screen.queryByRole("textbox", { name: "Rename Row B" })).toBeNull();
+      expect(opens()).toEqual(["thr_b"]);
+    });
+
+    it("still runs the menu's own items, and guards Bots rows the same way", async () => {
+      configureFakeSdk({
+        projects: [sidebarProject("assist-1", "assistants"), sidebarProject("project-1", "bb")],
+        threads: [
+          thread("thr_a", { title: "Row A" }),
+          thread("thr_bot", { title: "Sam", projectId: "assist-1" }),
+        ],
+      });
+      renderList({ isCompactViewport: true });
+      const bot = within(await screen.findByRole("region", { name: "Bots" })).getByRole("link", {
+        name: /^Sam/,
+      });
+
+      await openMenuOn(bot);
+      fireEvent.click(bot, { detail: 1 });
+      expect(opens()).toEqual([]);
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+      const menu = await openMenuOn(screen.getByText("Row A"));
+      tap(within(menu).getByText("Settle"));
+      await waitFor(() =>
+        expect(rpcCalls).toContainEqual({ method: "settle", input: { threadId: "thr_a" } }),
+      );
+    });
+  });
+
+  it("settles from the menu without opening the thread", async () => {
+    configureFakeSdk({ threads: [thread("thr_done", { title: "Done here" })] });
+    renderList();
+
+    fireEvent.contextMenu(await screen.findByText("Done here"));
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    fireEvent.click(within(menu).getByText("Settle"));
+
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({ method: "settle", input: { threadId: "thr_done" } }),
+    );
+    expect(sidebarActionCalls.some((c) => c.method === "open")).toBe(false);
   });
 
   it("starts inline rename from the thread menu", async () => {
@@ -1750,4 +1916,158 @@ it.each(["down", "up", "same then down"])("drags any retained conversation as on
   const expected = direction === "up" ? ["assist-1:sam", "assist-1:forge"] : ["assist-1:forge", "assist-1:sam"];
   await waitFor(() => expect(rpcCalls.filter((call) => call.method === "setAssistantOrder").map((call) => call.input)).toEqual([{ identities: expected }]));
   await waitFor(() => expect(ids()).toEqual(direction === "up" ? ["sam-server", "sam-mac", "forge-server", "forge-mac"] : ["forge-server", "forge-mac", "sam-server", "sam-mac"]));
+});
+
+describe("snooze", () => {
+  it("keeps snoozed rows shut away, shows when they return, and wakes one to the top", async () => {
+    const until = Date.now() + 3 * HOUR;
+    configureFakeSdk({
+      threads: [
+        thread("thr_later", { title: "Later", latestAttentionAt: NOW - 3 * DAY }),
+        thread("thr_fresh", { title: "Fresh" }),
+      ],
+      overrides: [{ threadId: "thr_later", override: "snoozed", at: NOW - HOUR, until }],
+    });
+    renderList();
+
+    const snoozed = await screen.findByRole("region", { name: "Snoozed" });
+    expect(within(snoozed).queryByText("Later")).toBeNull();
+    // dnd-kit swallows every click for 50 ms after a drag ends, and the drag
+    // tests above can end just before this one starts.
+    await act(() => new Promise((resolve) => window.setTimeout(resolve, 60)));
+    fireEvent.click(within(snoozed).getByRole("button", { name: "Snoozed (1)" }));
+    const row = within(snoozed).getByText("Later").closest("li")!;
+    expect(within(row).getByText(formatWakeTime(until, Date.now()))).toBeDefined();
+
+    fireEvent.click(within(row).getByRole("button", { name: "Wake" }));
+    expect(rpcCalls).toContainEqual({ method: "wake", input: { threadId: "thr_later" } });
+    // The wake is stamped after the board last read the clock; it must still
+    // land now, not at the next minute tick.
+    act(() => emitRealtime("settled"));
+
+    const inbox = screen.getByRole("region", { name: "Inbox" });
+    await waitFor(() =>
+      expect(
+        within(inbox)
+          .getAllByRole("link")
+          .map((link) => link.getAttribute("data-sidebar-thread-id")),
+      ).toEqual(["thr_later", "thr_fresh"]),
+    );
+    expect(within(inbox).getByRole("img", { name: "Snooze ended" })).toBeDefined();
+    expect(screen.queryByRole("region", { name: "Snoozed" })).toBeNull();
+  });
+
+  // The server already counts this snooze as over, so Wake changes nothing
+  // and publishes nothing; the row must still leave Snoozed at once.
+  it("moves a snooze that ran out between clock ticks when Wake is pressed", async () => {
+    const until = Date.now() + 100;
+    configureFakeSdk({
+      threads: [thread("thr_late", { title: "Late" })],
+      overrides: [{ threadId: "thr_late", override: "snoozed", at: NOW - HOUR, until }],
+    });
+    renderList();
+
+    const snoozed = await screen.findByRole("region", { name: "Snoozed" });
+    // Past `until`, and past dnd-kit's 50 ms click swallow after earlier drags.
+    await act(() => new Promise((resolve) => window.setTimeout(resolve, 150)));
+    fireEvent.click(within(snoozed).getByRole("button", { name: "Snoozed (1)" }));
+    fireEvent.click(within(snoozed).getByRole("button", { name: "Wake" }));
+
+    const inbox = screen.getByRole("region", { name: "Inbox" });
+    await waitFor(() => expect(within(inbox).getByText("Late")).toBeDefined());
+    expect(screen.queryByRole("region", { name: "Snoozed" })).toBeNull();
+  });
+
+  it("acknowledges a woken thread once when it is the open thread", async () => {
+    const until = NOW - HOUR;
+    configureFakeSdk({
+      threads: [thread("thr_woke", { title: "Woke" })],
+      overrides: [{ threadId: "thr_woke", override: "snoozed", at: NOW - DAY, until }],
+    });
+    const view = renderList({ activeThreadId: "thr_woke" });
+
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({
+        method: "acknowledgeWake",
+        input: { threadId: "thr_woke", until },
+      }),
+    );
+    view.rerender(listElement({ activeThreadId: "thr_woke" }));
+    act(() => emitRealtime("settled"));
+    await act(async () => {});
+    expect(rpcCalls.filter((c) => c.method === "acknowledgeWake")).toHaveLength(1);
+  });
+
+  it("retries a failed acknowledgement instead of leaving the marker stuck", async () => {
+    const until = NOW - HOUR;
+    configureFakeSdk({
+      threads: [thread("thr_flaky", { title: "Flaky" })],
+      overrides: [{ threadId: "thr_flaky", override: "snoozed", at: NOW - DAY, until }],
+      deferRpc: ["acknowledgeWake"],
+    });
+    renderList({ activeThreadId: "thr_flaky" });
+
+    await waitFor(() =>
+      expect(rpcCalls.filter((c) => c.method === "acknowledgeWake")).toHaveLength(1),
+    );
+    await act(async () => rejectPendingRpc("acknowledgeWake", "oldest", new Error("offline")));
+    // Any fresh read of the overrides is a chance to try again.
+    act(() => emitRealtime("settled"));
+    await waitFor(() =>
+      expect(rpcCalls.filter((c) => c.method === "acknowledgeWake")).toHaveLength(2),
+    );
+  });
+
+  // A subagent's question wakes its root; answering it in the subagent is
+  // looking at the root's tree, so the root's marker must clear.
+  it("acknowledges a woken root once from its open subagents", async () => {
+    const until = NOW - HOUR;
+    configureFakeSdk({
+      threads: [
+        thread("thr_root", { title: "Root" }),
+        thread("thr_child", { title: "Child", parentThreadId: "thr_root" }),
+        thread("thr_grandchild", { title: "Grandchild", parentThreadId: "thr_child" }),
+      ],
+      overrides: [{ threadId: "thr_root", override: "snoozed", at: NOW - DAY, until }],
+      splitLayout: {
+        panes: [
+          { paneId: "a", rect: { x: 0, y: 0, width: 0.5, height: 1 }, threadId: "thr_child", isFocused: true },
+          { paneId: "b", rect: { x: 0.5, y: 0, width: 0.5, height: 1 }, threadId: "thr_grandchild", isFocused: false },
+        ],
+      },
+    });
+    renderList({ activeThreadId: "thr_child" });
+
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({
+        method: "acknowledgeWake",
+        input: { threadId: "thr_root", until },
+      }),
+    );
+    expect(rpcCalls.filter((c) => c.method === "acknowledgeWake")).toHaveLength(1);
+  });
+
+  // Pinned rows never carry the woken marker, so the acknowledgement must not
+  // depend on where the row sits: unpinned later, it would come back woken.
+  it("acknowledges an expired snooze on a pinned thread open in a split pane", async () => {
+    const until = NOW - HOUR;
+    configureFakeSdk({
+      threads: [thread("thr_pin", { title: "Pinned nap", isPinned: true })],
+      overrides: [{ threadId: "thr_pin", override: "snoozed", at: NOW - DAY, until }],
+      splitLayout: {
+        panes: [
+          { paneId: "a", rect: { x: 0, y: 0, width: 0.5, height: 1 }, threadId: null, isFocused: true },
+          { paneId: "b", rect: { x: 0.5, y: 0, width: 0.5, height: 1 }, threadId: "thr_pin", isFocused: false },
+        ],
+      },
+    });
+    renderList();
+
+    await waitFor(() =>
+      expect(rpcCalls).toContainEqual({
+        method: "acknowledgeWake",
+        input: { threadId: "thr_pin", until },
+      }),
+    );
+  });
 });

@@ -57,6 +57,7 @@ it("opens a historical database without changing migration records or losing sid
     expect(reopened.prepare("SELECT * FROM _bb_migrations WHERE id < 3 ORDER BY id").all()).toEqual(records);
     expect(reopened.prepare("SELECT id FROM _bb_migrations ORDER BY id").all()).toEqual([
       { id: 0 }, { id: 1 }, { id: 2 }, { id: 3 },
+      { id: 4 }, { id: 5 }, { id: 6 }, { id: 7 },
     ]);
     expect(reopened.prepare("SELECT * FROM assistant_subtitles ORDER BY at").all()).toEqual([
       { identity: "project-assistants:sam", subtitle: "Chief of staff", at: 100 },

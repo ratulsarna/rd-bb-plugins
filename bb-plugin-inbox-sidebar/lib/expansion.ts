@@ -1,4 +1,9 @@
-import type { BoardItem, BoardProjection, BoardThread } from "@/lib/lanes";
+import {
+  boardRoots,
+  type BoardItem,
+  type BoardProjection,
+  type BoardThread,
+} from "@/lib/lanes";
 
 export interface ExpansionOptions {
   /** Rows the user opened by hand. Never written to. */
@@ -34,9 +39,7 @@ export function ancestorIdsOf<T extends BoardThread>(
     path.pop();
   };
 
-  for (const root of board.pinned) visit(root);
-  for (const root of board.inbox) visit(root);
-  for (const root of board.settled) visit(root);
+  for (const root of boardRoots(board)) visit(root);
 
   return found;
 }
@@ -61,9 +64,7 @@ export function effectiveExpandedIds<T extends BoardThread>(
     for (const child of item.children) visit(child);
   };
 
-  for (const root of board.pinned) visit(root);
-  for (const root of board.inbox) visit(root);
-  for (const root of board.settled) visit(root);
+  for (const root of boardRoots(board)) visit(root);
 
   // Identity matters: an unchanged set keeps the row callbacks memoized.
   let added = false;

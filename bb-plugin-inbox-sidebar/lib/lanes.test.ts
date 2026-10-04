@@ -615,3 +615,80 @@ describe("merged Pipeline tasks", () => {
     }).inbox).toHaveLength(1);
   });
 });
+
+describe("buildBoard snooze", () => {
+  const snoozed = (id: string, until: number, at = NOW - HOUR) =>
+    [id, { override: "snoozed" as const, at, until }] as const;
+
+  it("holds a snoozed root there whether it is running or waiting on the user", () => {
+    const board = buildBoard(
+      [
+        thread("busy", { indicator: "runtime" }),
+        thread("asking", { hasPendingInteraction: true }),
+      ],
+      {
+        now: NOW,
+        overrides: new Map([snoozed("busy", NOW + HOUR), snoozed("asking", NOW + HOUR)]),
+      },
+    );
+
+    expect(board.snoozed.map((item) => item.thread.id).sort()).toEqual(["asking", "busy"]);
+    expect(board.inbox).toHaveLength(0);
+  });
+
+  it("brings an ended snooze back to the top of the Inbox, even past the settle cutoff", () => {
+    const board = buildBoard(
+      [
+        thread("old", { latestAttentionAt: NOW - 5 * DAY }),
+        thread("fresh", { latestAttentionAt: NOW - HOUR }),
+      ],
+      { now: NOW, overrides: new Map([snoozed("old", NOW - 10_000, NOW - 5 * DAY)]) },
+    );
+
+    expect(board.inbox.map((item) => item.thread.id)).toEqual(["old", "fresh"]);
+    expect(board.inbox[0]?.wokeAt).toBe(NOW - 10_000);
+    expect(board.settled).toHaveLength(0);
+  });
+
+  it("orders Snoozed by soonest wake and lets a pin win over a snooze", () => {
+    const board = buildBoard(
+      [thread("late"), thread("soon"), thread("pinned", { isPinned: true })],
+      {
+        now: NOW,
+        overrides: new Map([
+          snoozed("late", NOW + DAY),
+          snoozed("soon", NOW + HOUR),
+          snoozed("pinned", NOW + HOUR),
+        ]),
+      },
+    );
+
+    expect(board.snoozed.map((item) => item.thread.id)).toEqual(["soon", "late"]);
+    expect(board.snoozed[0]?.wakeAt).toBe(NOW + HOUR);
+    expect(board.pinned.map((item) => item.thread.id)).toEqual(["pinned"]);
+  });
+
+  it("ignores a snooze on a tree that holds a pinned thread", () => {
+    const board = buildBoard(
+      [thread("parent"), thread("kid", { parentThreadId: "parent", isPinned: true })],
+      { now: NOW, overrides: new Map([snoozed("parent", NOW + HOUR)]) },
+    );
+
+    expect(board.snoozed).toHaveLength(0);
+    expect(board.inbox.map((item) => item.thread.id)).toEqual(["parent"]);
+  });
+
+  it("keeps one dot: needs-you and failure outrank a woken snooze, which outranks running", () => {
+    const woken = (overrides: Partial<BoardThread>) => {
+      const t = thread("t", overrides);
+      const item = { thread: t, lane: laneForThread(t), wokeAt: NOW };
+      return [rowStatusForItem(item), statusLabelForItem(item)];
+    };
+    expect(woken({ indicator: "runtime", indicatorLabel: "Thread running" })).toEqual([
+      "woken",
+      "Snooze ended",
+    ]);
+    expect(woken({ hasPendingInteraction: true })[0]).toBe("needs-you");
+    expect(woken({ indicator: "unread-error" })[0]).toBe("failed");
+  });
+});

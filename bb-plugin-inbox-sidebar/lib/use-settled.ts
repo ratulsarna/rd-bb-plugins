@@ -6,24 +6,28 @@ import {
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { boardRpcContract } from "@/server";
-import type { SettledOverride } from "@/lib/lanes";
+import type { ThreadOverride } from "@/lib/lanes";
 import { shouldRefreshOnReconnect } from "@/lib/reconnect";
 
 export interface SettledApi {
   /** threadId → override, from the plugin's own store. */
-  overrides: ReadonlyMap<string, SettledOverride>;
+  overrides: ReadonlyMap<string, ThreadOverride>;
   /** Reads only. A failed write toasts instead of blanking the board. */
   status: "loading" | "ready" | "error";
   refresh(): Promise<void>;
   settle(threadId: string): void;
   unsettle(threadId: string): void;
+  snooze(threadId: string, until: number): void;
+  wake(threadId: string): void;
+  /** Not a user action: no toast. Rejects so the caller can retry. */
+  acknowledgeWake(threadId: string, until: number): Promise<unknown>;
 }
 
 export function useSettledOverrides(): SettledApi {
   const rpc = useRpc<typeof boardRpcContract>();
   const connectionState = useRealtimeConnectionState();
   const [overrides, setOverrides] = useState<
-    ReadonlyMap<string, SettledOverride>
+    ReadonlyMap<string, ThreadOverride>
   >(() => new Map());
   const [status, setStatus] = useState<SettledApi["status"]>("loading");
 
@@ -39,10 +43,7 @@ export function useSettledOverrides(): SettledApi {
       if (seq !== requestSeq.current) return;
       setOverrides(
         new Map(
-          result.rows.map((row) => [
-            row.threadId,
-            { override: row.override, at: row.at },
-          ]),
+          result.rows.map(({ threadId, ...override }) => [threadId, override]),
         ),
       );
       setStatus("ready");
@@ -87,6 +88,21 @@ export function useSettledOverrides(): SettledApi {
           toast.error("Could not unsettle thread");
           void refresh();
         }),
+      snooze: (threadId, until) =>
+        void rpc.call("snooze", { threadId, until }).catch(() => {
+          toast.error("Could not snooze thread");
+          void refresh();
+        }),
+      // Re-read on success too: a snooze that ran out after our last clock
+      // tick is already over on the server, so the wake changes and
+      // publishes nothing, and the row would sit in Snoozed until the tick.
+      wake: (threadId) =>
+        void rpc
+          .call("wake", { threadId })
+          .catch(() => toast.error("Could not wake thread"))
+          .then(refresh),
+      acknowledgeWake: (threadId, until) =>
+        rpc.call("acknowledgeWake", { threadId, until }),
     }),
     [overrides, refresh, rpc, status],
   );

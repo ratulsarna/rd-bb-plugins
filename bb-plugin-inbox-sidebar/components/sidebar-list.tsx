@@ -1,23 +1,38 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type PointerEvent,
+  type SyntheticEvent,
+} from "react";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
+  useSidebarSplitLayout,
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import { AddProjectButton } from "@/components/add-project";
 import { BotsSection } from "@/components/bots-section";
 import { ProjectSelect, useProjectFilter } from "@/components/project-select";
 import { CollapsibleSection } from "@/components/section";
-import { SidebarRow, type RowReorder } from "@/components/sidebar-row";
+import {
+  SidebarRow,
+  type RowReorder,
+  type SidebarRowProps,
+} from "@/components/sidebar-row";
 import { SortableRows } from "@/components/sortable-rows";
 import { filterBoardForDisplay } from "@/lib/display-filter";
 import { ancestorIdsOf, effectiveExpandedIds } from "@/lib/expansion";
-import { canSettle, type BoardItem } from "@/lib/lanes";
+import { canSettle, canSnooze, type BoardItem } from "@/lib/lanes";
 import { pinnedMoveActions } from "@/lib/pinned-order";
 import { useBoardState } from "@/lib/use-board-state";
 
 /**
- * The board as bb's sidebar thread list: Bots on top, then Pinned, Inbox and
- * the Settled shelf, every section behind its own collapsible header.
+ * The board as bb's sidebar thread list: Bots on top, then Pinned, Inbox,
+ * Snoozed and the Settled shelf, every section behind its own collapsible
+ * header.
  *
  * The host owns the search field and the New-thread button above it, so this
  * ships neither and filters by the `searchQuery` prop. `activeProjectId` is
@@ -35,7 +50,15 @@ export function BoardSidebar({
   const actions = useSidebarThreadActions();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
-  const state = useBoardState();
+  // Every thread on screen: the route's and each split pane's.
+  const splitLayout = useSidebarSplitLayout();
+  const openThreadIds = useMemo(
+    () =>
+      [activeThreadId, ...(splitLayout?.panes ?? []).map((pane) => pane.threadId)]
+        .filter((id): id is string => id !== null),
+    [activeThreadId, splitLayout],
+  );
+  const state = useBoardState(openThreadIds);
   const [projectId, setProjectId, setPendingProjectId] = useProjectFilter(
     state.projects,
   );
@@ -45,6 +68,7 @@ export function BoardSidebar({
   );
 
   const isSearching = searchQuery.trim().length > 0;
+  const menuShield = useOpenMenuShield();
 
   const view = useMemo(
     () =>
@@ -116,7 +140,10 @@ export function BoardSidebar({
   const cancelRename = useCallback(() => setRenamingThreadId(null), []);
 
   const renderRow = useCallback(
-    (item: BoardItem, action?: { label: string; run: () => void }) => (
+    (
+      item: BoardItem,
+      extras: Pick<SidebarRowProps, "action" | "onSnooze" | "wakeAt"> = {},
+    ) => (
       <SidebarRow
         key={item.thread.id}
         item={item}
@@ -131,7 +158,7 @@ export function BoardSidebar({
         onCancelRename={cancelRename}
         onRename={renameThread}
         pullRequests={state.pullRequests}
-        action={action}
+        {...extras}
       />
     ),
     [
@@ -206,11 +233,12 @@ export function BoardSidebar({
     ],
   );
 
-  // The shelf starts shut, but the thread the user is looking at must exist
-  // on screen — an untouched shelf opens itself for it. A stored choice wins.
-  const settledDefaultExpanded =
+  // Snoozed and Settled start shut, but the thread the user is looking at
+  // must exist on screen — an untouched section opens itself for it. A stored
+  // choice wins.
+  const holdsActive = (items: readonly BoardItem[]) =>
     activeThreadId !== null &&
-    view.settled.some((item) => treeContains(item, activeThreadId));
+    items.some((item) => treeContains(item, activeThreadId));
 
   if (state.threadStatus === "error" || state.overridesStatus === "error") {
     return (
@@ -234,10 +262,14 @@ export function BoardSidebar({
   }
 
   const isEmpty =
-    view.pinned.length + view.inbox.length + view.settled.length === 0;
+    view.pinned.length +
+      view.inbox.length +
+      view.snoozed.length +
+      view.settled.length ===
+    0;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col" {...menuShield}>
       <div className="flex shrink-0 items-center px-2 pb-1">
         <ProjectSelect
           projects={state.projects}
@@ -299,27 +331,47 @@ export function BoardSidebar({
                 </li>
               ) : (
                 view.inbox.map((item) =>
-                  renderRow(
-                    item,
-                    canSettle(item)
+                  renderRow(item, {
+                    action: canSettle(item)
                       ? { label: "Settle", run: () => state.settle(item.thread.id) }
                       : undefined,
-                  ),
+                    onSnooze: canSnooze(item)
+                      ? (until) => state.snooze(item.thread.id, until)
+                      : undefined,
+                  }),
                 )
               )}
             </CollapsibleSection>
+            {view.snoozed.length > 0 && (
+              <CollapsibleSection
+                id="snoozed"
+                label="Snoozed"
+                count={view.snoozed.length}
+                defaultExpanded={holdsActive(view.snoozed)}
+                forceExpanded={isSearching}
+              >
+                {view.snoozed.map((item) =>
+                  renderRow(item, {
+                    action: { label: "Wake", run: () => state.wake(item.thread.id) },
+                    wakeAt: item.wakeAt,
+                  }),
+                )}
+              </CollapsibleSection>
+            )}
             {view.settled.length > 0 && (
               <CollapsibleSection
                 id="settled"
                 label="Settled"
                 count={view.settled.length}
-                defaultExpanded={settledDefaultExpanded}
+                defaultExpanded={holdsActive(view.settled)}
                 forceExpanded={isSearching}
               >
                 {view.settled.map((item) =>
                   renderRow(item, {
-                    label: "Unsettle",
-                    run: () => state.unsettle(item.thread.id),
+                    action: {
+                      label: "Unsettle",
+                      run: () => state.unsettle(item.thread.id),
+                    },
                   }),
                 )}
               </CollapsibleSection>
@@ -329,6 +381,66 @@ export function BoardSidebar({
       </div>
     </div>
   );
+}
+
+const openMenu = () =>
+  document.querySelector<HTMLElement>('[role="menu"][data-state="open"]');
+
+/**
+ * While a context menu is open, a press on the list only dismisses it, as on
+ * any desktop. Radix's modal menu means to do this by shutting off pointer
+ * events page-wide, but the rows' labels and controls opt back in, so without
+ * this a phone long-press releases into a click that opens the row, and the
+ * tap that dismisses the menu activates whatever it lands on.
+ *
+ * It reads the open menu from the DOM instead of tracking it, so a row that
+ * unmounts with its menu open cannot leave the list blocked.
+ */
+function useOpenMenuShield() {
+  const pressBeganInMenu = useRef(false);
+  // Whether the first click of the current click pair was swallowed: the
+  // browser still pairs it with the next one into a dblclick (title rename).
+  const firstClickSwallowed = useRef(false);
+  // React delivers events from portaled menu content through this element
+  // too; those are the menu's own and must be left alone.
+  const fromList = (event: SyntheticEvent<HTMLDivElement>) =>
+    event.currentTarget.contains(event.target as Node);
+  const swallow = (event: SyntheticEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  return {
+    onPointerDownCapture: (event: PointerEvent<HTMLDivElement>) => {
+      if (!fromList(event)) return;
+      const menu = openMenu();
+      pressBeganInMenu.current = menu !== null;
+      if (!menu) return;
+      // The press is the menu's: no row drag, split, or control sees it, so
+      // Radix does not either; dismiss the menu here the way Escape would.
+      // Cancelable, so Radix can claim it: bb closes the mobile drawer on
+      // any Escape that reaches it unclaimed.
+      swallow(event);
+      menu.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    },
+    onClickCapture: (event: MouseEvent<HTMLDivElement>) => {
+      const began = pressBeganInMenu.current;
+      pressBeganInMenu.current = false;
+      // A keyboard activation (detail 0) is never a stray tap.
+      if (!fromList(event) || event.detail === 0) return;
+      const stray = began || openMenu() !== null;
+      if (event.detail === 1) firstClickSwallowed.current = stray;
+      if (stray) swallow(event);
+    },
+    onDoubleClickCapture: (event: MouseEvent<HTMLDivElement>) => {
+      if (fromList(event) && firstClickSwallowed.current) swallow(event);
+    },
+  };
 }
 
 function treeContains(item: BoardItem, threadId: string): boolean {
