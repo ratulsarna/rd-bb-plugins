@@ -126,14 +126,37 @@ export function BoardSidebar({
     [actions, onNavigate],
   );
 
+  const openNewThread = useCallback(
+    (threadProjectId: string) => {
+      actions.openNewThread({ projectId: threadProjectId, focusPrompt: true });
+      onNavigate();
+    },
+    [actions, onNavigate],
+  );
+
   const openNewProject = useCallback(
     (newProjectId: string) => {
       setPendingProjectId(newProjectId);
-      actions.openNewThread({ projectId: newProjectId, focusPrompt: true });
-      onNavigate();
+      openNewThread(newProjectId);
     },
-    [actions, onNavigate, setPendingProjectId],
+    [openNewThread, setPendingProjectId],
   );
+
+  // Settling or snoozing the row the user is reading moves them on, the way a
+  // mail inbox does: to the visible row below, else the one above, else a new
+  // thread. Never while split: the route follows the focused pane, and moving
+  // a pane on would swap it out from under the user. The path comes from the
+  // full board, so a subagent hidden by search still counts.
+  const moveOnIfOpen = (item: BoardItem) => {
+    if (!activeThreadId || splitLayout) return;
+    const openRootId =
+      ancestorIdsOf(state.board, activeThreadId)?.[0] ?? activeThreadId;
+    if (openRootId !== item.thread.id) return;
+    const index = view.inbox.indexOf(item);
+    const next = view.inbox[index + 1] ?? view.inbox[index - 1];
+    if (next) openThread(next.thread.id);
+    else openNewThread(item.thread.projectId);
+  };
 
   const renameThread = useCallback(
     (threadId: string, title: string) => actions.rename(threadId, title),
@@ -346,10 +369,19 @@ export function BoardSidebar({
                 view.inbox.map((item) =>
                   renderRow(item, {
                     action: canSettle(item)
-                      ? { label: "Settle", run: () => state.settle(item.thread.id) }
+                      ? {
+                          label: "Settle",
+                          run: () => {
+                            state.settle(item.thread.id);
+                            moveOnIfOpen(item);
+                          },
+                        }
                       : undefined,
                     onSnooze: canSnooze(item)
-                      ? (until) => state.snooze(item.thread.id, until)
+                      ? (until) => {
+                          state.snooze(item.thread.id, until);
+                          moveOnIfOpen(item);
+                        }
                       : undefined,
                   }),
                 )

@@ -671,6 +671,114 @@ describe("BoardSidebar sections", () => {
   });
 });
 
+// Settling or snoozing the thread on screen moves the user on, like a mail
+// inbox, and never touches a split pane.
+describe("BoardSidebar moves on from a settled open thread", () => {
+  // Inbox orders by latest attention, newest first.
+  const rows = (...ids: string[]) =>
+    ids.map((id, index) =>
+      thread(id, { title: `Row ${id}`, latestAttentionAt: NOW - index * HOUR }),
+    );
+  const settleRow = async (title: string) => {
+    const row = (await screen.findByRole("link", { name: title })).parentElement!;
+    fireEvent.click(within(row).getByText("Settle"));
+    await waitFor(() =>
+      expect(rpcCalls.some((call) => call.method === "settle")).toBe(true),
+    );
+  };
+  const navigation = () =>
+    sidebarActionCalls.filter(
+      (call) => call.method === "open" || call.method === "openNewThread",
+    );
+
+  it("opens the row below, and the row above from the last row", async () => {
+    configureFakeSdk({ threads: rows("a", "b", "c") });
+    renderList({ activeThreadId: "b" });
+    await settleRow("Row b");
+    expect(navigation()).toEqual([
+      { method: "open", threadId: "c", options: undefined },
+    ]);
+
+    cleanup();
+    configureFakeSdk({ threads: rows("a", "b", "c") });
+    renderList({ activeThreadId: "c" });
+    await settleRow("Row c");
+    expect(navigation()).toEqual([
+      { method: "open", threadId: "b", options: undefined },
+    ]);
+  });
+
+  it("moves on when a snoozed row holds the open subagent", async () => {
+    configureFakeSdk({
+      threads: [
+        ...rows("root", "next"),
+        thread("child", { title: "Subagent", parentThreadId: "root" }),
+      ],
+    });
+    renderList({ activeThreadId: "child" });
+
+    fireEvent.contextMenu(await screen.findByText("Row root"));
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    fireEvent.click(within(menu).getByText("Snooze…"));
+    const picker = await screen.findByRole("dialog", { name: "Snooze until" });
+    fireEvent.click(within(picker).getByRole("button", { name: "1 hour" }));
+
+    expect(rpcCalls.find((call) => call.method === "snooze")?.input).toMatchObject({
+      threadId: "root",
+    });
+    expect(navigation()).toEqual([
+      { method: "open", threadId: "next", options: undefined },
+    ]);
+  });
+
+  it("starts a new thread in the project when the filter hides every other row", async () => {
+    configureFakeSdk({
+      threads: [
+        thread("other", { title: "Other project", projectId: "project-2" }),
+        thread("last", {
+          title: "Last here",
+          projectId: "project-1",
+          latestAttentionAt: NOW - HOUR,
+        }),
+      ],
+      projects: [
+        sidebarProject("project-1", "bb"),
+        sidebarProject("project-2", "other"),
+      ],
+    });
+    let navigated = 0;
+    renderList({ activeThreadId: "last", onNavigate: () => (navigated += 1) });
+    fireEvent.change(await screen.findByLabelText("Filter by project"), {
+      target: { value: "project-1" },
+    });
+
+    await settleRow("Last here");
+    expect(navigation()).toEqual([
+      {
+        method: "openNewThread",
+        options: { projectId: "project-1", focusPrompt: true },
+      },
+    ]);
+    expect(navigated).toBe(1);
+  });
+
+  it("moves no pane while split, even the focused one", async () => {
+    configureFakeSdk({
+      threads: rows("a", "b", "c"),
+      splitLayout: {
+        panes: [
+          { paneId: "left", rect: { x: 0, y: 0, width: 0.5, height: 1 }, threadId: "a", isFocused: false },
+          { paneId: "right", rect: { x: 0.5, y: 0, width: 0.5, height: 1 }, threadId: "b", isFocused: true },
+        ],
+      },
+    });
+    renderList({ activeThreadId: "b" });
+
+    await settleRow("Row b");
+    expect(navigation()).toEqual([]);
+  });
+});
+
 describe("BoardSidebar Pipeline pull requests", () => {
   it("auto-settles quiet work while keeping its open PR badge and link", async () => {
     const now = Date.now();
