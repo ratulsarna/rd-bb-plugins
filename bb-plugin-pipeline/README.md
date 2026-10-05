@@ -184,8 +184,6 @@ A task pins its complete instruction snapshot before its first kickoff. Settings
 
 Board operations stay in the general `pipeline` skill, invoked explicitly when a thread works the board.
 
-The workflow documents are forks of Nexus. Their upstream revision and local edits are recorded in [VENDOR.md](./VENDOR.md).
-
 ## Development
 
 This plugin requires BB plugin SDK 0.4.107 or newer. Install published dependencies with `npm install`. When developing against an unpublished SDK, install its local package instead:
