@@ -46,6 +46,8 @@ The forked bodies now live as plugin-owned documents under `workflows/`, stored 
 - `workflows/close-out/README.md`: entry requires the approved implementation walkthrough; material changes return through its rework rule. External review uses `review-wait` and asynchronous feedback batches instead of provider-specific polling. The Oracle remains available for subsequent review decisions.
 - `workflows/README.md`, `workflows/plan/README.md`, and `workflows/close-out/README.md`: scope, decisions, classification, and outcomes for imported GitHub issues are saved as card notes through `bb pipeline report --body-file`. Agents change the source issue only after the user approves.
 - `workflows/close-out/README.md`: the PR body carries `Closes #<n>` for the task's issue.
+- `workflows/close-out/README.md`: user-facing evidence is a before and after capture, the base commit against the current tree. Behavior gets video; a static UI change gets a screenshot. The PR places each file under a Before or After label.
+- `workflows/close-out/README.md`: the upstream line banning AI attribution in git-facing text is dropped.
 
 ## Additions: board report lines
 
