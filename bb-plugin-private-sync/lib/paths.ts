@@ -20,6 +20,8 @@ export const DEFAULT_IGNORED_NAMES: ReadonlySet<string> = new Set([
   "settings.local.json",
   ".wispr",
   ".firecrawl",
+  // Fleet convention for bulky or chatty output that should stay on one machine.
+  "nosync",
 ]);
 
 /** Machine-local runtime children of a directory whose other contents are portable. */

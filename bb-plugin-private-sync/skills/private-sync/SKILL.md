@@ -98,9 +98,11 @@ command: the calling thread's machine, else `--host`, else the server.
 At any depth: `.git`, `node_modules`, `.venv`, `__pycache__`,
 `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.DS_Store`, `Thumbs.db`,
 `.env`, `.env.*`, `.mcp.json`, `.credentials.json`, `settings.local.json`,
-`.wispr`, `.firecrawl`, and `projects`, `cache`, `todos`, `history` directly
+`.wispr`, `.firecrawl`, `nosync`, and `projects`, `cache`, `todos`, `history` directly
 inside a `.claude` directory. The rest of `.claude` and `.codex` (skills,
-commands) syncs. Scratch and output files sync like any other file.
+commands) syncs. Scratch and output files sync like any other file; put bulky or
+frequently rewritten output, such as renders, test runs, and logs, in a
+`nosync` folder.
 
 Symlinks sync only when their target is relative and stays inside the folder
 (`CLAUDE.md -> AGENTS.md`). Links that leave the folder, sockets, and other

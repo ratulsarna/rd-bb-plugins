@@ -260,6 +260,7 @@ describe("two-way sync", () => {
         ".mcp.json",
         ".claude/projects/p.jsonl",
         ".claude/settings.local.json",
+        "lumi/nosync/render.png",
       ])
         await put(a!, local, "machine-local");
       await put(a!, ".claude/skills/s/SKILL.md", "portable skill");
@@ -288,6 +289,7 @@ describe("two-way sync", () => {
       ".mcp.json",
       ".claude/projects",
       ".claude/settings.local.json",
+      "lumi/nosync",
     ])
       expect(await exists(join(b.root, local))).toBe(false);
 
