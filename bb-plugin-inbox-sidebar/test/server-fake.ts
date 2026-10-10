@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import Database from "better-sqlite3";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import plugin from "@/server";
@@ -35,7 +38,8 @@ export interface ServerApiHarness {
 }
 
 export function serverApi(initial: ServerApiOptions = {}): ServerApiHarness {
-  const db = new Database(":memory:");
+  // On disk like the host's: memory files live beside the database.
+  const db = new Database(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "inbox-server-")), "data.db"));
   for (const statement of initial.preMigrate ?? []) db.exec(statement);
 
   const publishes: Array<{ channel: string; payload: unknown }> = [];
@@ -72,6 +76,14 @@ export function serverApi(initial: ServerApiOptions = {}): ServerApiHarness {
       },
       cli: { register: () => {} },
       events: { on: () => {} },
+      experimental_hooks: { on: () => {}, recheck: async () => {} },
+      onDispose: () => {},
+      settings: {
+        define: (descriptors: Record<string, { default?: unknown }>) => ({
+          get: async () => Object.fromEntries(Object.entries(descriptors).map(([k, d]) => [k, d.default])),
+          onChange: () => {},
+        }),
+      },
       sdk: {
         environments: {
           get: async ({ environmentId }: { environmentId: string }) => {

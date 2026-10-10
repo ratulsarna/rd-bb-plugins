@@ -2017,6 +2017,27 @@ describe("Bots section", () => {
     expect(await within(bots).findByText("Chief of staff")).toBeDefined();
   });
 
+  it("marks an assistant whose memory has a warning, and only that one, on any machine", async () => {
+    configureFakeSdk({
+      threads: [
+        thread("thr_sam", { title: "Sam", projectId: "assist-1", environment: { id: "env-sam-mac" } as BoardThread["environment"] }),
+        thread("thr_hands", { title: "Hands", projectId: "assist-1", environment: { id: "env-hands" } as BoardThread["environment"] }),
+      ],
+      projects: [sidebarProject("project-1", "bb"), sidebarProject("assist-1", "assistants")],
+      assistantIdentities: { "env-sam-mac": "proj_x:sam", "env-hands": "proj_x:hands" },
+      memoryWarnings: [
+        { identity: "proj_x:sam", warning: "rotation skipped: summaries not ready" },
+        { identity: "proj_x:hands", warning: null },
+      ],
+    });
+    renderList();
+
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    const mark = await within(bots).findByRole("img", { name: "Memory warning: rotation skipped: summaries not ready" });
+    expect(mark.closest("li")!.querySelector("[data-sidebar-thread-id]")!.getAttribute("data-sidebar-thread-id")).toBe("thr_sam");
+    expect(within(bots).getAllByRole("img", { name: /^Memory warning/ })).toHaveLength(1);
+  });
+
   it("orders rows by identity even when every row changed environment", async () => {
     const bot = (id: string, envId: string) =>
       thread(id, {

@@ -66,3 +66,77 @@ export function assistantIdentity(
     env.path && source ? homeSegmentUnder(env.path, source.path) : null;
   return segment === null ? null : `${env.projectId}:${segment}`;
 }
+
+export interface ResolvedIdentity {
+  /** False when the lookup itself failed — not an answer, a retry. */
+  ok: boolean;
+  /** Set iff the environment sits in a home of its project. */
+  identity: string | null;
+  /** True when a registered source on this host is all that's missing. */
+  awaitingSource: boolean;
+}
+
+/** The slice of the plugin API identity lookups read. */
+interface IdentityLookups {
+  sdk: {
+    environments: { get(args: { environmentId: string }): Promise<{ projectId: string; hostId: string; path: string | null }> };
+    projects: { get(args: { projectId: string }): Promise<{ sources: AssistantSource[] }> };
+  };
+  log: { warn(message: string): void };
+}
+
+/**
+ * The server's lookup of an environment's assistant identity. Identity comes
+ * from the environment plus its project's registered sources, and sources
+ * change when a machine is added — so the cache lives for a minute, not
+ * forever. Environment facts themselves are stable.
+ */
+export function createIdentityResolver(
+  bb: IdentityLookups,
+): (environmentId: string) => Promise<ResolvedIdentity> {
+  const IDENTITY_TTL_MS = 60_000;
+  const identityCache = new Map<
+    string,
+    { at: number; resolved: ResolvedIdentity }
+  >();
+  return async (environmentId) => {
+    const cached = identityCache.get(environmentId);
+    if (cached && Date.now() - cached.at < IDENTITY_TTL_MS) {
+      return cached.resolved;
+    }
+    let resolved: ResolvedIdentity = { ok: false, identity: null, awaitingSource: false };
+    try {
+      const env = await bb.sdk.environments.get({ environmentId });
+      let sources: AssistantSource[];
+      try {
+        sources = (await bb.sdk.projects.get({ projectId: env.projectId })).sources;
+      } catch (error) {
+        // A project lookup hiccup is transient; retry, keeping the key.
+        bb.log.warn(
+          `assistant identity for ${environmentId} unresolved: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return resolved;
+      }
+      resolved = {
+        ok: true,
+        identity: assistantIdentity(env, sources),
+        awaitingSource: !sources.some((candidate) => candidate.hostId === env.hostId),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/not found/i.test(message)) {
+        // The environment is gone for good: an answer, not a failure. Its
+        // rows keep their key.
+        resolved = { ok: true, identity: null, awaitingSource: false };
+      } else {
+        bb.log.warn(`assistant identity for ${environmentId} unresolved: ${message}`);
+      }
+    }
+    if (resolved.ok && !resolved.awaitingSource) {
+      identityCache.set(environmentId, { at: Date.now(), resolved });
+    }
+    return resolved;
+  };
+}

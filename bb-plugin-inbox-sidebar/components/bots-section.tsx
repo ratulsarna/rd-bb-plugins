@@ -18,6 +18,7 @@ import { assistantDisplayOrder, projectAssistantReorder } from "@/lib/assistant-
 import { selectedAssistantsProjectId } from "@/lib/assistant-identity";
 import { useAssistantAvatars } from "@/lib/use-assistant-avatars";
 import { useAssistantIdentities } from "@/lib/use-assistant-identities";
+import { useAssistantMemoryWarnings } from "@/lib/use-assistant-memory";
 import { useAssistantOrder } from "@/lib/use-assistant-order";
 import { useAssistantSubtitles } from "@/lib/use-assistant-subtitles";
 import { usePortalScopeProps } from "@/lib/portal-scope";
@@ -52,6 +53,7 @@ export function BotsSection({
   const actions = useSidebarThreadActions();
   const navigate = useBbNavigate();
   const { subtitles, set: setSubtitle } = useAssistantSubtitles();
+  const memoryWarnings = useAssistantMemoryWarnings();
   const order = useAssistantOrder();
   const [restartThreadId, setRestartThreadId] = useState<string | null>(null);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
@@ -213,6 +215,11 @@ export function BotsSection({
                   ? subtitles.get(row.identity)
                   : undefined) ?? null
               }
+              memoryWarning={
+                (row.identity
+                  ? memoryWarnings.get(row.identity)
+                  : undefined) ?? null
+              }
               isActive={row.thread.id === activeThreadId}
               isEditingSubtitle={row.thread.id === editingThreadId}
               reorder={reorder}
@@ -242,6 +249,7 @@ function AssistantRow({
   thread,
   avatarUrl,
   subtitle,
+  memoryWarning,
   isActive,
   isEditingSubtitle,
   reorder,
@@ -255,6 +263,8 @@ function AssistantRow({
   thread: PluginSidebarThread;
   avatarUrl: string | null;
   subtitle: string | null;
+  /** Shown as a mark; cleared with `bb assistants memory status <thread> --clear`. */
+  memoryWarning: string | null;
   isActive: boolean;
   isEditingSubtitle: boolean;
   reorder: RowReorder | undefined;
@@ -386,6 +396,16 @@ function AssistantRow({
           </ContextMenu.Content>
         </ContextMenu.Portal>
       </ContextMenu.Root>
+      {memoryWarning && (
+        <span
+          role="img"
+          aria-label={`Memory warning: ${memoryWarning}`}
+          title={memoryWarning}
+          className="shrink-0 px-1 text-[13px] font-semibold text-amber-600"
+        >
+          !
+        </span>
+      )}
       <button
         type="button"
         title="New thread"
