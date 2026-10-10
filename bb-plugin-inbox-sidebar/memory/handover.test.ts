@@ -1,5 +1,6 @@
 import type { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import path from "node:path";
 import { makeMessageDispatchHookContext } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +12,7 @@ import { FAST, IDENTITY, settle, world } from "./world";
 
 const worlds: Array<ReturnType<typeof world>> = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const w of worlds.splice(0)) await w.dispose();
 });
 
@@ -138,28 +140,46 @@ it("archives a new thread it could not switch to, so a retry spawns just one mor
   await expect(rotate()).rejects.toThrow("disk full");
   expect(w.threads.get("thr_new1")!.archivedAt).not.toBeNull();
   expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_main", previous: [] });
-  expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual(["Could not switch to thr_new1, so it was archived: disk full"]);
+  expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual(["Could not switch to thr_new1: disk full. It was archived."]);
   expect(svc.holds.size).toBe(0);
   expect(await rotate()).toEqual({ newThreadId: "thr_new2" });
   expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new2", previous: [] });
   expect(calls("threads.spawn")).toHaveLength(2);
 });
 
-// Held, so it waits as a queued row; it lands after the last check read the queue.
-it.each([
-  ["moves a message", { content: [{ type: "text" as const, text: "late", mentions: [] }] }, undefined],
-  ["names a scheduled message", { sendAt: Date.now() + 60_000 }, "Messages stayed unsent on archived thr_main: q1. Send them again in thr_new1."],
-])("%s that arrives after the last queue read, once the old thread is archived", async (_name, row, warning) => {
-  const { w, rotate } = await ready();
+/** Held, so it waits as a queued row; it lands after the last check read the queue. */
+const afterLastCheck = (w: ReturnType<typeof world>, row: Parameters<ReturnType<typeof world>["queue"]>[1]) => {
   let reads = 0;
   w.taps.queueRead = (threadId) => {
     // After the spawn, the first read moves held messages and the second is the last check's.
     if (threadId === "thr_main" && w.threads.has("thr_new1") && ++reads === 2) w.queue("thr_main", row);
   };
+};
+const late = { content: [{ type: "text" as const, text: "late", mentions: [] }] };
+
+it.each([
+  ["moves a message", late, undefined],
+  ["names a scheduled message", { sendAt: Date.now() + 60_000 }, "Messages stayed unsent on archived thr_main: q1. Send them again in thr_new1."],
+])("%s that arrives after the last queue read, once the old thread is archived", async (_name, row, warning) => {
+  const { w, rotate } = await ready();
+  afterLastCheck(w, row);
   expect((await rotate()).warning).toBe(warning);
   expect(w.threads.get("thr_main")!.archivedAt).not.toBeNull();
   expect(w.queued.get("thr_new1") ?? []).toHaveLength(warning ? 0 : 1);
   expect(w.queued.get("thr_main") ?? []).toHaveLength(warning ? 1 : 0);
+});
+
+it("moves a late message off the archived thread even when saving the move then fails", async () => {
+  const { w, svc, rotate } = await ready();
+  afterLastCheck(w, late);
+  const update = svc.update.bind(svc);
+  vi.spyOn(svc, "update").mockImplementation((identity, patch) => {
+    if (w.threads.get("thr_main")!.archivedAt !== null) throw new Error("disk full");
+    return update(identity, patch);
+  });
+  await expect(rotate()).rejects.toThrow("disk full");
+  expect(w.queued.get("thr_new1")).toHaveLength(1);
+  expect(w.queued.get("thr_main")).toEqual([]);
 });
 
 describe("an automatic rotation", () => {
@@ -185,6 +205,31 @@ describe("an automatic rotation", () => {
     await settle(150);
     expect(calls("threads.context")).toHaveLength(reads);
     expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual([`rotation waits: ${why}`]);
+  });
+
+  it("keeps the warnings of a failed switch on a full disk, with no unhandled rejection", async () => {
+    const { w, svc } = await due();
+    const write = fs.writeFileSync;
+    w.taps.spawned = () => {
+      vi.spyOn(fs, "writeFileSync").mockImplementation((...args: Parameters<typeof write>) => {
+        if (String(args[0]).endsWith("memory.json.tmp")) throw new Error("disk full");
+        return write(...args);
+      });
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await svc.onIdle("thr_main");
+      await vi.waitFor(() =>
+        expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual(["Could not switch to thr_new1: disk full. It was archived.", "rotation failed: disk full"]),
+      );
+      await settle(50);
+      expect(unhandled).toEqual([]);
+      expect(svc.state(IDENTITY).main).toBe("thr_main");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   it("tries again when it cannot tell whose a child is", async () => {

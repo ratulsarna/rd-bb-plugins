@@ -222,12 +222,8 @@ export async function handover(
         svc.update(identity, { main: fresh.id, previous: [...svc.state(identity).previous, old] });
       } catch (error) {
         // Unbound, the new chat would run unlogged and a retry would spawn another; the old one stays main.
-        await svc.bb.sdk.threads.archive({ threadId: fresh.id }).catch(() => {});
-        try {
-          svc.warn(identity, `Could not switch to ${fresh.id}, so it was archived: ${message(error)}`);
-        } catch {
-          // The disk that failed the switch may fail the warning too; the caller still sees the error.
-        }
+        const archived = await svc.bb.sdk.threads.archive({ threadId: fresh.id }).then(() => true, () => false);
+        svc.warn(identity, `Could not switch to ${fresh.id}: ${message(error)}. ${archived ? "It was archived." : "It could not be archived; archive it by hand."}`);
         throw error;
       }
       const warning = await finish(svc, identity, old, fresh.id, own);
@@ -267,18 +263,17 @@ async function finish(svc: MemoryService, identity: string, old: string, fresh: 
     const busy = await oldBusy(svc, identity, old, own);
     if (busy) return kept(busy.message, busy.lasting ? "Sort that out, then archive it, to resume rotation." : "Archive it when that work is done to resume rotation.");
     await svc.bb.sdk.threads.archive({ threadId: old });
-    svc.update(identity, { previous: svc.state(identity).previous.filter((id) => id !== old) });
   } catch (error) {
     return kept(message(error));
   }
-  // An archived thread takes no new messages, so this sweep is the last: it moves any held after the check.
-  try {
-    const left = await moveHeld(svc, old, fresh);
-    if (left.length > 0) return `Messages stayed unsent on archived ${old}: ${left.join(", ")}. Send them again in ${fresh}.`;
-  } catch (error) {
-    return `Messages on archived ${old} may not have moved: ${message(error)}. Send any left there again in ${fresh}.`;
-  }
-  return undefined;
+  // An archived thread takes no new messages, so this sweep is the last: it moves any held after the
+  // check. It runs before anything else can fail.
+  const swept = await moveHeld(svc, old, fresh).then(
+    (left) => (left.length === 0 ? undefined : `Messages stayed unsent on archived ${old}: ${left.join(", ")}. Send them again in ${fresh}.`),
+    (error) => `Messages on archived ${old} may not have moved: ${message(error)}. Send any left there again in ${fresh}.`,
+  );
+  svc.update(identity, { previous: svc.state(identity).previous.filter((id) => id !== old) });
+  return swept;
 }
 
 /** Recreate the old thread's plain rows on the new one, where its own settings apply; the ids of the rest. */

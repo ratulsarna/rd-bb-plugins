@@ -92,12 +92,20 @@ export class MemoryService {
     return next;
   }
 
+  /** Never throws: callers run detached, and a full disk is often what they warn about. */
   warn(identity: string, text: string): void {
     this.bb.log.warn(`memory ${identity}: ${text}`);
-    const { warnings } = this.state(identity);
+    const s = this.state(identity);
     // A retry that fails the same way again is not news.
-    if (warnings.at(-1)?.text === text) return;
-    this.update(identity, { warnings: [...warnings, { at: Date.now(), text }].slice(-KEPT_WARNINGS) });
+    if (s.warnings.at(-1)?.text === text) return;
+    const warnings = [...s.warnings, { at: Date.now(), text }].slice(-KEPT_WARNINGS);
+    try {
+      this.update(identity, { warnings });
+    } catch (error) {
+      // Shown anyway; the next state write that lands saves it.
+      this.states.set(identity, { ...s, warnings });
+      this.bb.log.warn(`memory ${identity}: could not save that warning: ${message(error)}`);
+    }
     this.bb.realtime.publish(MEMORY_CHANNEL, { identity });
   }
 
@@ -115,13 +123,9 @@ export class MemoryService {
       chat.tune({ pool: this.settings.summaryPool, target: this.settings.summaryTarget });
       this.chats.set(identity, chat);
       this.summarizer.add(identity, chat);
-      // One warning per failed write. Best effort: on a full disk the state write fails too, and the
-      // server log line is what is left.
+      // One warning per failed write.
       void chat.broken.then((error) => {
-        if (this.disposed) return;
-        try {
-          this.warn(identity, `${error.message}; memory reads the disk back at the next turn`);
-        } catch {}
+        if (!this.disposed) this.warn(identity, `${error.message}; memory reads the disk back at the next turn`);
       });
     }
     return chat;
