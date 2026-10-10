@@ -42,7 +42,7 @@ it("logs a command's call and output from one event, and after a crash between t
     ["echo", "a.txt\nexit 0", `thread:thr_main:${ran.seq}#1`],
   ];
   expect(svc.chat(IDENTITY).msgs.map((m) => [m.kind, m.text, m.src])).toEqual(logged);
-  svc.dispose();
+  await svc.dispose();
 
   // The crash: the echo and the view save never reached the disk.
   const [file] = fs.readdirSync(path.join(dir, "main")).map((f) => path.join(dir, "main", f));
@@ -177,11 +177,69 @@ it("rotates at start when a rotation came due while the plugin was down", async 
   w.say("thr_main", "one");
   w.turnEnd("thr_main");
   w.usage.set("thr_main", { usedTokens: 90, modelContextWindow: 100 });
-  svc.dispose();
+  await svc.dispose();
   svc = w.service();
   await svc.start();
   await settle(50);
   expect(svc.state(IDENTITY).main).toBe("thr_new1");
+});
+
+it("stops at a plugin reload: logging in flight ends before it writes, and the reload waits for it", async () => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  w.say("thr_main", "hello");
+  let release!: () => void;
+  w.taps.events = () => new Promise<void>((resolve) => (release = resolve));
+  const logging = svc.catchUp(IDENTITY, "thr_main");
+  await settle();
+  let stopped = false;
+  const disposing = svc.dispose().then(() => (stopped = true));
+  await settle();
+  expect(stopped).toBe(false);
+  delete w.taps.events;
+  release();
+  await expect(logging).rejects.toThrow(/memory service stopped/);
+  await disposing;
+  expect(() => svc.chat(IDENTITY)).toThrow(/memory service stopped/);
+
+  const next = w.service();
+  await next.start();
+  expect(next.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(["hello"]);
+});
+
+it("leaves a memory-off assistant alone when its main chat goes away", async () => {
+  const w = start();
+  let svc = w.service();
+  await svc.on("thr_main");
+  svc.off(IDENTITY);
+  w.say("thr_main", "after off");
+  await w.bb.sdk.threads.archive({ threadId: "thr_main" });
+  await svc.onGone("thr_main", "archived");
+  await svc.dispose();
+  svc = w.service();
+  await svc.start();
+  expect(svc.state(IDENTITY)).toMatchObject({ on: false, main: "thr_main", warnings: [] });
+  expect(svc.chat(IDENTITY).msgs).toEqual([]);
+});
+
+it("drains an archived main chat before memory on takes a new one, and keeps it while that fails", async () => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  w.say("thr_main", "last words");
+  await w.bb.sdk.threads.archive({ threadId: "thr_main" });
+  w.taps.events = (threadId) => {
+    if (threadId === "thr_main") throw new Error("server busy");
+  };
+  w.thread("thr_two");
+  await svc.on("thr_two");
+  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_two", previous: ["thr_main"] });
+  delete w.taps.events;
+  svc.onEvents("thr_two");
+  await settle();
+  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_two", previous: [] });
+  expect(svc.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(["last words"]);
 });
 
 it("lets go of a main chat archived or deleted by hand, and takes the next one", async () => {
@@ -201,7 +259,7 @@ it("lets go of a main chat archived or deleted by hand, and takes the next one",
   await svc.on("thr_two");
   // Deleted while the plugin was down.
   w.threads.get("thr_two")!.deletedAt = Date.now();
-  svc.dispose();
+  await svc.dispose();
   svc = w.service();
   await svc.start();
   expect(svc.state(IDENTITY).main).toBeNull();

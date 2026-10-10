@@ -94,13 +94,13 @@ and a warning says what to do. Nothing retries it. Rotation waits until you
 archive the old thread; its last events are logged first. A rotation refused
 because the thread was busy, a child was working or summaries were not ready
 tries again every 30 seconds while the chat sits idle after the same turn.
-Queued messages, an active goal or a live old thread give one warning
-instead. A rotation that came due while the plugin was stopped runs at start. Automatic
+Queued messages, an active goal or failed queued messages (on the old
+thread or a child), or a live old thread give one warning instead. A rotation that came due while the plugin was stopped runs at start. Automatic
 rotation never follows a failed or interrupted turn, nor a session whose only
 turn is its hidden first message. `memory off` stops logging and rotation; a
 move already running finishes. If you archive or delete the main chat
-yourself, memory logs its last events, has no main chat and warns; run
-`memory on` on the thread to carry on in. A harness can still compact in one
+yourself while memory is on, memory logs its last events, has no main chat
+and warns; run `memory on` on the thread to carry on in. A harness can still compact in one
 very long turn; that shows as a warning (only for compactions after memory
 was turned on).
 

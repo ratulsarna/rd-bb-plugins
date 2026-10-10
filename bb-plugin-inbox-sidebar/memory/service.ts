@@ -56,7 +56,9 @@ export class MemoryService {
   /** Readiness waits by thread; a new turn there cancels its wait. */
   private readonly waits = new Map<string, AbortController>();
   private readonly usage = new Map<string, number>();
-  private readonly importing = new Set<string>();
+  private readonly importing = new Map<string, Promise<void>>();
+  /** Per identity, archived threads whose last events are not all logged yet. */
+  private readonly undrained = new Map<string, Set<string>>();
 
   constructor(
     readonly bb: BbPluginApi,
@@ -94,7 +96,13 @@ export class MemoryService {
   }
 
   /** The one Chat of this identity in this process. */
+  /** After `dispose`, nothing writes, reopens or spawns: the next plugin load owns the memory dirs. */
+  private live(): void {
+    if (this.disposed) throw new Error("memory service stopped");
+  }
+
   chat(identity: string): Chat {
+    this.live();
     let chat = this.chats.get(identity);
     if (!chat) {
       chat = Chat.open(this.dir(identity));
@@ -163,11 +171,14 @@ export class MemoryService {
    * never before; a deleted one has none left. A main chat leaves `main` empty until `memory on` picks one.
    */
   private async gone(identity: string, threadId: string, fate: "archived" | "deleted"): Promise<void> {
+    if (!this.state(identity).on) return;
     if (fate === "archived") {
       try {
         await this.catchUp(identity, threadId);
       } catch (error) {
-        return this.bb.log.warn(`memory ${identity}: ${threadId} stays tracked until its last events are logged: ${message(error)}`);
+        this.bb.log.warn(`memory ${identity}: ${threadId} stays tracked until its last events are logged: ${message(error)}`);
+        this.undrained.set(identity, (this.undrained.get(identity) ?? new Set()).add(threadId));
+        return this.retryLater(identity);
       }
     }
     const s = this.state(identity);
@@ -181,6 +192,14 @@ export class MemoryService {
       const { main, previous } = this.state(identity);
       if (main === threadId || previous.includes(threadId)) await this.gone(identity, threadId, fate);
     }
+  }
+
+  /** Try again to drain the archived threads whose drain failed. */
+  private async drain(identity: string): Promise<void> {
+    const threads = this.undrained.get(identity);
+    // Taken out first: a drain that fails again puts its thread back.
+    this.undrained.delete(identity);
+    for (const threadId of threads ?? []) await this.gone(identity, threadId, "archived");
   }
 
   /** Log what `threadId` added since the last call. Serialized per identity; a failure keeps the cursor for the next wake-up. */
@@ -210,6 +229,7 @@ export class MemoryService {
       })) as unknown as EventRow[];
       for (const row of rows) {
         await before?.();
+        this.live();
         if (row.type === "thread/compacted") {
           if (row.createdAt >= this.state(identity).since) this.warn(identity, `${threadId} compacted before rotation`);
         }
@@ -246,7 +266,7 @@ export class MemoryService {
    * One timer per identity: an automatic rotation a passing obstacle refused tries again while the main
    * chat still sits idle after the same completed `turn`, with no lifecycle event to wake it.
    */
-  private retryLater(identity: string, turn: number): void {
+  private retryLater(identity: string, turn?: number): void {
     if (this.disposed || this.retries.has(identity)) return;
     const timer = setTimeout(() => {
       this.retries.delete(identity);
@@ -256,6 +276,7 @@ export class MemoryService {
   }
 
   private async retry(identity: string, turn?: number): Promise<void> {
+    await this.drain(identity);
     const { on, main } = this.state(identity);
     if (!on || !main) return;
     try {
@@ -269,7 +290,10 @@ export class MemoryService {
 
   onEvents(threadId: string): void {
     const identity = this.loggerOf(threadId);
-    if (identity) this.catchUp(identity, threadId).catch((e) => this.bb.log.warn(`memory ${identity}: ${message(e)}`));
+    if (!identity) return;
+    this.catchUp(identity, threadId)
+      .then(() => this.drain(identity))
+      .catch((e) => this.bb.log.warn(`memory ${identity}: ${message(e)}`));
   }
 
   async onIdle(threadId: string): Promise<void> {
@@ -280,6 +304,7 @@ export class MemoryService {
     } catch (error) {
       return this.bb.log.warn(`memory ${identity}: ${message(error)}`);
     }
+    await this.drain(identity);
     await this.maybeRotate(identity, threadId);
   }
 
@@ -318,6 +343,7 @@ export class MemoryService {
       if (wait.signal.aborted) return;
       await handover(this, { identity, oldThreadId: threadId });
     } catch (error) {
+      if (this.disposed) return;
       if (!(error instanceof Busy)) return this.warn(identity, `rotation failed: ${message(error)}`);
       if (error.lasting) return this.warn(identity, `rotation waits: ${error.message}`);
       this.bb.log.info(`memory ${identity}: rotation waits: ${error.message}`);
@@ -331,7 +357,13 @@ export class MemoryService {
     const { identity } = await assistantConversationContext(this.bb, threadId);
     const s = this.state(identity);
     if (this.importing.has(identity)) throw new Error("an import is running for this assistant; turn memory on when it is done");
-    if (s.on && s.main && s.main !== threadId && !(await this.fate(s.main))) throw new Error(`memory is already on, with main chat ${s.main}`);
+    if (s.on && s.main && s.main !== threadId) {
+      const fate = await this.fate(s.main);
+      if (!fate) throw new Error(`memory is already on, with main chat ${s.main}`);
+      // The old main chat leaves as an earlier one does: drained first, kept in `previous` until that works.
+      this.update(identity, { main: null, previous: [...s.previous, s.main] });
+      await this.gone(identity, s.main, fate);
+    }
     this.update(identity, { on: true, everOn: true, main: threadId, since: Date.now() });
     await this.catchUp(identity, threadId);
     return identity;
@@ -389,9 +421,8 @@ export class MemoryService {
         throw new Error(`${source}: want a thread id or an absolute path to a JSONL file on the bb server`);
       }
     }
-    this.importing.add(identity);
     this.update(identity, { import: { sources, done: 0, error: null } });
-    void this.runImport(identity, sources).finally(() => this.importing.delete(identity));
+    this.importing.set(identity, this.runImport(identity, sources).finally(() => this.importing.delete(identity)));
   }
 
   private async runImport(identity: string, sources: string[]): Promise<void> {
@@ -427,19 +458,23 @@ export class MemoryService {
         throw new Error(`${file}:${n + 1}: want {kind, text, date} with kind in ${KINDS.join("|")}`);
       }
       await before();
+      this.live();
       chat.append(kind, text, date, { stream, at: n, n: 0 });
       this.summarizer.pump();
     }
   }
 
-  dispose(): void {
+  /** Lets logging, handovers and imports in flight stop at their next check, then closes the chats. */
+  async dispose(): Promise<void> {
     this.disposed = true;
     this.summarizer.dispose();
     for (const wait of this.waits.values()) wait.abort();
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();
+    await Promise.allSettled([...this.logging.values(), ...this.ops.values(), ...this.importing.values()]);
     for (const chat of this.chats.values()) chat.close();
     this.chats.clear();
   }
+
 }
 

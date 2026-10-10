@@ -34,7 +34,7 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
   const automations = [{ automation: { id: "beat", projectId: "fleet", name: "heartbeat", execution: { mode: "agent", targetThreadId: "thr_main" } } }];
   const failures: { update?: Error; events?: Error } = {};
   /** Runs on each events read, before it answers: a test can make something happen mid-read. */
-  const taps: { events?: (threadId: string) => void } = {};
+  const taps: { events?: (threadId: string) => void | Promise<void> } = {};
   let seq = 0;
   let spawned = 0;
   let rowIds = 0;
@@ -80,14 +80,14 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
           if (!t || t.deletedAt !== null) throw Object.assign(new Error(`HTTP 404: thread ${threadId} not found`), { status: 404 });
           return structuredClone(t);
         },
-        list: async ({ parentThreadId, hasParent } = {}) =>
+        list: async ({ projectId, parentThreadId, hasParent } = {}) =>
           [...threads.values()]
-            .filter((t) => t.archivedAt === null && t.deletedAt === null && (parentThreadId !== undefined ? t.parentThreadId === parentThreadId : hasParent !== false || t.parentThreadId === null))
+            .filter((t) => t.archivedAt === null && t.deletedAt === null && (projectId === undefined || t.projectId === projectId) && (parentThreadId !== undefined ? t.parentThreadId === parentThreadId : hasParent !== false || t.parentThreadId === null))
             .map((t) => structuredClone(t)),
         events: {
           list: async ({ threadId, types, afterSeq, order, limit }) => {
             if (failures.events) throw failures.events;
-            taps.events?.(threadId);
+            await taps.events?.(threadId);
             const rows = (events.get(threadId) ?? []).filter((r) => (!types || (types as readonly string[]).includes(r.type)) && r.seq > Number(afterSeq ?? 0));
             if (order === "desc") rows.reverse();
             return structuredClone(rows.slice(0, Number(limit ?? 100)));
@@ -148,8 +148,8 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
     services.push(svc);
     return svc;
   };
-  const dispose = () => {
-    for (const svc of services.splice(0)) svc.dispose();
+  const dispose = async () => {
+    await Promise.all(services.splice(0).map((svc) => svc.dispose()));
     return harness.lifecycle.dispose();
   };
 

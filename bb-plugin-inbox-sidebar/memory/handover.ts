@@ -68,9 +68,9 @@ const takenWith = (id: string) => (t: ListEntry) =>
  */
 async function oldBusy(svc: MemoryService, old: string): Promise<Busy | null> {
   const sdk = svc.bb.sdk.threads;
-  // List entries carry the activity counters and the links; `get` has neither.
-  const { projectId } = await sdk.get({ threadId: old });
-  const all = await sdk.list({ projectId, includeHidden: true, archived: false });
+  // List entries carry the activity counters and the links; `get` has neither. Not by project: the
+  // archive takes linked threads from any project.
+  const all = await sdk.list({ includeHidden: true, archived: false });
   const root = all.find((t) => t.id === old);
   if (!root || !settled(root.status) || working(root)) return new Busy("The conversation is busy");
   // A goal keeps the chat going on its own; waiting 30 seconds will not end it.
@@ -82,7 +82,9 @@ async function oldBusy(svc: MemoryService, old: string): Promise<Busy | null> {
     for (const t of taken) {
       seen.add(t.id);
       if (!settled(t.status)) return new Busy(`Child ${t.id} is ${t.status}`);
-      if (working(t) || t.activity.activeGoalCount > 0 || t.queuedWork !== "none") return new Busy(`Child ${t.id} still has work`);
+      if (t.activity.activeGoalCount > 0) return new Busy(`Child ${t.id} has an active goal`, true);
+      if (t.queuedWork === "failed") return new Busy(`Child ${t.id} has failed queued messages`, true);
+      if (working(t) || t.queuedWork !== "none") return new Busy(`Child ${t.id} still has work`);
       if (now - t.updatedAt < svc.timing.quietMs) return new Busy(`Child ${t.id} just changed`);
     }
     parents = taken.map((t) => t.id);
@@ -153,6 +155,7 @@ export async function handover(
       const { destination, execution, visible } = composer ?? (await samePlace(svc, old));
       // Listed before spawning, so an unreachable automations plugin refuses instead of stranding jobs.
       await targetingAutomationsOf(svc.bb, old);
+      // `chat()` throws once a plugin reload stopped this instance, so a stopped instance never spawns.
       const fresh = await svc.bb.sdk.threads.spawn({
         projectId: context.thread.projectId,
         ...execution,

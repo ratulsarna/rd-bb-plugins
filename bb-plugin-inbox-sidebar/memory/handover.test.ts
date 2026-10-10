@@ -6,7 +6,7 @@ import plugin from "../server";
 import { Busy, handover } from "./handover";
 import { localIso } from "./history";
 import type { Timing } from "./service";
-import { IDENTITY, settle, world } from "./world";
+import { FAST, IDENTITY, settle, world } from "./world";
 
 const worlds: Array<ReturnType<typeof world>> = [];
 afterEach(async () => {
@@ -46,6 +46,7 @@ describe("the safe moment", () => {
     ["a message is queued on the old thread", (w: ReturnType<typeof world>) => w.queue("thr_main")],
     // Archiving the old thread takes these along too, as it does children.
     ["a thread whose lifecycle it owns runs", (w: ReturnType<typeof world>) => w.thread("thr_d", { lifecycleOwnerThreadId: "thr_main", status: "active" })],
+    ["a thread in another project whose lifecycle it owns runs", (w: ReturnType<typeof world>) => w.thread("thr_x", { projectId: "elsewhere", lifecycleOwnerThreadId: "thr_main", status: "active" })],
     ["a hidden thread made from it runs", (w: ReturnType<typeof world>) => w.thread("thr_h", { sourceThreadId: "thr_main", visibility: "hidden", status: "active" })],
   ])("refuses with nothing changed when %s", async (_name, arrange) => {
     const { w, svc, rotate, calls } = await ready({}, { quietMs: 5000 });
@@ -100,21 +101,51 @@ it("moves a message queued while the old thread's last events are read", async (
   expect(w.threads.get("thr_main")!.archivedAt).not.toBeNull();
 });
 
-it("rotates in plan mode, and waits on an active goal with one warning and no retry loop", async () => {
-  const { w, svc, calls } = await ready({}, { retryMs: 30 });
-  w.turnEnd("thr_main");
-  w.usage.set("thr_main", { usedTokens: 90, modelContextWindow: 100 });
-  const { activity } = w.threads.get("thr_main")!;
-  activity.activeGoalCount = 1;
-  await svc.onIdle("thr_main");
-  const reads = calls("threads.context").length;
-  await settle(150);
-  expect(calls("threads.context")).toHaveLength(reads);
-  expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual(["rotation waits: The main chat has an active goal"]);
-  activity.activeGoalCount = 0;
-  activity.activePlanModeCount = 1;
-  await svc.onIdle("thr_main");
-  expect(svc.state(IDENTITY).main).toBe("thr_new1");
+describe("an automatic rotation", () => {
+  async function due() {
+    const r = await ready({}, { retryMs: 30 });
+    r.w.turnEnd("thr_main");
+    r.w.usage.set("thr_main", { usedTokens: 90, modelContextWindow: 100 });
+    return r;
+  }
+
+  it.each<[string, (w: ReturnType<typeof world>) => void, string]>([
+    ["the main chat has an active goal", (w) => void (w.threads.get("thr_main")!.activity.activeGoalCount = 1), "The main chat has an active goal"],
+    ["a child has an active goal", (w) => void (w.thread("thr_c", { parentThreadId: "thr_main" }).activity.activeGoalCount = 1), "Child thr_c has an active goal"],
+    ["a child has failed queued messages", (w) => w.thread("thr_c", { parentThreadId: "thr_main", queuedWork: "failed" }), "Child thr_c has failed queued messages"],
+  ])("waits with one warning and no retry loop when %s", async (_name, arrange, why) => {
+    const { w, svc, calls } = await due();
+    arrange(w);
+    await svc.onIdle("thr_main");
+    const reads = calls("threads.context").length;
+    await settle(150);
+    expect(calls("threads.context")).toHaveLength(reads);
+    expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual([`rotation waits: ${why}`]);
+  });
+
+  it("runs in plan mode", async () => {
+    const { w, svc } = await due();
+    w.threads.get("thr_main")!.activity.activePlanModeCount = 1;
+    await svc.onIdle("thr_main");
+    expect(svc.state(IDENTITY).main).toBe("thr_new1");
+  });
+});
+
+it("stops at a plugin reload before the spawn, and the reload waits for it", async () => {
+  const { w, svc, rotate, calls } = await ready();
+  let answer!: (value: unknown) => void;
+  w.harness.sdk.stub("threads.defaultExecutionOptions", () => new Promise((resolve) => (answer = resolve)));
+  const moving = rotate();
+  await settle();
+  let stopped = false;
+  const disposing = svc.dispose().then(() => (stopped = true));
+  await settle();
+  expect(stopped).toBe(false);
+  answer({ model: "m-1", reasoningLevel: "high", permissionMode: "full", serviceTier: "default" });
+  await expect(moving).rejects.toThrow(/memory service stopped/);
+  await disposing;
+  expect(calls("threads.spawn")).toEqual([]);
+  expect(svc.holds.size).toBe(0);
 });
 
 it("rotates an old thread whose last turn failed", async () => {
@@ -193,17 +224,31 @@ describe("an old thread kept live", () => {
     expect(svc.state(IDENTITY).previous).toEqual(["thr_main"]);
     // The next start drains it instead.
     delete w.failures.events;
-    svc.dispose();
+    await svc.dispose();
     const restarted = w.service();
     await restarted.start();
     expect(restarted.state(IDENTITY).previous).toEqual([]);
     expect(restarted.chat(IDENTITY).msgs.at(-1)!.text).toBe("last words");
   });
 
+  it.each(["its timer", "the next catch-up"])("drains an archived old thread again on %s after a failed drain", async (trigger) => {
+    const { w, svc } = await kept();
+    w.say("thr_main", "last words");
+    w.threads.get("thr_main")!.archivedAt = Date.now();
+    w.failures.events = new Error("server busy");
+    await svc.onGone("thr_main", "archived");
+    expect(svc.state(IDENTITY).previous).toEqual(["thr_main"]);
+    delete w.failures.events;
+    if (trigger === "the next catch-up") svc.onEvents("thr_new1");
+    await settle(trigger === "its timer" ? FAST.retryMs * 2 : 20);
+    expect(svc.state(IDENTITY).previous).toEqual([]);
+    expect(svc.chat(IDENTITY).msgs.at(-1)!.text).toBe("last words");
+  });
+
   it("leaves the log when deleted while the plugin was down", async () => {
     const { w, svc } = await kept();
     w.threads.get("thr_main")!.deletedAt = Date.now();
-    svc.dispose();
+    await svc.dispose();
     const restarted = w.service();
     await restarted.start();
     expect(restarted.state(IDENTITY)).toMatchObject({ main: "thr_new1", previous: [] });
