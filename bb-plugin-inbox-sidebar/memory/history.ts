@@ -14,7 +14,7 @@ export const LOGGED_TYPES = ["client/turn/requested", "item/completed", "item/ba
 /** Looking at memory is not news to remember; a failed or compound call is. Plain words only, no shell. */
 const RECALL = /^bb assistants (recall|date)( +[\w-]+)*$/;
 /** Codex runs each command through a shell, as `/bin/bash -lc 'bb assistants recall 21 1'`. */
-const SHELL = /^(?:\S*\/)?(?:bash|sh|zsh) -l?c (?:'([^']*)'|"([^"]*)")$/;
+const SHELL = /^(?:(?:\/[\w.-]+)*\/)?(?:bash|sh|zsh) -l?c (?:'([^']*)'|"([^"]*)")$/;
 
 /** The command itself, out of one shell wrapper. */
 function script(command: string): string {

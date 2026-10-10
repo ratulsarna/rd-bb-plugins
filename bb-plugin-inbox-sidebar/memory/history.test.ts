@@ -77,6 +77,7 @@ it("drops a plain successful recall but keeps a failed or compound one", () => {
     command('zsh -c "bb assistants date 7 --assistant thr_a1"', 0),
     command("/bin/bash -lc 'bb assistants recall 0 1 && rm -rf x'", 0),
     command("/bin/bash -lc 'bb assistants recall 3 2'", 1),
+    command("./run-tests;/bin/sh -c 'bb assistants recall 21 1'", 0),
   ])).toEqual([
     ["tool", "$ bb assistants recall 3 2"],
     ["echo", "out\nexit 1"],
@@ -88,6 +89,8 @@ it("drops a plain successful recall but keeps a failed or compound one", () => {
     ["echo", "out\nexit 0"],
     ["tool", "$ /bin/bash -lc 'bb assistants recall 3 2'"],
     ["echo", "out\nexit 1"],
+    ["tool", "$ ./run-tests;/bin/sh -c 'bb assistants recall 21 1'"],
+    ["echo", "out\nexit 0"],
   ]);
 });
 
