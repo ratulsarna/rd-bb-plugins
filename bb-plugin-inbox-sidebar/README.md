@@ -102,7 +102,8 @@ move already running finishes. If you archive or delete the main chat
 yourself while memory is on, memory logs its last events, has no main chat
 and warns; run `memory on` on the thread to carry on in. A harness can still compact in one
 very long turn; that shows as a warning (only for compactions after memory
-was turned on).
+was turned on). With memory on, rotate, don't compact: a `/compact` is not
+logged, and it warns to use `bb assistants rotate` instead.
 
 Known gaps: **Send now** and a child's report skip the hold, so one sent in the
 seconds of a move can reach the old thread (it is logged, and the move stops if

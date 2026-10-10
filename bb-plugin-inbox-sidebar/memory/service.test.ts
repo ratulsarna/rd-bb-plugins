@@ -170,6 +170,23 @@ it("warns when the harness compacted the chat before it could rotate, not for a 
   expect(w.harness.inspection.realtimeSignals.some((s) => s.channel === "assistant-memory")).toBe(true);
 });
 
+it("warns to rotate instead after a compact by hand, and as before for one the harness did itself", async () => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  w.emit("thr_main", "client/turn/requested", { initiator: "user", senderThreadId: null, input: [{ type: "text", text: "/compact", mentions: [{ start: 0, end: 8, resource: { kind: "command", trigger: "/", name: "compact", source: "command", origin: "builtin", label: "compact", argumentHint: null } }] }] });
+  w.emit("thr_main", "thread/compacted", {});
+  await svc.catchUp(IDENTITY, "thr_main");
+  w.say("thr_main", "a long task");
+  w.emit("thr_main", "thread/compacted", {});
+  await svc.catchUp(IDENTITY, "thr_main");
+  expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual([
+    "thr_main was compacted by hand. With memory on, use bb assistants rotate thr_main instead.",
+    "thr_main compacted before rotation",
+  ]);
+  expect(svc.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(["a long task"]);
+});
+
 it("rotates at start when a rotation came due while the plugin was down", async () => {
   const w = start();
   let svc = w.service();

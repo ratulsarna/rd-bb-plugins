@@ -6,7 +6,7 @@ import type { spawn } from "node:child_process";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { assistantConversationContext } from "../lib/assistant-conversation";
 import { Busy, handover } from "./handover";
-import { type EventRow, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
+import { type EventRow, isBuiltinCompact, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
 import { dirName, identities, KEPT_WARNINGS, type MemoryState, readState, writeState } from "./state";
 import { Summarizer } from "./summarize";
 import { Chat, KINDS } from "./tree";
@@ -53,6 +53,8 @@ export class MemoryService {
   private readonly logging = new Map<string, Promise<void>>();
   /** Per identity and thread, the last event fully logged. */
   private readonly cursors = new Map<string, number>();
+  /** Cursors whose latest request was bb's manual compact, so the compaction after it was asked for. */
+  private readonly compactedByHand = new Set<string>();
   /** Readiness waits by thread; a new turn there cancels its wait. */
   private readonly waits = new Map<string, AbortController>();
   private readonly usage = new Map<string, number>();
@@ -240,9 +242,16 @@ export class MemoryService {
         await before?.();
         this.live();
         if (row.type === "thread/compacted") {
-          if (row.createdAt >= this.state(identity).since) this.warn(identity, `${threadId} compacted before rotation`);
-        }
-        else {
+          if (row.createdAt >= this.state(identity).since) {
+            this.warn(identity, this.compactedByHand.has(cursor)
+              ? `${threadId} was compacted by hand. With memory on, use bb assistants rotate ${threadId} instead.`
+              : `${threadId} compacted before rotation`);
+          }
+        } else {
+          if (row.type === "client/turn/requested") {
+            if (isBuiltinCompact(row.data)) this.compactedByHand.add(cursor);
+            else this.compactedByHand.delete(cursor);
+          }
           // One source per event: the tree numbers its records, so a replay skips exactly the ones it has.
           const src = { stream, at: row.seq, n: 0 };
           for (const r of recordsOf(row)) chat.append(r.kind, r.text, r.date, src);

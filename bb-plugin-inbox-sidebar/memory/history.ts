@@ -63,7 +63,25 @@ function inputText(blocks: any[]): string {
     .trim();
 }
 
+/** bb's own manual compact: a turn whose whole input is its built-in `/compact` command. */
+export function isBuiltinCompact(data: any): boolean {
+  const blocks: any[] = (data.inputGroups ?? [data.input ?? []]).flat();
+  const [only] = blocks;
+  const [command] = only?.mentions ?? [];
+  return (
+    blocks.length === 1 &&
+    only.type === "text" &&
+    only.text.trim() === "/compact" &&
+    only.mentions.length === 1 &&
+    command.resource.kind === "command" &&
+    command.resource.name === "compact" &&
+    command.resource.origin === "builtin"
+  );
+}
+
 function turnRecords(data: any): Array<[Kind, string]> {
+  // An instruction to the harness, not part of the chat.
+  if (isBuiltinCompact(data)) return [];
   const sender: string | null = data.senderThreadId ?? null;
   // A side thread's or bb's own report reaches the chat as a message; the user typed the rest.
   const kind: Kind = sender || data.initiator === "system" ? "work" : "user";
