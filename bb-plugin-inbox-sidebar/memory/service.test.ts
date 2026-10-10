@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { handover } from "./handover";
 import { IDENTITY, settle, world } from "./world";
 
 const worlds: Array<ReturnType<typeof world>> = [];
@@ -23,6 +24,26 @@ const hanging = (() => {
   child.kill = () => setImmediate(() => child.emit("close", null, "SIGKILL"));
   return child;
 }) as unknown as typeof spawn;
+
+/** `claude -p` that answers only when the test says so, one call at a time. */
+function onCue() {
+  const waiting: Array<(reply: string) => void> = [];
+  const spawnProcess = (() => {
+    const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true }) as any;
+    child.stdin = Object.assign(new EventEmitter(), {
+      end: () => waiting.push((reply) => (child.stdout.emit("data", reply), child.emit("close", 0, null))),
+    });
+    return child;
+  }) as unknown as typeof spawn;
+  return { spawnProcess, waiting };
+}
+
+/** The next log append fails with a full disk, after `meanwhile` runs. */
+const failNextWrite = (meanwhile = () => {}) =>
+  vi.spyOn(fs.promises, "appendFile").mockImplementationOnce(async () => {
+    meanwhile();
+    throw new Error("disk full");
+  });
 
 const command = { type: "commandExecution", id: "c1", command: "ls", cwd: "/", aggregatedOutput: "a.txt", exitCode: 0, approvalStatus: null, status: "completed" };
 
@@ -368,8 +389,59 @@ it("resumes a file import a failed write stopped", async () => {
     return append(...args);
   });
   svc.startImport(IDENTITY, [file]);
-  await vi.waitFor(() => expect(svc.state(IDENTITY).import).toMatchObject({ done: 0, error: "disk full" }));
+  await vi.waitFor(() => expect(svc.state(IDENTITY).import).toMatchObject({ done: 0, error: "memory write failed: disk full" }));
   svc.startImport(IDENTITY, [file]);
   await vi.waitFor(() => expect(svc.state(IDENTITY).import).toMatchObject({ done: 1, error: null }));
   expect(svc.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(["one", "two", "three"]);
+});
+
+it("reads the disk back after a failed write and logs again what it lost, with one warning", async () => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  failNextWrite();
+  w.say("thr_main", "hello");
+  await expect(svc.catchUp(IDENTITY, "thr_main")).rejects.toThrow(/memory write failed: disk full/);
+  await svc.catchUp(IDENTITY, "thr_main");
+  expect(svc.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(["hello"]);
+  expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual(["memory write failed: disk full; memory reads the disk back at the next turn"]);
+});
+
+it("drops a summary that was running when a write failed, so a message that later takes its id gets its own", async () => {
+  const w = start();
+  const cue = onCue();
+  const svc = w.service({}, cue.spawnProcess);
+  await svc.on("thr_main");
+  w.thread("thr_old");
+  svc.update(IDENTITY, { previous: ["thr_old"] });
+  // A summary of message A starts while A's page is still being written, and that write fails.
+  failNextWrite(() => svc.summarizer.pump());
+  w.say("thr_main", "a".repeat(900));
+  await expect(svc.catchUp(IDENTITY, "thr_main")).rejects.toThrow(/disk full/);
+  const [summaryOfA] = cue.waiting.splice(0);
+  expect(summaryOfA).toBeDefined();
+  // A never reached the disk, so the next message logged takes its id.
+  w.say("thr_old", "b".repeat(900));
+  await svc.catchUp(IDENTITY, "thr_old");
+  summaryOfA("summary of A");
+  await settle();
+  const chat = svc.chat(IDENTITY);
+  expect(chat.msgs.map((m) => m.text[0])).toEqual(["b"]);
+  expect(chat.viewLines()[0]).not.toContain("summary of A");
+});
+
+it("ends a wait for summaries with the storage reason when a write fails", async () => {
+  const w = start();
+  const svc = w.service({ readyCapMs: 5000 }, hanging);
+  await svc.on("thr_main");
+  w.say("thr_main", "x".repeat(900));
+  await svc.catchUp(IDENTITY, "thr_main");
+  const moving = handover(svc, { identity: IDENTITY, oldThreadId: "thr_main" });
+  await settle();
+  failNextWrite();
+  w.say("thr_main", "more");
+  await expect(svc.catchUp(IDENTITY, "thr_main")).rejects.toThrow(/disk full/);
+  const started = Date.now();
+  await expect(moving).rejects.toThrow(/memory write failed: disk full/);
+  expect(Date.now() - started).toBeLessThan(1000);
 });

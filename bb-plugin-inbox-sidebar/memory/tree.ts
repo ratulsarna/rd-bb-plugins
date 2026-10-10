@@ -150,8 +150,14 @@ export class Chat {
   private failed: Ref[] = [];
   /** Per source stream, its newest position in the log and how many records came from it. */
   private sources = new Map<string, { at: number; records: number }>();
-  /** A log or tree write failed: memory may be ahead of the disk until `reload`. */
-  damaged = false;
+  /**
+   * Why a write failed, once one has. Memory may be ahead of the disk then, so this Chat is done: it
+   * takes no more records or work, and the next writer opens a fresh one from the disk.
+   */
+  damage: Error | null = null;
+  private broke!: (error: Error) => void;
+  /** Settles with `damage` when a write fails, so waits on this Chat end with it. */
+  readonly broken = new Promise<Error>((resolve) => (this.broke = resolve));
   /** Records and the view waiting for the next commit. */
   private pending = emptyBatch();
   /** Commits run one after another, so a view never reaches the disk before what it shows. */
@@ -197,19 +203,6 @@ export class Chat {
     for (const n of [...this.nodes.values()].sort((a, b) => a.l - b.l)) this.climb([n.l, n.i]);
   }
 
-  /**
-   * Read the chat back from the disk as an open does, which repairs what a failed write left out.
-   * Compactions still running stay claimed, so none starts twice.
-   */
-  reload(): void {
-    const fresh = new Chat(this.dir);
-    fresh.load();
-    const running = [...this.running];
-    // The commit chain stays: a write still in flight must finish before the next one starts.
-    Object.assign(this, fresh, { pool: this.pool, target: this.target, committing: this.committing });
-    for (const k of running) this.resumed(k.split(":").map(Number) as Ref);
-  }
-
   /** Apply the plugin's settings; each is a positive integer, and a target over `LINE` asks for `LINE`. */
   tune({ pool, target }: { pool?: number; target?: number }): void {
     for (const [name, v] of Object.entries({ pool, target })) {
@@ -252,9 +245,9 @@ export class Chat {
     OPEN.delete(this.dir);
   }
 
-  /** After a failed write nothing is queued, so a torn line stays the last one, until `reload`. */
+  /** After a failed write nothing is queued, so a torn line stays the last one. */
   private writable(): void {
-    if (this.damaged) throw new Error(`chat ${this.dir}: a write failed; it is read back before the next turn`);
+    if (this.damage) throw this.damage;
   }
 
   private queue(part: "main" | "tree", file: string, value: unknown): void {
@@ -268,7 +261,7 @@ export class Chat {
 
   /**
    * Commit what is queued: one append per run of one file, the log before the tree that summarizes it, then
-   * the view by temp file and rename. A failed write marks the chat damaged until `reload`.
+   * the view by temp file and rename. A failed write damages the chat for good.
    */
   flush(): Promise<void> {
     const next = this.committing.then(() => this.commit());
@@ -291,9 +284,10 @@ export class Chat {
       const tmp = path.join(this.dir, "view.json.tmp");
       await fs.promises.writeFile(tmp, saved, { flush: true });
       await fs.promises.rename(tmp, path.join(this.dir, "view.json"));
-    } catch (error) {
-      this.damaged = true;
-      throw error;
+    } catch (cause) {
+      this.damage = new Error(`memory write failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      this.broke(this.damage);
+      throw this.damage;
     }
   }
 
@@ -470,6 +464,7 @@ export class Chat {
 
   /** The node `take` starts next, slots aside: messages in their window first, then merges. */
   private next(): Ref | undefined {
+    if (this.damage) return undefined;
     const i = this.unbuilt.slice(0, this.pool).find((i) => !this.claimed.has(key([0, i])));
     return i !== undefined ? [0, i] : this.merges[0];
   }
@@ -491,16 +486,9 @@ export class Chat {
     return { ref: r, prompt: this.compactionPrompt(r) };
   }
 
-  /** Mark a node as running, for a compaction a restart found still in flight. */
-  resumed(r: Ref): void {
-    const k = this.merges.findIndex((m) => key(m) === key(r));
-    if (k >= 0) this.merges.splice(k, 1);
-    this.claimed.add(key(r));
-    this.running.add(key(r));
-  }
-
-  /** A node whose write throws stays claimed, so only `fail` and the retry at the next message free it. */
+  /** On a damaged chat the line is dropped: the fresh chat summarizes its own messages again. */
   done(r: Ref, text: string): void {
+    if (this.damage) return;
     if (!this.built(r)) this.addNode(r, text);
     this.running.delete(key(r));
     this.claimed.delete(key(r));

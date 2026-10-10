@@ -189,9 +189,10 @@ it("the too-long retry cuts at 512 bytes without splitting a character", () => {
   assert.match(tooLong(reply), /your line is 800 bytes/);
 });
 
-it("after a failed write nothing is appended until the chat reads itself back, then the record is logged", async () => {
+it("after a failed write the chat takes nothing more, and a fresh one from the disk logs the record", async () => {
   const dir = tmp();
   const chat = Chat.open(dir);
+  chat.append("echo", text(1), "2026-09-05T10:00:00+05:30");
   // A directory where the day's log file goes makes the write fail.
   fs.mkdirSync(path.join(dir, "main", "2026-09-05.jsonl"), { recursive: true });
   const src = () => ({ stream: "e", at: 4, n: 0 });
@@ -199,12 +200,14 @@ it("after a failed write nothing is appended until the chat reads itself back, t
   await assert.rejects(chat.flush());
   fs.rmSync(path.join(dir, "main", "2026-09-05.jsonl"), { recursive: true });
   // A torn line must stay the file's last, so a later write cannot glue a record onto it.
-  assert.throws(() => chat.append("user", "hi", "2026-09-05T10:00:00+05:30", src()), /a write failed/);
-  await assert.rejects(chat.flush(), /a write failed/);
-  chat.reload();
-  assert.equal(chat.resumeAt("e"), undefined);
-  assert.deepEqual(chat.append("user", "hi", "2026-09-05T10:00:00+05:30", src()), [0]);
+  assert.throws(() => chat.append("user", "hi", "2026-09-05T10:00:00+05:30", src()), /memory write failed/);
+  await assert.rejects(chat.flush(), /memory write failed/);
+  assert.equal(chat.take(), undefined, "a damaged chat gave out work");
   await chat.close();
+  const fresh = Chat.open(dir);
+  assert.equal(fresh.resumeAt("e"), undefined);
+  assert.deepEqual(fresh.append("user", "hi", "2026-09-05T10:00:00+05:30", src()), [0]);
+  await fresh.close();
   assert.deepEqual(Chat.open(dir).msgs.map((m) => m.text), ["hi"]);
 });
 
@@ -219,9 +222,10 @@ it("a batch that fails partway saves no view, and reading back finishes it", asy
   await assert.rejects(chat.flush());
   assert.equal(fs.existsSync(path.join(dir, "view.json")), false);
   fs.rmSync(treeFile, { recursive: true });
-  chat.reload();
-  assert.deepEqual(chat.viewLines(), ["0+1|user: one", "1+1|user: two"]);
   await chat.close();
+  const fresh = Chat.open(dir);
+  assert.deepEqual(fresh.viewLines(), ["0+1|user: one", "1+1|user: two"]);
+  await fresh.close();
   const reopened = Chat.open(dir);
   assert.deepEqual(reopened.viewLines(), ["0+1|user: one", "1+1|user: two"]);
   assert.ok(reopened.built([1, 0]));
@@ -237,8 +241,6 @@ it("a batch that fails partway leaves a log without gaps, whatever files it span
   fs.mkdirSync(second, { recursive: true });
   await assert.rejects(chat.flush());
   fs.rmSync(second, { recursive: true });
-  chat.reload();
-  assert.deepEqual(chat.msgs.map((m) => m.text), ["first"]);
   await chat.close();
   assert.deepEqual(Chat.open(dir).msgs.map((m) => m.text), ["first"]);
 });
@@ -319,7 +321,7 @@ it("a chat opens once per process; closing frees it", async () => {
   await Chat.open(dir).close();
 });
 
-it("a lower pool starts nothing until fewer run, and a reload keeps the settings", () => {
+it("a lower pool starts nothing until fewer run", () => {
   const chat = Chat.open(tmp());
   for (let i = 0; i < 12; i++) chat.append("echo", text(1), "2026-09-08");
   const jobs = [];
@@ -332,9 +334,6 @@ it("a lower pool starts nothing until fewer run, and a reload keeps the settings
   chat.done(jobs[6].ref, "line");
   assert.ok(chat.take());
   assert.equal(chat.take(), undefined);
-  chat.tune({ target: 300 });
-  chat.reload();
-  assert.deepEqual([chat.pool, chat.target], [2, 300]);
 });
 
 it("a target of 256 shapes new tasks' ruler and word hint; 512 stays the limit", () => {

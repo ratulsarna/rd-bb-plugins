@@ -236,6 +236,29 @@ describe("an obstacle after the spawn", () => {
       othersChild(w);
       status(w, id, "idle");
     }), /Child thr_c belongs to another assistant; archiving thr_main would archive it\. Sort that out, then archive it/],
+    // Quiet for a minute, it starts work while its owner is looked up for the last check. On a host with
+    // no assistant source the lookup is not cached, so it runs again then.
+    ["a quiet child wakes during the last owner lookup", {}, ({ w }) => {
+      w.environments.set("env_x", { id: "env_x", projectId: "fleet", hostId: "laptop", path: "/home/x/repo" });
+      const child = w.thread("thr_c", { parentThreadId: "thr_main", environmentId: "env_x", updatedAt: Date.now() - 60_000 });
+      w.harness.sdk.stub("environments.get", async ({ environmentId }: { environmentId: string }) => {
+        if (w.threads.has("thr_new1")) Object.assign(child, { status: "active", updatedAt: Date.now() });
+        return w.environments.get(environmentId)!;
+      });
+    }, /Child thr_c just changed\. Archive it when that work is done/],
+    // During the last owner lookup it moves to another assistant's home; bb stamps the move, and the
+    // lookup outlasts the quiet time.
+    ["a child moves during a slow last owner lookup", {}, ({ w }) => {
+      w.environments.set("env_x", { id: "env_x", projectId: "fleet", hostId: "laptop", path: "/home/x/repo" });
+      const child = w.thread("thr_c", { parentThreadId: "thr_main", environmentId: "env_x" });
+      w.harness.sdk.stub("environments.get", async ({ environmentId }: { environmentId: string }) => {
+        if (w.threads.has("thr_new1") && child.environmentId === "env_x") {
+          othersChild(w, { updatedAt: Date.now() });
+          await settle(FAST.quietMs * 2);
+        }
+        return w.environments.get(environmentId)!;
+      });
+    }, /Child thr_c just changed\. Archive it when that work is done/],
     ["the archive call fails", {}, ({ w }) => w.harness.sdk.stub("threads.archive", async () => { throw new Error("archive refused"); }), /kept live: archive refused\. Archive it to resume rotation\./],
   ])("stops when %s: the old thread stays live, the warning says what to do, nothing retries", async (_name, options, arrange, warning) => {
     const r = await ready(options, { runnableMs: 100, retryMs: 50 });

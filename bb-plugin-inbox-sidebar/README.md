@@ -117,6 +117,9 @@ the new thread's view lacks what happened on the old thread since; `recall`
 reaches it.
 Each assistant's whole log and tree stay in the server's memory, read in full
 when the plugin starts, so a very long history costs RAM and start time.
+If a memory write fails, memory warns once and reads its files back at the
+next turn; live logging picks up what was lost from bb's event log. A failed
+write stops an import; run it again to resume.
 
 | Command | Does |
 |---|---|

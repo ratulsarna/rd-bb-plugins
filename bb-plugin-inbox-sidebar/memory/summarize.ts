@@ -42,6 +42,12 @@ export class Summarizer {
     this.chats.push({ identity, chat });
   }
 
+  /** Stop giving `chat` work; calls already running for it finish and are dropped. */
+  remove(chat: Chat): void {
+    const k = this.chats.findIndex((member) => member.chat === chat);
+    if (k >= 0) this.chats.splice(k, 1);
+  }
+
   /** Start jobs while the pool has room, taking from each chat in turn. */
   pump(): void {
     for (let empty = 0; !this.disposed && this.running < this.pool && empty < this.chats.length; ) {
@@ -67,16 +73,10 @@ export class Summarizer {
     this.running--;
     // A plugin reload in between: the chat belongs to the next instance now.
     if (this.disposed) return;
-    try {
-      if (line === undefined) chat.fail(job.ref);
-      else chat.done(job.ref, line);
-    } catch (error) {
-      // The tree could not take the line, as when the chat is damaged: tried again like a failed call.
-      chat.fail(job.ref);
-      this.opts.log(`memory ${identity}: summary not saved: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    // A damaged chat is read back at the next turn, and the summary made again.
-    chat.flush().catch((error) => this.opts.log(`memory ${identity}: summary not saved: ${error instanceof Error ? error.message : String(error)}`));
+    if (line === undefined) chat.fail(job.ref);
+    else chat.done(job.ref, line);
+    // A damaged chat dropped the line, and its slot still goes back to the pool.
+    if (!chat.damage) chat.flush().catch((error) => this.opts.log(`memory ${identity}: summary not saved: ${error instanceof Error ? error.message : String(error)}`));
     this.pump();
     this.changed.emit("progress");
   }
@@ -131,16 +131,17 @@ export class Summarizer {
    * Wait until `done()`, at most `ms`, while summaries for any chat finish. Another chat may hold every
    * slot, so this chat's runnable work waits for progress anywhere. A failed call waits for the next
    * message, so when this chat has nothing else to run it gets that retry here, at most 3 rounds.
-   * False on timeout, abort, dispose, or calls that keep failing.
+   * False on timeout, abort, dispose, or calls that keep failing; throws why when a write damages `chat`.
    */
   async waitUntil(chat: Chat, done: () => boolean, ms: number, signal?: AbortSignal): Promise<boolean> {
     const timeout = AbortSignal.timeout(Math.min(ms, 2 ** 31 - 1));
     const stop = signal ? AbortSignal.any([timeout, signal]) : timeout;
     for (let rounds = 0; !done(); ) {
+      if (chat.damage) throw chat.damage;
       if (this.disposed || stop.aborted) return false;
       if (chat.inFlight > 0 || chat.canTake()) {
         this.pump();
-        await once(this.changed, "progress", { signal: stop }).catch(() => undefined);
+        await Promise.race([once(this.changed, "progress", { signal: stop }).catch(() => undefined), chat.broken]);
       } else if (chat.failures === 0 || rounds++ >= 3) return false;
       else {
         chat.retryFailed();

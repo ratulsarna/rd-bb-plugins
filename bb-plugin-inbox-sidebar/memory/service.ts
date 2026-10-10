@@ -115,8 +115,28 @@ export class MemoryService {
       chat.tune({ pool: this.settings.summaryPool, target: this.settings.summaryTarget });
       this.chats.set(identity, chat);
       this.summarizer.add(identity, chat);
+      // One warning per failed write. Best effort: on a full disk the state write fails too, and the
+      // server log line is what is left.
+      void chat.broken.then((error) => {
+        if (this.disposed) return;
+        try {
+          this.warn(identity, `${error.message}; memory reads the disk back at the next turn`);
+        } catch {}
+      });
     }
     return chat;
+  }
+
+  /** The chat to write to. A damaged one is closed and a fresh one opened from the disk. */
+  private async writer(identity: string): Promise<Chat> {
+    const chat = this.chat(identity);
+    if (!chat.damage) return chat;
+    // Writers take turns (live logging per assistant, an import only before memory is first on), so no
+    // other one is replacing it meanwhile. Readers keep the old one until it is closed.
+    await chat.close();
+    this.summarizer.remove(chat);
+    this.chats.delete(identity);
+    return this.chat(identity);
   }
 
   /** For reading: an assistant that never had memory gets an error, not an empty dir. */
@@ -221,16 +241,15 @@ export class MemoryService {
 
   /** Log what `threadId` added since the last call. Serialized per identity; a failure keeps the cursor for the next wake-up. */
   catchUp(identity: string, threadId: string): Promise<void> {
-    const next = (this.logging.get(identity) ?? Promise.resolve()).then(() =>
-      this.logEvents(identity, threadId, [...LOGGED_TYPES, "thread/compacted"]),
+    // Live logging replays from its cursor, which moves only once a page is on disk.
+    const next = (this.logging.get(identity) ?? Promise.resolve()).then(async () =>
+      this.logEvents(await this.writer(identity), identity, threadId, [...LOGGED_TYPES, "thread/compacted"]),
     );
     this.logging.set(identity, next.catch(() => {}));
     return next;
   }
 
-  private async logEvents(identity: string, threadId: string, types: EventType[], before?: () => Promise<void>): Promise<void> {
-    const chat = this.chat(identity);
-    if (chat.damaged) chat.reload();
+  private async logEvents(chat: Chat, identity: string, threadId: string, types: EventType[], before?: () => Promise<void>): Promise<void> {
     const stream = `thread:${threadId}`;
     // From the resume point itself: a crash may have cut its records short, and the tree skips the ones it has.
     const resumeAt = chat.resumeAt(stream);
@@ -455,17 +474,19 @@ export class MemoryService {
   }
 
   private async runImport(identity: string, sources: string[]): Promise<void> {
-    const chat = this.chat(identity);
-    const fail = (what: string) => new Error(this.disposed ? "stopped" : `${what}: ${chat.failures} summaries keep failing; run the import again to resume`);
-    // Like a live chat whose summaries keep up: a summary's view stops at the first unsummarized line,
-    // so racing ahead would cut its context (a tool result would lose its call).
-    const keepUp = async () => {
-      if (!(await this.summarizer.waitUntil(chat, () => chat.unsummarized === 0 && chat.backlog() <= chat.pool, Infinity))) throw fail("stopped");
-    };
     let done = 0;
     try {
+      // Read back once, before the run: the run writes to this one Chat, and a failed write ends it.
+      // Running the import again resumes from the last write that landed.
+      const chat = await this.writer(identity);
+      const fail = (what: string) => new Error(this.disposed ? "stopped" : `${what}: ${chat.failures} summaries keep failing; run the import again to resume`);
+      // Like a live chat whose summaries keep up: a summary's view stops at the first unsummarized line,
+      // so racing ahead would cut its context (a tool result would lose its call).
+      const keepUp = async () => {
+        if (!(await this.summarizer.waitUntil(chat, () => chat.unsummarized === 0 && chat.backlog() <= chat.pool, Infinity))) throw fail("stopped");
+      };
       for (const source of sources) {
-        if (source.startsWith("thr_")) await this.logEvents(identity, source, [...LOGGED_TYPES], keepUp);
+        if (source.startsWith("thr_")) await this.logEvents(chat, identity, source, [...LOGGED_TYPES], keepUp);
         else await this.importFile(chat, source, keepUp);
         this.update(identity, { import: { sources, done: ++done, error: null } });
       }
@@ -478,8 +499,6 @@ export class MemoryService {
   /** Lines of `{kind, text, date}`; each record carries its line, so a second run skips what the first logged. */
   private async importFile(chat: Chat, file: string, before: () => Promise<void>): Promise<void> {
     const stream = `import:${file}`;
-    // A run a failed write stopped is read back first, so running the import again resumes it.
-    if (chat.damaged) chat.reload();
     const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
     for (let n = chat.resumeAt(stream) ?? 0; n < lines.length; n++) {
       const { kind, text, date } = JSON.parse(lines[n]);

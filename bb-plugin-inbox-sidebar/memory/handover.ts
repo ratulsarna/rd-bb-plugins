@@ -62,6 +62,22 @@ const working = ({ activity: a }: ListEntry) => a.activeWorkflowCount + a.active
 const takenWith = (id: string) => (t: ListEntry) =>
   t.parentThreadId === id || t.lifecycleOwnerThreadId === id || (t.sourceThreadId === id && t.visibility === "hidden");
 
+/** Every thread bb's archive of `old` reaches through the links above, nearest first. */
+function cascade(all: ListEntry[], old: string): ListEntry[] {
+  const out: ListEntry[] = [];
+  const seen = new Set([old]);
+  for (let parents = [old]; parents.length > 0; ) {
+    const taken = all.filter((t) => !seen.has(t.id) && parents.some((id) => takenWith(id)(t)));
+    for (const t of taken) seen.add(t.id);
+    out.push(...taken);
+    parents = taken.map((t) => t.id);
+  }
+  return out;
+}
+
+/** Where a thread was when its owner was looked up. */
+const place = (t: ListEntry) => `${t.projectId} ${t.environmentId}`;
+
 /**
  * Null when archiving the old thread is safe now, else why not. bb's archive walks the links above,
  * through archived threads too: it archives each live one and stops any archived one still running.
@@ -73,41 +89,52 @@ async function oldBusy(svc: MemoryService, identity: string, old: string, own: b
   const sdk = svc.bb.sdk.threads;
   // List entries carry the activity counters and the links; `get` has neither. Every project, and
   // archived threads too (no `archived` filter), since the archive walks through both.
-  const all = await sdk.list({ includeHidden: true });
+  const list = () => sdk.list({ includeHidden: true });
+  // Owners first: their lookups wait on the network, and a thread may start work meanwhile.
+  const judged = new Map<string, string>();
+  if (own) {
+    const all = await list();
+    const projectId = all.find((t) => t.id === old)?.projectId;
+    // Without the old thread there is nothing to judge: the check below finds it busy.
+    if (projectId !== undefined) {
+      for (const t of cascade(all, old)) {
+        if (t.archivedAt !== null) continue;
+        const beyond = await outside(svc, identity, old, projectId, t);
+        if (beyond) return beyond;
+        judged.set(t.id, place(t));
+      }
+    }
+  }
+  // Then every activity check on a fresh list, with nothing to wait for in between.
+  const all = await list();
   const root = all.find((t) => t.id === old);
   if (!root || root.archivedAt !== null || !settled(root.status) || working(root)) return new Busy("The conversation is busy");
   // A goal keeps the chat going on its own; waiting 30 seconds will not end it.
   if (root.activity.activeGoalCount > 0) return new Busy("The main chat has an active goal", true);
   const now = Date.now();
-  const seen = new Set([old]);
-  for (let parents = [old]; parents.length > 0; ) {
-    const taken = parents.flatMap((id) => all.filter(takenWith(id))).filter((t) => !seen.has(t.id));
-    for (const t of taken) {
-      seen.add(t.id);
-      if (now - t.updatedAt < svc.timing.quietMs) return new Busy(`Child ${t.id} just changed`);
-      if (t.archivedAt !== null) {
-        // The archive stops an archived thread that still runs, and passes through any other.
-        if (t.status === "active" || working(t)) return new Busy(`Child ${t.id} still runs`);
-        continue;
-      }
-      if (!settled(t.status)) return new Busy(`Child ${t.id} is ${t.status}`);
-      if (t.activity.activeGoalCount > 0) return new Busy(`Child ${t.id} has an active goal`, true);
-      if (t.queuedWork === "failed") return new Busy(`Child ${t.id} has failed queued messages`, true);
-      if (working(t) || t.queuedWork !== "none") return new Busy(`Child ${t.id} still has work`);
-      const beyond = own ? await outside(svc, identity, root, t) : null;
-      if (beyond) return beyond;
+  for (const t of cascade(all, old)) {
+    if (now - t.updatedAt < svc.timing.quietMs) return new Busy(`Child ${t.id} just changed`);
+    if (t.archivedAt !== null) {
+      // The archive stops an archived thread that still runs, and passes through any other.
+      if (t.status === "active" || working(t)) return new Busy(`Child ${t.id} still runs`);
+      continue;
     }
-    parents = taken.map((t) => t.id);
+    if (!settled(t.status)) return new Busy(`Child ${t.id} is ${t.status}`);
+    if (t.activity.activeGoalCount > 0) return new Busy(`Child ${t.id} has an active goal`, true);
+    if (t.queuedWork === "failed") return new Busy(`Child ${t.id} has failed queued messages`, true);
+    if (working(t) || t.queuedWork !== "none") return new Busy(`Child ${t.id} still has work`);
+    // New since the owners were looked up, or moved: look again on the next try.
+    if (own && judged.get(t.id) !== place(t)) return new Busy(`Child ${t.id} just changed`);
   }
   const rows = await sdk.queuedMessages.list({ threadId: old });
   if (rows.length > 0) return new Busy(`Messages are queued on ${old}: ${rows.map((r) => r.id).join(", ")}`, true);
   return null;
 }
 
-/** Why archiving `t` along with `root` would reach past this assistant, else null. */
-async function outside(svc: MemoryService, identity: string, root: ListEntry, t: ListEntry): Promise<Busy | null> {
-  const takes = `archiving ${root.id} would archive it`;
-  if (t.projectId !== root.projectId) return new Busy(`Child ${t.id} is in another project; ${takes}`, true);
+/** Why archiving `t` along with `old`, in `projectId`, would reach past this assistant, else null. */
+async function outside(svc: MemoryService, identity: string, old: string, projectId: string, t: ListEntry): Promise<Busy | null> {
+  const takes = `archiving ${old} would archive it`;
+  if (t.projectId !== projectId) return new Busy(`Child ${t.id} is in another project; ${takes}`, true);
   // A child working elsewhere, as in a repository worktree, is in no assistant's home.
   if (!t.environmentId) return null;
   const owner = await svc.identityOf(t.environmentId);
