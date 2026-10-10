@@ -259,6 +259,14 @@ describe("an obstacle after the spawn", () => {
         return w.environments.get(environmentId)!;
       });
     }, /Child thr_c just changed\. Archive it when that work is done/],
+    // Held, so it waits as a queued row; it lands after the last check read the queue.
+    ["a message arrives after the last queue read", {}, ({ w }) => {
+      let reads = 0;
+      w.taps.queueRead = (threadId) => {
+        // After the spawn, the first read moves held messages and the second is the last check's.
+        if (threadId === "thr_main" && w.threads.has("thr_new1") && ++reads === 2) w.queue("thr_main", { content: [{ type: "text", text: "late", mentions: [] }] });
+      };
+    }, /A message just arrived on thr_main\. Archive it when that work is done/],
     ["the archive call fails", {}, ({ w }) => w.harness.sdk.stub("threads.archive", async () => { throw new Error("archive refused"); }), /kept live: archive refused\. Archive it to resume rotation\./],
   ])("stops when %s: the old thread stays live, the warning says what to do, nothing retries", async (_name, options, arrange, warning) => {
     const r = await ready(options, { runnableMs: 100, retryMs: 50 });

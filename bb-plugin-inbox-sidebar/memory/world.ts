@@ -34,7 +34,7 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
   const automations = [{ automation: { id: "beat", projectId: "fleet", name: "heartbeat", execution: { mode: "agent", targetThreadId: "thr_main" } } }];
   const failures: { update?: Error; events?: Error } = {};
   /** Runs on each events read, before it answers: a test can make something happen mid-read. */
-  const taps: { events?: (threadId: string) => void | Promise<void>; get?: (threadId: string) => void | Promise<void>; spawned?: (threadId: string) => void } = {};
+  const taps: { events?: (threadId: string) => void | Promise<void>; get?: (threadId: string) => void | Promise<void>; spawned?: (threadId: string) => void; queueRead?: (threadId: string) => void } = {};
   let seq = 0;
   let spawned = 0;
   let rowIds = 0;
@@ -96,7 +96,12 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
           [...threads.values()]
             .filter((t) => t.deletedAt === null && (archived === undefined || archived === (t.archivedAt !== null)) && (includeHidden || t.visibility === "visible"))
             .filter((t) => (projectId === undefined || t.projectId === projectId) && (parentThreadId !== undefined ? t.parentThreadId === parentThreadId : hasParent !== false || t.parentThreadId === null))
-            .map((t) => structuredClone(t)),
+            // Like bb: queued work comes from the thread's queued rows.
+            .map((t) => {
+              const rows = queued.get(t.id) ?? [];
+              const work = rows.length === 0 ? t.queuedWork : rows.some((r) => r.failureReason !== null) ? "failed" : "waiting";
+              return { ...structuredClone(t), queuedWork: work };
+            }),
         events: {
           list: async ({ threadId, types, afterSeq, order, limit }) => {
             if (failures.events) throw failures.events;
@@ -118,7 +123,11 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
           return {};
         },
         queuedMessages: {
-          list: async ({ threadId }) => structuredClone(queued.get(threadId) ?? []),
+          list: async ({ threadId }) => {
+            const rows = structuredClone(queued.get(threadId) ?? []);
+            taps.queueRead?.(threadId);
+            return rows;
+          },
           create: async ({ threadId, input, ...rest }) => queue(threadId, { content: input, waitingOn: null, ...rest } as Partial<QueueEntry>),
           delete: async ({ threadId, queuedMessageId }) => {
             queued.set(threadId, (queued.get(threadId) ?? []).filter((r) => r.id !== queuedMessageId));

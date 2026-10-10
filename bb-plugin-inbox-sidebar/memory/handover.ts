@@ -128,6 +128,8 @@ async function oldBusy(svc: MemoryService, identity: string, old: string, own: b
     if (own && judged.get(t.id) !== place(t)) return new Busy(`Child ${t.id} just changed`);
   }
   if (rows.length > 0) return new Busy(`Messages are queued on ${old}: ${rows.map((r) => r.id).join(", ")}`, true);
+  // A message held after the queue was read waits there too, and the archive would drop it.
+  if (root.queuedWork !== "none") return new Busy(`A message just arrived on ${old}`);
   return null;
 }
 
