@@ -6,7 +6,7 @@ import type { spawn } from "node:child_process";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { assistantConversationContext } from "../lib/assistant-conversation";
 import { Busy, handover } from "./handover";
-import { type EventRow, LOGGED_TYPES, recordsOf } from "./history";
+import { type EventRow, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
 import { dirName, identities, KEPT_WARNINGS, type MemoryState, readState, writeState } from "./state";
 import { Summarizer } from "./summarize";
 import { Chat, KINDS } from "./tree";
@@ -394,7 +394,7 @@ export class MemoryService {
   }
 
   date(identity: string, id: number): string {
-    return this.existing(identity).date(id);
+    return spokenDate(this.existing(identity).date(id));
   }
 
   status(identity: string): string {

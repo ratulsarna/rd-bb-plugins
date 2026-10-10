@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
-import { type EventRow, recordsOf } from "./history";
+import { type EventRow, recordsOf, spokenDate } from "./history";
 import { Chat } from "./tree";
 
 let seq = 0;
@@ -129,4 +129,11 @@ it("logs a huge tool output as an echo the tree clips head and tail", () => {
   expect(echo.text).toMatch(/characters clipped/);
   expect(echo.date).toMatch(/^2026-09-01T\d\d:\d\d:00[+-]\d\d:\d\d$/);
   chat.close();
+});
+
+it("says a date with its zone in words before the stored value, and leaves one without an offset as stored", () => {
+  expect(spokenDate("2026-10-10T15:42:49+00:00")).toBe("2026-10-10 15:42 UTC (2026-10-10T15:42:49+00:00)");
+  expect(spokenDate("2026-08-17T10:30:00+05:30")).toBe("2026-08-17 10:30 UTC+05:30 (2026-08-17T10:30:00+05:30)");
+  expect(spokenDate("2026-03-01T08:05:00-04:00")).toBe("2026-03-01 08:05 UTC-04:00 (2026-03-01T08:05:00-04:00)");
+  expect(spokenDate("2026-08-01")).toBe("2026-08-01");
 });

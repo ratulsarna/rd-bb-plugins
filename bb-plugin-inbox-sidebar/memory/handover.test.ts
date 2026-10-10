@@ -4,7 +4,7 @@ import { makeMessageDispatchHookContext } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import plugin from "../server";
 import { Busy, handover } from "./handover";
-import { localIso } from "./history";
+import { localIso, spokenDate } from "./history";
 import type { Timing } from "./service";
 import { FAST, IDENTITY, settle, world } from "./world";
 
@@ -367,7 +367,7 @@ describe("through the plugin", () => {
     await w.harness.behavior.emitThreadEvent("experimental_thread.events", { thread: w.threads.get("thr_main")!, sequence: 2 });
     await settle();
     expect(await w.harness.behavior.runCli(["recall", "0", "2"], { threadId: "thr_main" })).toMatchObject({ exitCode: 0, stdout: "0+1|user: hello\n1+1|unii: hi\n" });
-    expect(await w.harness.behavior.runCli(["date", "1", "--assistant", "thr_main"])).toMatchObject({ exitCode: 0, stdout: `${localIso(w.events.get("thr_main")!.at(-1)!.createdAt)}\n` });
+    expect(await w.harness.behavior.runCli(["date", "1", "--assistant", "thr_main"])).toMatchObject({ exitCode: 0, stdout: `${spokenDate(localIso(w.events.get("thr_main")!.at(-1)!.createdAt))}\n` });
     expect(await w.harness.behavior.runCli(["recall", "0"])).toMatchObject({ exitCode: 1, stderr: expect.stringMatching(/--assistant/) });
     expect(await w.harness.behavior.runCli(["recall", "5", "1"], { threadId: "thr_main" })).toMatchObject({ exitCode: 1, stderr: expect.stringMatching(/no line 5\+1/) });
   });

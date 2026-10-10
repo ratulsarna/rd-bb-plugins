@@ -117,7 +117,7 @@ reaches it.
 | `bb assistants memory off <thread-id>` | Stop logging and rotating. The log, `recall` and `date` stay. |
 | `bb assistants memory status <thread-id> [--clear]` | On or off, main chat, counts, view size, summary progress, last context use, import progress, warnings. `--clear` clears warnings. |
 | `bb assistants recall <id> [n]` | Open line `id+n` of the view into its two halves; `n = 1` gives the message whole. |
-| `bb assistants date <id>` | The date and time of message `id`. |
+| `bb assistants date <id>` | The date and time of message `id`, zone named in words first (`2026-08-17 10:30 UTC+05:30 (2026-08-17T10:30:00+05:30)`), so a model converts it to the user's time zone. |
 | `bb assistants rotate <thread-id>` | Rotate the main chat now; waits up to a minute for summaries. |
 | `bb assistants import <thread-id> <source>...` | Before memory is first on: seed the log from old threads (`thr_…`) or absolute JSONL paths on the server (`{kind, text, date}` per line). Runs in the background and resumes when run again. |
 

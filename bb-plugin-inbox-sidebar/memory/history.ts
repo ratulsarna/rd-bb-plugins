@@ -37,6 +37,20 @@ export function localIso(ms: number): string {
   return `${local}${offset < 0 ? "-" : "+"}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
+const STORED = /^(\d{4}-\d\d-\d\d)T(\d\d:\d\d)(?::\d\d(?:\.\d+)?)?(Z|[+-]\d\d:\d\d)$/;
+
+/**
+ * A stored date as `bb assistants date` says it: the zone in words first, so a small model does not
+ * misread the offset, then the stored value. A date without a readable offset is given as stored.
+ */
+export function spokenDate(stored: string): string {
+  const parts = STORED.exec(stored);
+  if (!parts) return stored;
+  const [, day, time, offset] = parts;
+  const zone = offset === "Z" || offset.slice(1) === "00:00" ? "UTC" : `UTC${offset}`;
+  return `${day} ${time} ${zone} (${stored})`;
+}
+
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
 
 function inputText(blocks: any[]): string {

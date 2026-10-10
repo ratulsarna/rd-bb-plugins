@@ -71,7 +71,9 @@ stay in this session as normal messages. ${view("you, the agent,")}
 Two commands open it, run through bash:
 - \`bb assistants recall <id> <n>\` opens line id+n into the two lines it was
   made from; \`bb assistants recall <id> 1\` gives message id whole
-- \`bb assistants date <id>\` gives the date and time of message id
+- \`bb assistants date <id>\` gives the date and time of message id. Times are
+  in the zone the answer names (often UTC). Convert to the user's own time zone
+  before you tell them a time.
 
 To zoom a line is to recall it.
 
