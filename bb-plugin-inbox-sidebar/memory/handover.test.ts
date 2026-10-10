@@ -69,6 +69,16 @@ describe("the safe moment", () => {
   });
 });
 
+it("refuses another root in the same home without logging it", async () => {
+  const { w, svc, calls } = await ready();
+  w.thread("thr_other");
+  w.say("thr_other", "not for memory");
+  const before = svc.chat(IDENTITY).msgs.map((m) => m.text);
+  await expect(handover(svc, { identity: IDENTITY, oldThreadId: "thr_other" })).rejects.toThrow(/not the main chat/);
+  expect(svc.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(before);
+  expect(calls("threads.spawn")).toEqual([]);
+});
+
 it("moves the chat: main, automations and held messages go to the new thread, then the old one is archived", async () => {
   const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000 });
   const moving = rotate();

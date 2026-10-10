@@ -138,6 +138,8 @@ export async function handover(
 ): Promise<{ newThreadId: string; warning?: string }> {
   if (svc.ops.has(identity)) throw new Busy("A conversation change for this assistant is already running");
   const op = (async () => {
+    // Before any logging: another root in the same home must not enter this assistant's memory.
+    if (svc.state(identity).main !== old) throw new Busy(`${old} is not the main chat`, true);
     // Before the hold, so a wait for summaries never holds the user's messages.
     await svc.catchUp(identity, old);
     if (!(await svc.readyWithin(identity, svc.timing.readyCapMs))) throw new Busy(svc.notReady(identity));
