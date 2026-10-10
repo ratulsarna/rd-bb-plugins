@@ -5,9 +5,9 @@ import path from "node:path";
 import type { spawn } from "node:child_process";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { assistantConversationContext } from "../lib/assistant-conversation";
-import { Busy, handover, resume } from "./handover";
+import { Busy, handover } from "./handover";
 import { type EventRow, LOGGED_TYPES, recordsOf } from "./history";
-import { dirName, identities, KEPT_WARNINGS, type MemoryState, readState, unfinished, writeState } from "./state";
+import { dirName, identities, KEPT_WARNINGS, type MemoryState, readState, writeState } from "./state";
 import { Summarizer } from "./summarize";
 import { Chat, KINDS } from "./tree";
 
@@ -29,7 +29,7 @@ export const TIMING = {
   pollMs: 1000,
   /** A child that changed this recently may still be reporting to its parent (bb batches reports for 2 s). */
   quietMs: 5000,
-  /** A rotation or resume a busy moment refused tries again after this. */
+  /** An automatic rotation a passing obstacle refused tries again after this. */
   retryMs: 30_000,
 };
 export type Timing = typeof TIMING;
@@ -41,7 +41,7 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 export class MemoryService {
   /** Old threads mid-handover: their dispatches wait, so nothing starts there while the chat moves. */
   readonly holds = new Set<string>();
-  /** The one running handover or resume per identity. */
+  /** The one running handover per identity. */
   readonly ops = new Map<string, Promise<unknown>>();
   readonly retries = new Map<string, NodeJS.Timeout>();
   readonly summarizer: Summarizer;
@@ -51,7 +51,7 @@ export class MemoryService {
   private readonly chats = new Map<string, Chat>();
   /** Appends per identity, one after another. */
   private readonly logging = new Map<string, Promise<void>>();
-  /** Per thread, the last event fully logged. */
+  /** Per identity and thread, the last event fully logged. */
   private readonly cursors = new Map<string, number>();
   /** Readiness waits by thread; a new turn there cancels its wait. */
   private readonly waits = new Map<string, AbortController>();
@@ -123,11 +123,10 @@ export class MemoryService {
     this.summarizer.pump();
   }
 
-  /** Threads whose events go into this identity's log: the main chat while on, and an old one mid-handover. */
+  /** Threads whose events go into this identity's log while it is on: the main chat and earlier ones still live. */
   private logged(identity: string): string[] {
     const s = this.state(identity);
-    const h = unfinished(s);
-    return [...(s.on && s.main ? [s.main] : []), ...(h ? [h.old] : [])];
+    return s.on && s.main ? [s.main, ...s.previous] : [];
   }
 
   private loggerOf(threadId: string): string | undefined {
@@ -136,10 +135,29 @@ export class MemoryService {
 
   async start(): Promise<void> {
     for (const identity of identities(this.root)) {
+      for (const threadId of this.state(identity).previous) {
+        const thread = await this.bb.sdk.threads.get({ threadId }).catch(() => null);
+        if (thread?.archivedAt != null) await this.drop(identity, threadId);
+      }
       for (const threadId of this.logged(identity)) {
         await this.catchUp(identity, threadId).catch((e) => this.bb.log.warn(`memory ${identity}: ${message(e)}`));
       }
-      if (unfinished(this.state(identity))) void resume(this, identity);
+    }
+  }
+
+  /** An archived earlier chat leaves the log after its last events are in, never before. */
+  private async drop(identity: string, threadId: string): Promise<void> {
+    try {
+      await this.catchUp(identity, threadId);
+      this.update(identity, { previous: this.state(identity).previous.filter((id) => id !== threadId) });
+    } catch (error) {
+      this.bb.log.warn(`memory ${identity}: ${threadId} stays tracked until its last events are logged: ${message(error)}`);
+    }
+  }
+
+  async onArchived(threadId: string): Promise<void> {
+    for (const identity of this.states.keys()) {
+      if (this.state(identity).previous.includes(threadId)) await this.drop(identity, threadId);
     }
   }
 
@@ -158,7 +176,8 @@ export class MemoryService {
     const stream = `thread:${threadId}`;
     // From the resume point itself: a crash may have cut its records short, and the tree skips the ones it has.
     const resumeAt = chat.resumeAt(stream);
-    let after = this.cursors.get(threadId) ?? (resumeAt === undefined ? undefined : resumeAt - 1);
+    const cursor = `${identity} ${threadId}`;
+    let after = this.cursors.get(cursor) ?? (resumeAt === undefined ? undefined : resumeAt - 1);
     for (;;) {
       const rows = (await this.bb.sdk.threads.events.list({
         threadId,
@@ -176,7 +195,7 @@ export class MemoryService {
           for (const r of recordsOf(row)) chat.append(r.kind, r.text, r.date, src);
         }
         after = row.seq;
-        this.cursors.set(threadId, row.seq);
+        this.cursors.set(cursor, row.seq);
       }
       this.summarizer.pump();
       if (rows.length < PAGE) return;
@@ -200,10 +219,10 @@ export class MemoryService {
   }
 
   /**
-   * One timer per identity: an unfinished handover resumes, and a rotation a busy moment refused tries
-   * again while the main chat still sits idle after the same completed `turn`, with no lifecycle event.
+   * One timer per identity: an automatic rotation a passing obstacle refused tries again while the main
+   * chat still sits idle after the same completed `turn`, with no lifecycle event to wake it.
    */
-  retryLater(identity: string, turn?: number): void {
+  private retryLater(identity: string, turn: number): void {
     if (this.disposed || this.retries.has(identity)) return;
     const timer = setTimeout(() => {
       this.retries.delete(identity);
@@ -212,18 +231,16 @@ export class MemoryService {
     this.retries.set(identity, timer);
   }
 
-  clearRetry(identity: string): void {
-    clearTimeout(this.retries.get(identity));
-    this.retries.delete(identity);
-  }
-
-  private async retry(identity: string, turn?: number): Promise<void> {
-    const s = this.state(identity);
-    if (unfinished(s)) return resume(this, identity);
-    if (turn === undefined || !s.on || !s.main) return;
-    // A turn running again ends at an idle, which tries again by itself.
-    if ((await this.bb.sdk.threads.get({ threadId: s.main })).status !== "idle") return;
-    await this.maybeRotate(identity, s.main, turn);
+  private async retry(identity: string, turn: number): Promise<void> {
+    const { on, main } = this.state(identity);
+    if (!on || !main) return;
+    try {
+      // A turn running again ends at an idle, which tries again by itself.
+      if ((await this.bb.sdk.threads.get({ threadId: main })).status !== "idle") return;
+    } catch (error) {
+      return this.bb.log.warn(`memory ${identity}: ${message(error)}`);
+    }
+    await this.maybeRotate(identity, main, turn);
   }
 
   onEvents(threadId: string): void {
@@ -232,10 +249,6 @@ export class MemoryService {
   }
 
   async onIdle(threadId: string): Promise<void> {
-    for (const identity of this.states.keys()) {
-      const h = unfinished(this.state(identity));
-      if (h && (h.old === threadId || h.new === threadId)) void resume(this, identity);
-    }
     const identity = this.loggerOf(threadId);
     if (!identity) return;
     try {
@@ -248,18 +261,15 @@ export class MemoryService {
 
   onActive(threadId: string): void {
     this.waits.get(threadId)?.abort();
-    for (const identity of this.states.keys()) {
-      if (unfinished(this.state(identity))?.new === threadId) void resume(this, identity);
-    }
   }
 
   /**
    * At a completed turn's idle: rotate once the context passes the threshold and the view is ready.
-   * With `turn`, only while that is still the last completed turn.
+   * With `turn`, only while that is still the last completed turn. Never throws.
    */
   async maybeRotate(identity: string, threadId: string, turn?: number): Promise<void> {
     const s = this.state(identity);
-    if (!s.on || s.main !== threadId || unfinished(s) || this.waits.has(threadId)) return;
+    if (!s.on || s.main !== threadId || this.waits.has(threadId)) return;
     // Registered before the first read, so a turn that starts during any of them cancels this attempt.
     const wait = new AbortController();
     this.waits.set(threadId, wait);
@@ -268,22 +278,24 @@ export class MemoryService {
     try {
       [last] = (await sdk.events.list({ threadId, types: ["turn/completed"], order: "desc", limit: "1" })) as unknown as EventRow[];
       if (last?.data?.status !== "completed" || (turn !== undefined && last.seq !== turn)) return;
-      // A session whose only turn is its bootstrap has nothing to carry on; rotating it would loop.
-      const turns = await sdk.events.list({ threadId, types: ["client/turn/requested"], order: "asc", limit: "2" });
-      if (turns.length < 2) return;
+      // A new session whose only request is its hidden bootstrap has nothing to carry on; rotating it would loop.
+      const requests = (await sdk.events.list({ threadId, types: ["client/turn/requested"], order: "asc", limit: "2" })) as unknown as EventRow[];
+      if (requests.length < 2 && requests.every((r) => recordsOf(r).length === 0)) return;
       const { usage } = await sdk.context({ threadId });
       const used = usage ? usage.usedTokens / usage.modelContextWindow : Number.NaN;
       if (!Number.isFinite(used)) return;
       this.usage.set(identity, used);
       if (used < this.settings.rotateAtPercent / 100) return;
       if (!(await this.readyWithin(identity, this.timing.readinessMs, wait.signal))) {
-        if (!wait.signal.aborted && !this.disposed) this.warn(identity, "rotation skipped: summaries not ready");
-        return;
+        if (wait.signal.aborted || this.disposed) return;
+        this.warn(identity, "rotation skipped: summaries not ready");
+        return this.retryLater(identity, last.seq);
       }
       if (wait.signal.aborted) return;
       await handover(this, { identity, oldThreadId: threadId });
     } catch (error) {
       if (!(error instanceof Busy)) return this.warn(identity, `rotation failed: ${message(error)}`);
+      if (error.lasting) return this.warn(identity, `rotation waits: ${error.message}`);
       this.bb.log.info(`memory ${identity}: rotation waits: ${error.message}`);
       if (last && !wait.signal.aborted) this.retryLater(identity, last.seq);
     } finally {
@@ -301,18 +313,8 @@ export class MemoryService {
     return identity;
   }
 
-  /**
-   * Stops logging and rotating. A handover still waiting on a new thread that never ran is dropped, so a
-   * dead successor cannot hold the assistant: the old thread is the main chat again. One that is running
-   * finishes.
-   */
+  /** Stops logging and rotating; the log, `recall` and `date` stay. */
   off(identity: string): void {
-    const h = unfinished(this.state(identity));
-    if (h?.step === "spawned" && !this.ops.has(identity)) {
-      this.clearRetry(identity);
-      this.update(identity, { on: false, main: h.old, handover: null });
-      this.warn(identity, `Handover to ${h.new} dropped; ${h.old} is the main chat again and ${h.new} is left as it is`);
-    }
     const { main } = this.update(identity, { on: false });
     if (main) this.waits.get(main)?.abort();
   }
@@ -335,7 +337,6 @@ export class MemoryService {
     const chat = this.existing(identity);
     const { view, lines } = chat.viewBytes();
     const used = this.usage.get(identity);
-    const h = unfinished(s);
     return [
       `memory: ${s.on ? "on" : "off"}`,
       `main: ${s.main ?? "-"}`,
@@ -344,7 +345,7 @@ export class MemoryService {
       `unsummarized: ${chat.unsummarized}, in flight: ${chat.inFlight}, failed: ${chat.failures}`,
       `last usage: ${used === undefined ? "-" : `${Math.round(used * 100)}%`}`,
       ...(s.import ? [`import: ${s.import.done}/${s.import.sources.length} sources${s.import.error ? `, stopped: ${s.import.error}` : ""}`] : []),
-      ...(h ? [`handover: ${h.old} -> ${h.new} (${h.step})`] : []),
+      ...(s.previous.length ? [`kept live: ${s.previous.join(", ")} (rotation waits until archived)`] : []),
       ...(s.warnings.length ? ["warnings:", ...s.warnings.map((w) => `  ${new Date(w.at).toISOString()} ${w.text}`)] : []),
     ].join("\n");
   }
@@ -393,6 +394,8 @@ export class MemoryService {
   /** Lines of `{kind, text, date}`; each record carries its line, so a second run skips what the first logged. */
   private async importFile(chat: Chat, file: string, before: () => Promise<void>): Promise<void> {
     const stream = `import:${file}`;
+    // A run a failed write stopped is read back first, so running the import again resumes it.
+    if (chat.damaged) chat.reload();
     const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
     for (let n = chat.resumeAt(stream) ?? 0; n < lines.length; n++) {
       const { kind, text, date } = JSON.parse(lines[n]);

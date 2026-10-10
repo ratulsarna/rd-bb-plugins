@@ -31,6 +31,7 @@ const target = (w: ReturnType<typeof world>) => w.automations[0].automation.exec
 describe("the safe moment", () => {
   it.each([
     ["the old thread is running", (w: ReturnType<typeof world>) => status(w, "thr_main", "active")],
+    ["the old thread runs a background task", (w: ReturnType<typeof world>) => void (w.threads.get("thr_main")!.activity.activeBackgroundAgentCount = 1)],
     ["a child is pending", (w: ReturnType<typeof world>) => w.thread("thr_c", { parentThreadId: "thr_main", status: "pending" })],
     ["an idle child has an active grandchild", (w: ReturnType<typeof world>) => {
       w.thread("thr_c", { parentThreadId: "thr_main" });
@@ -42,7 +43,6 @@ describe("the safe moment", () => {
     }],
     ["a child changed 2 seconds ago", (w: ReturnType<typeof world>) => w.thread("thr_c", { parentThreadId: "thr_main", updatedAt: Date.now() - 2000 })],
     ["a message is queued on the old thread", (w: ReturnType<typeof world>) => w.queue("thr_main")],
-    ["the old thread runs a background task", (w: ReturnType<typeof world>) => void (w.threads.get("thr_main")!.activity.activeBackgroundAgentCount = 1)],
   ])("refuses with nothing changed when %s", async (_name, arrange) => {
     const { w, svc, rotate, calls } = await ready({}, { quietMs: 5000 });
     arrange(w);
@@ -50,87 +50,37 @@ describe("the safe moment", () => {
     expect(calls("threads.spawn")).toEqual([]);
     expect(calls("threads.archive")).toEqual([]);
     expect(svc.holds.size).toBe(0);
-    expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_main", handover: null });
+    expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_main", previous: [] });
   });
 
-  it("refuses while another handover of the same assistant is unfinished", async () => {
-    const { svc, rotate, calls } = await ready();
-    svc.update(IDENTITY, { handover: { old: "thr_x", new: "thr_y", step: "spawned", at: 0 } });
-    await expect(rotate()).rejects.toThrow(/not finished/);
-    expect(calls("threads.spawn")).toEqual([]);
+  it("refuses a second handover of the same assistant while one runs", async () => {
+    const { w, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000 });
+    const first = rotate();
+    await settle();
+    await expect(rotate()).rejects.toThrow(/already running/);
+    status(w, "thr_new1", "idle");
+    await first;
+    expect(calls("threads.spawn")).toHaveLength(1);
   });
 });
 
-it("moves automations only once the new thread runs, and resumes when a slow one becomes active", async () => {
-  const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 40 });
-  expect((await rotate()).warning).toMatch(/thr_new1 has not started/);
-  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new1", handover: { step: "spawned" } });
-  expect(target(w)).toBe("thr_main");
-  expect(calls("threads.archive")).toEqual([]);
-  expect(svc.holds.size).toBe(0);
-
-  status(w, "thr_new1", "active");
-  svc.onActive("thr_new1");
-  await settle();
-  expect(target(w)).toBe("thr_new1");
-  expect(calls("threads.archive")).toEqual([[{ threadId: "thr_main" }]]);
-  expect(svc.state(IDENTITY).handover!.step).toBe("done");
-});
-
-it("keeps the old thread live and logged while an automation cannot follow, and a restart finishes the move", async () => {
-  const { w, svc, rotate, calls } = await ready();
-  w.failures.update = new Error("target not runnable");
-  expect((await rotate()).warning).toMatch(/heartbeat: target not runnable/);
-  expect(svc.state(IDENTITY).handover!.step).toBe("spawned");
-  expect(calls("threads.archive")).toEqual([]);
-  // The automation still runs against the old thread; what it says there is still memory.
-  w.say("thr_main", "heartbeat ran");
-  svc.onEvents("thr_main");
-  await settle();
-  expect(svc.chat(IDENTITY).msgs.at(-1)!.text).toBe("heartbeat ran");
-
-  delete w.failures.update;
-  svc.dispose();
-  const restarted = w.service();
-  await restarted.start();
-  await settle();
-  expect(target(w)).toBe("thr_new1");
-  expect(calls("threads.archive")).toEqual([[{ threadId: "thr_main" }]]);
-  expect(restarted.state(IDENTITY).handover!.step).toBe("done");
-});
-
-it("moves a plain message that arrived during the hold before archiving, which would drop it", async () => {
+it("moves the chat: main, automations and held messages go to the new thread, then the old one is archived", async () => {
   const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000 });
   const moving = rotate();
   await settle();
   expect(svc.holds.has("thr_main")).toBe(true);
-  const plain = w.queue("thr_main", {
-    content: [{ type: "text", text: "one more thing", mentions: [] }],
-    senderThreadId: "thr_side", model: "m-2", reasoningLevel: "low", permissionMode: "auto", serviceTier: "fast",
-  });
+  // Arrived during the hold: a plain message moves; its execution settings are the new thread's now.
+  w.queue("thr_main", { content: [{ type: "text", text: "one more thing", mentions: [] }], senderThreadId: "thr_side", model: "m-2" });
+  // The last words on the old thread, from a path the hold cannot stop, still reach the log.
+  w.reply("thr_main", "a late report");
   status(w, "thr_new1", "idle");
   expect(await moving).toEqual({ newThreadId: "thr_new1" });
-  expect(calls("threads.archive")).toHaveLength(1);
-  expect(w.queued.get("thr_new1")).toEqual([
-    expect.objectContaining({ content: plain.content, senderThreadId: "thr_side", model: "m-2", reasoningLevel: "low", permissionMode: "auto", serviceTier: "fast" }),
-  ]);
+  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new1", previous: [] });
+  expect(target(w)).toBe("thr_new1");
+  expect(calls("threads.archive")).toEqual([[{ threadId: "thr_main" }]]);
+  expect(calls("threads.queuedMessages.create")).toEqual([[{ threadId: "thr_new1", input: [{ type: "text", text: "one more thing", mentions: [] }], senderThreadId: "thr_side" }]]);
+  expect(svc.chat(IDENTITY).msgs.at(-1)!.text).toBe("a late report");
   expect(svc.holds.size).toBe(0);
-});
-
-it("keeps the old thread while a message it cannot move waits there, and archives once it is gone", async () => {
-  const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000, retryMs: 80 });
-  const moving = rotate();
-  await settle();
-  const system = w.queue("thr_main", { initiator: "system" });
-  status(w, "thr_new1", "idle");
-  expect((await moving).warning).toMatch(new RegExp(`cannot move: ${system.id}`));
-  expect(calls("threads.archive")).toEqual([]);
-  expect(svc.state(IDENTITY).handover!.step).toBe("spawned");
-  // Released, it went out on the old thread; the retry timer finishes the move.
-  w.queued.set("thr_main", []);
-  await settle(150);
-  expect(calls("threads.archive")).toHaveLength(1);
-  expect(svc.state(IDENTITY).handover!.step).toBe("done");
 });
 
 it("rotates an old thread whose last turn failed", async () => {
@@ -140,40 +90,92 @@ it("rotates an old thread whose last turn failed", async () => {
   expect(calls("threads.archive")).toHaveLength(1);
 });
 
-it("does not archive while a child that got a message during the hold runs, and archives on the timer after", async () => {
-  const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000, quietMs: 10, retryMs: 80 });
+describe("an obstacle after the spawn", () => {
+  type Ready = Awaited<ReturnType<typeof ready>>;
+  it.each<[string, Parameters<typeof world>[0], (r: Ready) => void, RegExp]>([
+    ["the new thread failed to start", { spawnStatus: "error" }, () => {}, /new conversation thr_new1 failed to start\. Archive it to resume rotation\./],
+    ["the new thread has not started in time", { spawnStatus: "starting" }, () => {}, /thr_new1 has not started in time\. Archive it/],
+    ["an automation cannot follow", {}, ({ w }) => void (w.failures.update = new Error("target not runnable")), /heartbeat: target not runnable\)\. Archive it, or move its automations, to resume rotation\./],
+    ["a child got work during the hold", { spawnStatus: "starting" }, ({ w }) => void setTimeout(() => {
+      w.thread("thr_child", { parentThreadId: "thr_main", status: "active" });
+      status(w, "thr_new1", "idle");
+    }, 10), /Child thr_child is active\. Archive it when that work is done/],
+    ["a held message cannot move", { spawnStatus: "starting" }, ({ w }) => void setTimeout(() => {
+      w.queue("thr_main", { failureReason: "provider down" });
+      status(w, "thr_new1", "idle");
+    }, 10), /Messages are queued on thr_main: q1\. Send or remove them, then archive it/],
+    ["the archive call fails", {}, ({ w }) => w.harness.sdk.stub("threads.archive", async () => { throw new Error("archive refused"); }), /kept live: archive refused\. Archive it to resume rotation\./],
+  ])("stops when %s: the old thread stays live, the warning says what to do, nothing retries", async (_name, options, arrange, warning) => {
+    const r = await ready(options, { runnableMs: 100, retryMs: 50 });
+    arrange(r);
+    const result = await r.rotate();
+    expect(result.newThreadId).toBe("thr_new1");
+    expect(result.warning).toMatch(new RegExp(`^Old conversation thr_main kept live: `));
+    expect(result.warning).toMatch(warning);
+    expect(r.svc.state(IDENTITY)).toMatchObject({ main: "thr_new1", previous: ["thr_main"] });
+    expect(r.svc.state(IDENTITY).warnings.at(-1)!.text).toBe(result.warning);
+    expect(r.svc.holds.size).toBe(0);
+    await settle(150);
+    expect(r.w.threads.get("thr_main")!.archivedAt).toBeNull();
+    expect(r.calls("threads.spawn")).toHaveLength(1);
+  });
+});
+
+describe("an old thread kept live", () => {
+  async function kept() {
+    const r = await ready();
+    r.w.failures.update = new Error("target not runnable");
+    await r.rotate();
+    return r;
+  }
+
+  it("is still logged, and holds rotation back with one warning until it is archived", async () => {
+    const { w, svc, calls } = await kept();
+    w.say("thr_main", "still here");
+    svc.onEvents("thr_main");
+    await settle();
+    expect(svc.chat(IDENTITY).msgs.at(-1)!.text).toBe("still here");
+
+    svc.clearWarnings(IDENTITY);
+    w.say("thr_new1", "one");
+    w.say("thr_new1", "two");
+    w.turnEnd("thr_new1");
+    w.usage.set("thr_new1", { usedTokens: 90, modelContextWindow: 100 });
+    await svc.onIdle("thr_new1");
+    await svc.onIdle("thr_new1");
+    expect(calls("threads.spawn")).toHaveLength(1);
+    expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual([
+      "rotation waits: Old conversation thr_main is still live from an earlier rotation. Archive it to resume rotation.",
+    ]);
+    await expect(handover(svc, { identity: IDENTITY, oldThreadId: "thr_new1" })).rejects.toThrow(/thr_main is still live/);
+  });
+
+  it("leaves the log when archived, only after its last events are in", async () => {
+    const { w, svc } = await kept();
+    w.say("thr_main", "last words");
+    w.threads.get("thr_main")!.archivedAt = Date.now();
+    w.failures.events = new Error("server busy");
+    await svc.onArchived("thr_main");
+    expect(svc.state(IDENTITY).previous).toEqual(["thr_main"]);
+    // The next start drains it instead.
+    delete w.failures.events;
+    svc.dispose();
+    const restarted = w.service();
+    await restarted.start();
+    expect(restarted.state(IDENTITY).previous).toEqual([]);
+    expect(restarted.chat(IDENTITY).msgs.at(-1)!.text).toBe("last words");
+  });
+});
+
+it("finishes a handover that memory off arrived in the middle of", async () => {
+  const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000 });
   const moving = rotate();
   await settle();
-  const child = w.thread("thr_child", { parentThreadId: "thr_main", status: "active" });
+  svc.off(IDENTITY);
   status(w, "thr_new1", "idle");
   await moving;
-  expect(calls("threads.archive")).toEqual([]);
-  expect(svc.state(IDENTITY).handover!.step).toBe("spawned");
-  child.status = "idle";
-  await settle(150);
+  expect(svc.state(IDENTITY)).toMatchObject({ on: false, main: "thr_new1", previous: [] });
   expect(calls("threads.archive")).toHaveLength(1);
-});
-
-it("stops waiting at once for a new thread that failed, and memory off gives the assistant its old chat back", async () => {
-  const { w, svc, rotate, calls } = await ready({ spawnStatus: "error" }, { runnableMs: 5000 });
-  const started = Date.now();
-  expect((await rotate()).warning).toMatch(/thr_new1 failed to start/);
-  expect(Date.now() - started).toBeLessThan(1000);
-  svc.off(IDENTITY);
-  expect(svc.state(IDENTITY)).toMatchObject({ on: false, main: "thr_main", handover: null });
-  expect(svc.state(IDENTITY).warnings.at(-1)!.text).toMatch(/Handover to thr_new1 dropped; thr_main is the main chat again/);
-  expect(calls("threads.archive")).toEqual([]);
-  expect(w.threads.get("thr_new1")!.archivedAt).toBeNull();
-});
-
-it("finishes a move a stuck automation held up on the retry timer, once the automation can follow", async () => {
-  const { w, svc, rotate } = await ready({}, { retryMs: 80 });
-  w.failures.update = new Error("target not runnable");
-  await rotate();
-  delete w.failures.update;
-  await settle(150);
-  expect(target(w)).toBe("thr_new1");
-  expect(svc.state(IDENTITY).handover!.step).toBe("done");
 });
 
 describe("a rotation someone asked for", () => {
@@ -201,74 +203,6 @@ describe("a rotation someone asked for", () => {
   });
 });
 
-it.each(["spawned", "archived"] as const)("finishes a handover a restart left at %s", async (step) => {
-  const { w, svc, calls } = await ready();
-  w.thread("thr_new1");
-  svc.update(IDENTITY, { main: "thr_new1", handover: { old: "thr_main", new: "thr_new1", step, at: 0 } });
-  if (step === "archived") w.threads.get("thr_main")!.archivedAt = 1;
-  else w.queue("thr_main");
-  svc.dispose();
-  const restarted = w.service();
-  await restarted.start();
-  await settle();
-  expect(restarted.state(IDENTITY).handover!.step).toBe("done");
-  expect(w.queued.get("thr_new1") ?? []).toHaveLength(step === "spawned" ? 1 : 0);
-  expect(calls("threads.archive")).toHaveLength(step === "spawned" ? 1 : 0);
-});
-
-it("does not start a second run when the new thread turns active while the first still waits for it", async () => {
-  const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000 });
-  const moving = rotate();
-  await settle();
-  w.queue("thr_main");
-  status(w, "thr_new1", "active");
-  svc.onActive("thr_new1");
-  await svc.onIdle("thr_new1");
-  await moving;
-  await settle();
-  expect(calls("threads.archive")).toHaveLength(1);
-  expect(w.queued.get("thr_new1")).toHaveLength(1);
-});
-
-it("does not archive an old thread whose child started after the first attempt, until the child is done", async () => {
-  const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 30, retryMs: 60 });
-  await rotate();
-  const child = w.thread("thr_child", { parentThreadId: "thr_main", status: "active" });
-  status(w, "thr_new1", "active");
-  svc.onActive("thr_new1");
-  await settle(100);
-  expect(calls("threads.archive")).toEqual([]);
-  expect(target(w)).toBe("thr_main");
-  child.status = "idle";
-  await settle(100);
-  expect(calls("threads.archive")).toEqual([[{ threadId: "thr_main" }]]);
-  expect(w.threads.get("thr_child")!.archivedAt).not.toBeNull();
-});
-
-it("finishes on the retry timer when only the quiet period refused, with no further lifecycle event", async () => {
-  const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 30, quietMs: 80, retryMs: 120 });
-  await rotate();
-  w.thread("thr_child", { parentThreadId: "thr_main", updatedAt: Date.now() });
-  status(w, "thr_new1", "idle");
-  await svc.onIdle("thr_new1");
-  await settle();
-  expect(calls("threads.archive")).toEqual([]);
-  await settle(200);
-  expect(calls("threads.archive")).toHaveLength(1);
-  expect(svc.state(IDENTITY).handover!.step).toBe("done");
-});
-
-it("finishes a handover that memory off arrived in the middle of", async () => {
-  const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000 });
-  const moving = rotate();
-  await settle();
-  svc.off(IDENTITY);
-  status(w, "thr_new1", "idle");
-  await moving;
-  expect(svc.state(IDENTITY)).toMatchObject({ on: false, main: "thr_new1", handover: { step: "done" } });
-  expect(calls("threads.archive")).toHaveLength(1);
-});
-
 describe("through the plugin", () => {
   async function loaded(options: Parameters<typeof world>[0] = {}) {
     const w = world(options);
@@ -294,6 +228,17 @@ describe("through the plugin", () => {
     expect(await dispatch("thr_main")).toEqual({ action: "proceed" });
     expect(w.harness.inspection.recheckCount).toBeGreaterThan(0);
     expect(w.queued.get("thr_new1")!.map((r) => r.content)).toEqual([[{ type: "text", text: "sent during the move", mentions: [] }]]);
+  });
+
+  it("resumes rotation once the user archives an old thread a stopped handover kept", async () => {
+    const w = await loaded();
+    w.failures.update = new Error("target not runnable");
+    expect((await w.harness.behavior.runCli(["rotate", "thr_main"])).stdout).toMatch(/kept live/);
+    const status = async () => (await w.harness.behavior.runCli(["memory", "status", "thr_new1"])).stdout;
+    expect(await status()).toMatch(/^kept live: thr_main /m);
+    await w.bb.sdk.threads.archive({ threadId: "thr_main" });
+    await w.harness.behavior.emitThreadEvent("thread.archived", { thread: w.threads.get("thr_main")! });
+    expect(await status()).not.toMatch(/^kept live/m);
   });
 
   it("starts a composed conversation with the view hidden before the user's words, and refuses a scheduled send first", async () => {

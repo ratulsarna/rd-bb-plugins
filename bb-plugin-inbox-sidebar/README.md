@@ -75,18 +75,35 @@ Claude login, with no tools, in an empty folder.
 Rotation: when a turn ends normally, the thread is idle and its context use
 is at or over the threshold, the plugin starts a new conversation in the same
 home with the same provider. Its first message holds the memory rules and the
-view, hidden from the timeline, then the old conversation's automations move
-to it and the old one is archived. It runs only when nothing is in flight:
-the old thread idle (or failed) with no background work, all its children
-done, nothing queued. While it moves, new messages to the old thread wait,
-then go to the new one before the old one is archived. A message that cannot
-be moved (a system notice, a scheduled or grouped send) keeps the old thread
-until it is gone. A refused or unfinished move tries again every 30 seconds.
-Automatic rotation never follows a failed or interrupted turn, nor a session
-whose only turn is its first message. If the new conversation fails to start,
-`memory off` makes the old one the main chat again. A harness can still compact in one
-very long turn; that shows as a warning. **New thread with…** on a memory-on
-assistant does the same move, adding your message after the view.
+view, hidden from the timeline. **New thread with…** on a memory-on assistant
+does the same move, adding your message after the view.
+
+The move runs in one pass, and only when nothing is in flight: the old thread
+idle (or failed) with no background work, all its children done and quiet for
+5 seconds, nothing queued on it, and no earlier old thread still live. It
+waits for summaries first (up to a minute for **New thread with…** and
+`rotate`, five minutes for an automatic rotation), then holds new messages to
+the old thread. Once the new thread runs, the old one's automations and held
+messages move to it, and the old one is archived.
+
+If anything is in the way after the new thread exists, the move stops there:
+the new thread is the main chat, the old one stays live and is still logged,
+and a warning says what to do. Nothing retries it. Rotation waits until you
+archive the old thread; its last events are logged first. A rotation refused
+because the thread was busy, a child was working or summaries were not ready
+tries again every 30 seconds while the chat sits idle after the same turn.
+Queued messages or a live old thread give one warning instead. Automatic
+rotation never follows a failed or interrupted turn, nor a session whose only
+turn is its hidden first message. `memory off` stops logging and rotation; a
+move already running finishes. A harness can still compact in one very long
+turn; that shows as a warning.
+
+Known gaps: **Send now** and a child's report skip the hold, so one sent in the
+seconds of a move can reach the old thread (it is logged, and the move stops if
+it starts work there). If deleting a held message from the old thread fails
+after it was copied, the new thread has a copy too. After a move that stopped,
+the new thread's view lacks what happened on the old thread since; `recall`
+reaches it.
 
 | Command | Does |
 |---|---|
@@ -208,7 +225,9 @@ succeeds, without waiting for provider startup; reopen it from **Past chats**.
 
 When memory is on for the source assistant, `createReplacementThread` runs the
 memory handover instead: it refuses a `sendAt`, and refuses with a reason while
-the source is busy or its summaries are still running.
+the source is busy, an earlier old thread is still live, or its summaries are
+not ready within a minute. A move that stops after the spawn returns the new
+thread with `warning`.
 
 `assistantMemory({})` returns
 `{ rows: Array<{ identity: string; warning: string | null }> }`: the latest

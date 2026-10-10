@@ -2,11 +2,12 @@ import type { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { IDENTITY, settle, world } from "./world";
 
 const worlds: Array<ReturnType<typeof world>> = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const w of worlds.splice(0)) await w.dispose();
 });
 const start = (...args: Parameters<typeof world>) => {
@@ -57,9 +58,9 @@ it("rotates once at the idle after a completed turn over the threshold, never on
   const w = start();
   const svc = w.service();
   await svc.on("thr_main");
-  // A fresh session's first turn is its bootstrap: with a low threshold it must not rotate on and on.
-  w.say("thr_main", "hello");
-  w.reply("thr_main", "hi");
+  // A fresh session whose only request is its hidden bootstrap: with a low threshold it must not rotate on and on.
+  w.emit("thr_main", "client/turn/requested", { initiator: "user", senderThreadId: null, input: [{ type: "text", text: "<chat>…</chat>", visibility: "agent-only" }] });
+  w.reply("thr_main", "ready");
   w.turnEnd("thr_main");
   w.usage.set("thr_main", { usedTokens: 90_000, modelContextWindow: 100_000 });
   await svc.onIdle("thr_main");
@@ -76,15 +77,22 @@ it("rotates once at the idle after a completed turn over the threshold, never on
   await Promise.all([svc.onIdle("thr_main"), svc.onIdle("thr_main")]);
   await svc.onIdle("thr_main");
   expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
-  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new1", handover: { old: "thr_main", new: "thr_new1", step: "done" } });
+  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new1", previous: [] });
   expect(w.threads.get("thr_main")!.archivedAt).not.toBeNull();
   expect(w.automations[0].automation.execution.targetThreadId).toBe("thr_new1");
   expect(svc.state(IDENTITY).warnings).toEqual([]);
+
+  // One turn the user typed is enough: memory turned on in a thread with a single long turn still rotates.
+  w.say("thr_new1", "one long request");
+  w.turnEnd("thr_new1");
+  w.usage.set("thr_new1", { usedTokens: 90_000, modelContextWindow: 100_000 });
+  await svc.onIdle("thr_new1");
+  expect(svc.state(IDENTITY).main).toBe("thr_new2");
 });
 
 it("stops waiting for summaries when the user starts another turn, and warns when they never come", async () => {
   const w = start();
-  const svc = w.service({ readinessMs: 80 }, hanging);
+  const svc = w.service({ readinessMs: 80, retryMs: 50 }, hanging);
   await svc.on("thr_main");
   w.say("thr_main", "x".repeat(900));
   w.say("thr_main", "y");
@@ -100,6 +108,11 @@ it("stops waiting for summaries when the user starts another turn, and warns whe
   await svc.onIdle("thr_main");
   expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual(["rotation skipped: summaries not ready"]);
   expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
+  // And tries again on its timer while the chat sits idle, with one warning for the lot.
+  const reads = w.harness.inspection.sdk.callsTo("threads.context").length;
+  await settle(400);
+  expect(w.harness.inspection.sdk.callsTo("threads.context").length).toBeGreaterThan(reads);
+  expect(svc.state(IDENTITY).warnings).toHaveLength(1);
 });
 
 it("cancels the attempt when a turn starts while the context use is being read", async () => {
@@ -132,7 +145,7 @@ it("tries a rotation a busy moment refused again on its timer, while the chat si
   expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
   await settle(250);
   expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
-  expect(svc.state(IDENTITY).handover!.step).toBe("done");
+  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new1", previous: [] });
 });
 
 it("logs background work when bb reports it done", async () => {
@@ -171,4 +184,36 @@ it("imports files and old threads before memory is on, resumably, and refuses on
   expect(() => svc.startImport(IDENTITY, ["relative.jsonl"])).toThrow(/absolute path/);
   await svc.on("thr_main");
   expect(() => svc.startImport(IDENTITY, [file])).toThrow(/before the first `memory on`/);
+});
+
+it("imports one thread into two assistants, each from its start", async () => {
+  const w = start();
+  const svc = w.service();
+  w.thread("thr_old", { archivedAt: 1 });
+  w.say("thr_old", "an old question");
+  for (const identity of [IDENTITY, "fleet:zz-other"]) {
+    svc.startImport(identity, ["thr_old"]);
+    await settle();
+    expect(svc.chat(identity).msgs.map((m) => m.text)).toEqual(["an old question"]);
+  }
+});
+
+it("resumes a file import a failed write stopped", async () => {
+  const w = start();
+  const svc = w.service();
+  const file = path.join(w.base, "past.jsonl");
+  fs.writeFileSync(file, ["one", "two", "three"].map((text) => JSON.stringify({ kind: "note", text, date: "2026-08-01" })).join("\n") + "\n");
+  const append = fs.appendFileSync;
+  let writes = 0;
+  vi.spyOn(fs, "appendFileSync").mockImplementation((...args: Parameters<typeof append>) => {
+    if (++writes === 2) throw new Error("disk full");
+    return append(...args);
+  });
+  svc.startImport(IDENTITY, [file]);
+  await settle();
+  expect(svc.state(IDENTITY).import).toMatchObject({ done: 0, error: "disk full" });
+  svc.startImport(IDENTITY, [file]);
+  await settle();
+  expect(svc.state(IDENTITY).import).toMatchObject({ done: 1, error: null });
+  expect(svc.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(["one", "two", "three"]);
 });

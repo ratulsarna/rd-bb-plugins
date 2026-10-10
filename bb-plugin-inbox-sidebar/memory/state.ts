@@ -3,16 +3,14 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export type Step = "spawned" | "archived" | "done";
-
 export type MemoryState = {
   on: boolean;
   /** Set at the first `on`; an import is refused once true, since live logging owns the log from then. */
   everOn: boolean;
   /** The current main chat. */
   main: string | null;
-  /** At most one entry is unfinished; another handover for this identity is refused until it is done. */
-  handover: { old: string; new: string; step: Step; at: number } | null;
+  /** Earlier main chats a stopped handover kept live: still logged, and rotation waits until they are archived. */
+  previous: string[];
   /** Newest last. */
   warnings: Array<{ at: number; text: string }>;
   import: { sources: string[]; done: number; error: string | null } | null;
@@ -20,9 +18,7 @@ export type MemoryState = {
 
 export const KEPT_WARNINGS = 20;
 
-export const emptyState = (): MemoryState => ({ on: false, everOn: false, main: null, handover: null, warnings: [], import: null });
-
-export const unfinished = (s: MemoryState) => (s.handover && s.handover.step !== "done" ? s.handover : null);
+export const emptyState = (): MemoryState => ({ on: false, everOn: false, main: null, previous: [], warnings: [], import: null });
 
 const PROJECT = /^[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*$/;
 

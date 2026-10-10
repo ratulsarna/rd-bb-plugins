@@ -32,7 +32,7 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
   const queued = new Map<string, QueueEntry[]>();
   const usage = new Map<string, { usedTokens: number; modelContextWindow: number } | null>();
   const automations = [{ automation: { id: "beat", projectId: "fleet", name: "heartbeat", execution: { mode: "agent", targetThreadId: "thr_main" } } }];
-  const failures: { update?: Error } = {};
+  const failures: { update?: Error; events?: Error } = {};
   let seq = 0;
   let spawned = 0;
   let rowIds = 0;
@@ -84,6 +84,7 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
             .map((t) => structuredClone(t)),
         events: {
           list: async ({ threadId, types, afterSeq, order, limit }) => {
+            if (failures.events) throw failures.events;
             const rows = (events.get(threadId) ?? []).filter((r) => (!types || (types as readonly string[]).includes(r.type)) && r.seq > Number(afterSeq ?? 0));
             if (order === "desc") rows.reverse();
             return structuredClone(rows.slice(0, Number(limit ?? 100)));

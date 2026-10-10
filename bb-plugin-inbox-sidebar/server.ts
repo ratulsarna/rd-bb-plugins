@@ -636,6 +636,7 @@ export default function plugin(bb: BbPluginApi) {
   bb.events.on("experimental_thread.events", ({ thread }) => memory.onEvents(thread.id));
   bb.events.on("thread.idle", ({ thread }) => memory.onIdle(thread.id));
   bb.events.on("thread.active", ({ thread }) => memory.onActive(thread.id));
+  bb.events.on("thread.archived", ({ thread }) => memory.onArchived(thread.id));
   // Messages to an old thread mid-handover wait, then move to the new one.
   bb.experimental_hooks.on("message.dispatch", ({ thread }) =>
     memory.holds.has(thread.id)
