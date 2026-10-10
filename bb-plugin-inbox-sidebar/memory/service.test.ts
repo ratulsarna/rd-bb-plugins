@@ -472,3 +472,16 @@ it("ends an import a full disk stopped without an unhandled rejection, even when
     process.off("unhandledRejection", onUnhandled);
   }
 });
+
+it("ends an import with the error of its last summary's failed write", async () => {
+  const w = start();
+  const cue = onCue();
+  const svc = w.service({}, cue.spawnProcess);
+  const file = path.join(w.base, "past.jsonl");
+  fs.writeFileSync(file, JSON.stringify({ kind: "note", text: "x".repeat(900), date: "2026-08-01" }) + "\n");
+  svc.startImport(IDENTITY, [file]);
+  await vi.waitFor(() => expect(cue.waiting).toHaveLength(1));
+  failNextWrite();
+  cue.waiting[0]("the summary");
+  await vi.waitFor(() => expect(svc.state(IDENTITY).import).toMatchObject({ done: 1, error: "memory write failed: disk full" }));
+});

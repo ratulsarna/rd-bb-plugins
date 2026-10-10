@@ -89,7 +89,9 @@ thread with…** goes ahead, since you chose it. It
 waits for summaries first (up to a minute for **New thread with…** and
 `rotate`, five minutes for an automatic rotation), then holds new messages to
 the old thread. Once the new thread runs, the old one's automations and held
-messages move to it, and the old one is archived.
+messages move to it, and the old one is archived. If memory cannot save the
+new thread as the main chat, it archives the new thread, warns, and the old
+one stays the main chat.
 
 If anything is in the way after the new thread exists, the move stops there:
 the new thread is the main chat, the old one stays live and is still logged,

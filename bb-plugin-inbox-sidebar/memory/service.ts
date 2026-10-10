@@ -491,6 +491,8 @@ export class MemoryService {
         this.update(identity, { import: { sources, done: ++done, error: null } });
       }
       if (!(await this.summarizer.waitUntil(chat, () => chat.idle(), Infinity))) throw fail("imported, but not all summarized");
+      // The last summary is settled but may not be on disk yet; its failed write is this import's error.
+      await chat.flush();
     } catch (error) {
       // Best effort: on a full disk the state write that records why fails too.
       try {

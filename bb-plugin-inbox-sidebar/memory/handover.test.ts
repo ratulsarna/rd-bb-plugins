@@ -127,6 +127,41 @@ it("moves a message queued while the old thread's last events are read", async (
   expect(w.threads.get("thr_main")!.archivedAt).not.toBeNull();
 });
 
+it("archives a new thread it could not switch to, so a retry spawns just one more", async () => {
+  const { w, svc, rotate, calls } = await ready();
+  w.taps.spawned = () => {
+    delete w.taps.spawned;
+    vi.spyOn(svc, "update").mockImplementationOnce(() => {
+      throw new Error("disk full");
+    });
+  };
+  await expect(rotate()).rejects.toThrow("disk full");
+  expect(w.threads.get("thr_new1")!.archivedAt).not.toBeNull();
+  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_main", previous: [] });
+  expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual(["Could not switch to thr_new1, so it was archived: disk full"]);
+  expect(svc.holds.size).toBe(0);
+  expect(await rotate()).toEqual({ newThreadId: "thr_new2" });
+  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new2", previous: [] });
+  expect(calls("threads.spawn")).toHaveLength(2);
+});
+
+// Held, so it waits as a queued row; it lands after the last check read the queue.
+it.each([
+  ["moves a message", { content: [{ type: "text" as const, text: "late", mentions: [] }] }, undefined],
+  ["names a scheduled message", { sendAt: Date.now() + 60_000 }, "Messages stayed unsent on archived thr_main: q1. Send them again in thr_new1."],
+])("%s that arrives after the last queue read, once the old thread is archived", async (_name, row, warning) => {
+  const { w, rotate } = await ready();
+  let reads = 0;
+  w.taps.queueRead = (threadId) => {
+    // After the spawn, the first read moves held messages and the second is the last check's.
+    if (threadId === "thr_main" && w.threads.has("thr_new1") && ++reads === 2) w.queue("thr_main", row);
+  };
+  expect((await rotate()).warning).toBe(warning);
+  expect(w.threads.get("thr_main")!.archivedAt).not.toBeNull();
+  expect(w.queued.get("thr_new1") ?? []).toHaveLength(warning ? 0 : 1);
+  expect(w.queued.get("thr_main") ?? []).toHaveLength(warning ? 1 : 0);
+});
+
 describe("an automatic rotation", () => {
   async function due() {
     const r = await ready({}, { retryMs: 30 });
@@ -261,14 +296,6 @@ describe("an obstacle after the spawn", () => {
         return w.environments.get(environmentId)!;
       });
     }, /Child thr_c just changed\. Archive it when that work is done/],
-    // Held, so it waits as a queued row; it lands after the last check read the queue.
-    ["a message arrives after the last queue read", {}, ({ w }) => {
-      let reads = 0;
-      w.taps.queueRead = (threadId) => {
-        // After the spawn, the first read moves held messages and the second is the last check's.
-        if (threadId === "thr_main" && w.threads.has("thr_new1") && ++reads === 2) w.queue("thr_main", { content: [{ type: "text", text: "late", mentions: [] }] });
-      };
-    }, /A message just arrived on thr_main\. Archive it when that work is done/],
     ["the archive call fails", {}, ({ w }) => w.harness.sdk.stub("threads.archive", async () => { throw new Error("archive refused"); }), /kept live: archive refused\. Archive it to resume rotation\./],
   ])("stops when %s: the old thread stays live, the warning says what to do, nothing retries", async (_name, options, arrange, warning) => {
     const r = await ready(options, { runnableMs: 100, retryMs: 50 });

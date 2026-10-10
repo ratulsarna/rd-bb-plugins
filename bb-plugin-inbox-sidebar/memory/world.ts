@@ -67,15 +67,12 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
   };
 
   // Like bb: an archive walks children, lifecycle dependents and hidden source threads, through archived
-  // ones and never through deleted ones, and archives each live one; queued rows vanish with it.
+  // ones and never through deleted ones, and archives each live one. Queued rows stay, never sent.
   const archive = (id: string, at: number, seen = new Set<string>()) => {
     const t = threads.get(id)!;
     if (seen.has(id) || t.deletedAt !== null) return;
     seen.add(id);
-    if (t.archivedAt === null) {
-      t.archivedAt = at;
-      queued.delete(id);
-    }
+    if (t.archivedAt === null) t.archivedAt = at;
     for (const o of threads.values()) {
       if (o.parentThreadId === id || o.lifecycleOwnerThreadId === id || (o.sourceThreadId === id && o.visibility === "hidden")) archive(o.id, at, seen);
     }
@@ -128,7 +125,11 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
             taps.queueRead?.(threadId);
             return rows;
           },
-          create: async ({ threadId, input, ...rest }) => queue(threadId, { content: input, waitingOn: null, ...rest } as Partial<QueueEntry>),
+          create: async ({ threadId, input, ...rest }) => {
+            // Like bb: an archived thread takes no new messages.
+            if (threads.get(threadId)!.archivedAt !== null) throw new Error("Thread is archived");
+            return queue(threadId, { content: input, waitingOn: null, ...rest } as Partial<QueueEntry>);
+          },
           delete: async ({ threadId, queuedMessageId }) => {
             queued.set(threadId, (queued.get(threadId) ?? []).filter((r) => r.id !== queuedMessageId));
             return { ok: true };

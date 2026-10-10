@@ -128,8 +128,6 @@ async function oldBusy(svc: MemoryService, identity: string, old: string, own: b
     if (own && judged.get(t.id) !== place(t)) return new Busy(`Child ${t.id} just changed`);
   }
   if (rows.length > 0) return new Busy(`Messages are queued on ${old}: ${rows.map((r) => r.id).join(", ")}`, true);
-  // A message held after the queue was read waits there too, and the archive would drop it.
-  if (root.queuedWork !== "none") return new Busy(`A message just arrived on ${old}`);
   return null;
 }
 
@@ -220,7 +218,18 @@ export async function handover(
         title: context.thread.title ?? undefined,
         environment: { type: "host", hostId: destination.hostId, workspace: { type: "unmanaged", path: destination.homePath } },
       } as Parameters<typeof svc.bb.sdk.threads.spawn>[0]);
-      svc.update(identity, { main: fresh.id, previous: [...svc.state(identity).previous, old] });
+      try {
+        svc.update(identity, { main: fresh.id, previous: [...svc.state(identity).previous, old] });
+      } catch (error) {
+        // Unbound, the new chat would run unlogged and a retry would spawn another; the old one stays main.
+        await svc.bb.sdk.threads.archive({ threadId: fresh.id }).catch(() => {});
+        try {
+          svc.warn(identity, `Could not switch to ${fresh.id}, so it was archived: ${message(error)}`);
+        } catch {
+          // The disk that failed the switch may fail the warning too; the caller still sees the error.
+        }
+        throw error;
+      }
       const warning = await finish(svc, identity, old, fresh.id, own);
       if (warning === undefined) {
         // A clean move settles what earlier warnings asked for; the new chat starts without them.
@@ -242,9 +251,9 @@ export async function handover(
 /**
  * After the spawn: once the new thread runs (automations disable themselves on a target that is not
  * running yet), move automations, log the old thread's last events, move held messages, check the old
- * thread is still done and archive it. Archiving drops its queued rows and may prune its events, so both
- * come first, and nothing waits between the last check and the archive.
- * Undefined when the old thread is archived, else what keeps it live and what to do.
+ * thread is still done and archive it. Archiving may prune its events and never sends its queued rows,
+ * so both come first, and nothing waits between the last check and the archive.
+ * Undefined when the old thread is archived and empty, else what went wrong and what to do.
  */
 async function finish(svc: MemoryService, identity: string, old: string, fresh: string, own: boolean): Promise<string | undefined> {
   const kept = (why: string, action = "Archive it to resume rotation.") => `Old conversation ${old} kept live: ${why}. ${action}`;
@@ -259,21 +268,33 @@ async function finish(svc: MemoryService, identity: string, old: string, fresh: 
     if (busy) return kept(busy.message, busy.lasting ? "Sort that out, then archive it, to resume rotation." : "Archive it when that work is done to resume rotation.");
     await svc.bb.sdk.threads.archive({ threadId: old });
     svc.update(identity, { previous: svc.state(identity).previous.filter((id) => id !== old) });
-    return undefined;
   } catch (error) {
     return kept(message(error));
   }
+  // An archived thread takes no new messages, so this sweep is the last: it moves any held after the check.
+  try {
+    const left = await moveHeld(svc, old, fresh);
+    if (left.length > 0) return `Messages stayed unsent on archived ${old}: ${left.join(", ")}. Send them again in ${fresh}.`;
+  } catch (error) {
+    return `Messages on archived ${old} may not have moved: ${message(error)}. Send any left there again in ${fresh}.`;
+  }
+  return undefined;
 }
 
-/** Recreate the old thread's plain rows on the new one, where its own settings apply. */
-async function moveHeld(svc: MemoryService, old: string, fresh: string): Promise<void> {
+/** Recreate the old thread's plain rows on the new one, where its own settings apply; the ids of the rest. */
+async function moveHeld(svc: MemoryService, old: string, fresh: string): Promise<string[]> {
   const sdk = svc.bb.sdk.threads.queuedMessages;
   const rows = await sdk.list({ threadId: old });
+  const left: string[] = [];
   for (const [k, row] of rows.entries()) {
-    if (!plain(rows, k)) continue;
+    if (!plain(rows, k)) {
+      left.push(row.id);
+      continue;
+    }
     await sdk.create({ threadId: fresh, input: row.content, ...(row.senderThreadId ? { senderThreadId: row.senderThreadId } : {}) });
     await sdk.delete({ threadId: old, queuedMessageId: row.id });
   }
+  return left;
 }
 
 /** Active or idle: a target automations accept. A failed start is final, so it ends the wait at once. */
