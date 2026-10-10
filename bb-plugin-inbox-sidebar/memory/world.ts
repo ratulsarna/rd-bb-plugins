@@ -34,7 +34,7 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
   const automations = [{ automation: { id: "beat", projectId: "fleet", name: "heartbeat", execution: { mode: "agent", targetThreadId: "thr_main" } } }];
   const failures: { update?: Error; events?: Error } = {};
   /** Runs on each events read, before it answers: a test can make something happen mid-read. */
-  const taps: { events?: (threadId: string) => void | Promise<void> } = {};
+  const taps: { events?: (threadId: string) => void | Promise<void>; get?: (threadId: string) => void | Promise<void> } = {};
   let seq = 0;
   let spawned = 0;
   let rowIds = 0;
@@ -76,6 +76,7 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
   const sdk: FakeSdkOverrides = {
       threads: {
         get: async ({ threadId }) => {
+          await taps.get?.(threadId);
           const t = threads.get(threadId);
           if (!t || t.deletedAt !== null) throw Object.assign(new Error(`HTTP 404: thread ${threadId} not found`), { status: 404 });
           return structuredClone(t);

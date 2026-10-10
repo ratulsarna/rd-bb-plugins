@@ -143,8 +143,17 @@ export class MemoryService {
     return [...this.states.keys()].find((identity) => this.logged(identity).includes(threadId));
   }
 
-  async start(): Promise<void> {
+  /** Startup, which `dispose` waits out like any other work in flight. */
+  private starting = Promise.resolve();
+
+  start(): Promise<void> {
+    this.starting = this.startUp();
+    return this.starting;
+  }
+
+  private async startUp(): Promise<void> {
     for (const identity of identities(this.root)) {
+      if (this.disposed) return;
       // Archived or deleted while the plugin was down.
       await this.reconcile(identity);
       for (const threadId of this.logged(identity)) {
@@ -489,7 +498,7 @@ export class MemoryService {
     for (const wait of this.waits.values()) wait.abort();
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();
-    await Promise.allSettled([...this.logging.values(), ...this.ops.values(), ...this.importing.values()]);
+    await Promise.allSettled([this.starting, ...this.logging.values(), ...this.ops.values(), ...this.importing.values()]);
     for (const chat of this.chats.values()) chat.close();
     this.chats.clear();
   }

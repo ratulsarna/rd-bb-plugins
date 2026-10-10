@@ -225,6 +225,34 @@ it("stops at a plugin reload: logging in flight ends before it writes, and the r
   expect(next.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(["hello"]);
 });
 
+it("stops at a plugin reload during startup: the reload waits, and the old startup cannot undo the new load", async () => {
+  const w = start();
+  let svc = w.service();
+  await svc.on("thr_main");
+  await svc.dispose();
+  // Deleted while the plugin was down; the reload lands while startup is still asking bb about it.
+  w.threads.get("thr_main")!.deletedAt = Date.now();
+  let release!: () => void;
+  w.taps.get = () => new Promise<void>((resolve) => (release = resolve));
+  svc = w.service();
+  const starting = svc.start();
+  await settle();
+  let stopped = false;
+  const disposing = svc.dispose().then(() => (stopped = true));
+  await settle();
+  expect(stopped).toBe(false);
+  delete w.taps.get;
+  release();
+  await Promise.all([starting, disposing]);
+
+  const next = w.service();
+  await next.start();
+  w.thread("thr_two");
+  await next.on("thr_two");
+  await settle(50);
+  expect(w.service().state(IDENTITY)).toMatchObject({ on: true, main: "thr_two" });
+});
+
 it("keeps a main chat unarchived after a failed drain as the main chat", async () => {
   const w = start();
   const svc = w.service();
