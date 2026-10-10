@@ -14,7 +14,7 @@ export type FakeThread = ReturnType<typeof makeThreadResponse> & {
 };
 export type QueueEntry = ReturnType<typeof makeQueueEntry>;
 
-export const FAST: Timing = { readinessMs: 2000, runnableMs: 300, pollMs: 10, quietMs: 50, retryMs: 100 };
+export const FAST: Timing = { readinessMs: 2000, readyCapMs: 2000, runnableMs: 300, pollMs: 10, quietMs: 50, retryMs: 100 };
 export const IDENTITY = "fleet:zz-test";
 export const settle = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -64,8 +64,10 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
     return row;
   };
 
+  // Like bb: an archive takes the children, and queued rows vanish with their thread.
   const archive = (id: string, at: number) => {
     threads.get(id)!.archivedAt = at;
+    queued.delete(id);
     for (const child of threads.values()) if (child.parentThreadId === id) archive(child.id, at);
   };
 
@@ -76,8 +78,10 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
           if (!t) throw new Error(`thread ${threadId} not found`);
           return structuredClone(t);
         },
-        list: async ({ parentThreadId } = {}) =>
-          [...threads.values()].filter((t) => t.parentThreadId === parentThreadId && t.archivedAt === null).map((t) => structuredClone(t)),
+        list: async ({ parentThreadId, hasParent } = {}) =>
+          [...threads.values()]
+            .filter((t) => t.archivedAt === null && (parentThreadId !== undefined ? t.parentThreadId === parentThreadId : hasParent !== false || t.parentThreadId === null))
+            .map((t) => structuredClone(t)),
         events: {
           list: async ({ threadId, types, afterSeq, order, limit }) => {
             const rows = (events.get(threadId) ?? []).filter((r) => (!types || (types as readonly string[]).includes(r.type)) && r.seq > Number(afterSeq ?? 0));

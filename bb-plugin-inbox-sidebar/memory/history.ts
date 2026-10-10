@@ -5,8 +5,11 @@ import type { Kind } from "./tree";
 export type LogRecord = { kind: Kind; text: string; date: string };
 export type EventRow = { seq: number; createdAt: number; type: string; data: any };
 
+/** Items close with one of these: bb closes background tasks and background delegations only with their own. */
+const ITEM_DONE = new Set(["item/completed", "item/backgroundTask/completed", "item/delegation/completed"]);
+
 /** Event types the logger fetches. */
-export const LOGGED_TYPES = ["client/turn/requested", "item/completed"] as const;
+export const LOGGED_TYPES = ["client/turn/requested", "item/completed", "item/backgroundTask/completed", "item/delegation/completed"] as const;
 
 /** Looking at memory is not news to remember; a failed or compound call is. */
 const RECALL = /^bb assistants (recall|date)\b[^;&|\n]*$/;
@@ -96,7 +99,7 @@ function itemRecords(item: any): Array<[Kind, string]> {
 /** Records one event makes, in order. Empty for events that are not part of the main chat. */
 export function recordsOf(row: EventRow): LogRecord[] {
   const made =
-    row.type === "client/turn/requested" ? turnRecords(row.data) : row.type === "item/completed" ? itemRecords(row.data?.item) : [];
+    row.type === "client/turn/requested" ? turnRecords(row.data) : ITEM_DONE.has(row.type) ? itemRecords(row.data?.item) : [];
   const date = localIso(row.createdAt);
   return made.map(([kind, text]) => ({ kind, text, date }));
 }

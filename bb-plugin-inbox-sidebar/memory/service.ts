@@ -22,12 +22,14 @@ export type MemorySettings = { rotateAtPercent: number; summaryModel: string; su
 export const TIMING = {
   /** How long a rotation waits for summaries. */
   readinessMs: 5 * 60_000,
+  /** How long a rotation someone asked for (composer, `bb assistants rotate`) waits for summaries. */
+  readyCapMs: 60_000,
   /** How long a handover waits for the new thread to run before it moves automations. */
   runnableMs: 2 * 60_000,
   pollMs: 1000,
   /** A child that changed this recently may still be reporting to its parent (bb batches reports for 2 s). */
   quietMs: 5000,
-  /** A resume a busy moment refused tries again after this. */
+  /** A rotation or resume a busy moment refused tries again after this. */
   retryMs: 30_000,
 };
 export type Timing = typeof TIMING;
@@ -84,7 +86,10 @@ export class MemoryService {
 
   warn(identity: string, text: string): void {
     this.bb.log.warn(`memory ${identity}: ${text}`);
-    this.update(identity, { warnings: [...this.state(identity).warnings, { at: Date.now(), text }].slice(-KEPT_WARNINGS) });
+    const { warnings } = this.state(identity);
+    // A retry that fails the same way again is not news.
+    if (warnings.at(-1)?.text === text) return;
+    this.update(identity, { warnings: [...warnings, { at: Date.now(), text }].slice(-KEPT_WARNINGS) });
     this.bb.realtime.publish(MEMORY_CHANNEL, { identity });
   }
 
@@ -185,6 +190,42 @@ export class MemoryService {
     return chat.unsummarized === 0 && chat.viewBytes().view <= VIEW_READY;
   }
 
+  async readyWithin(identity: string, ms: number, signal?: AbortSignal): Promise<boolean> {
+    return this.ready(identity) || this.summarizer.waitUntil(this.chat(identity), () => this.ready(identity), ms, signal);
+  }
+
+  notReady(identity: string): string {
+    const failed = this.chat(identity).failures;
+    return failed > 0 ? `Memory summaries keep failing (${failed} failed); try again later` : "Memory summaries are still running";
+  }
+
+  /**
+   * One timer per identity: an unfinished handover resumes, and a rotation a busy moment refused tries
+   * again while the main chat still sits idle after the same completed `turn`, with no lifecycle event.
+   */
+  retryLater(identity: string, turn?: number): void {
+    if (this.disposed || this.retries.has(identity)) return;
+    const timer = setTimeout(() => {
+      this.retries.delete(identity);
+      void this.retry(identity, turn);
+    }, this.timing.retryMs);
+    this.retries.set(identity, timer);
+  }
+
+  clearRetry(identity: string): void {
+    clearTimeout(this.retries.get(identity));
+    this.retries.delete(identity);
+  }
+
+  private async retry(identity: string, turn?: number): Promise<void> {
+    const s = this.state(identity);
+    if (unfinished(s)) return resume(this, identity);
+    if (turn === undefined || !s.on || !s.main) return;
+    // A turn running again ends at an idle, which tries again by itself.
+    if ((await this.bb.sdk.threads.get({ threadId: s.main })).status !== "idle") return;
+    await this.maybeRotate(identity, s.main, turn);
+  }
+
   onEvents(threadId: string): void {
     const identity = this.loggerOf(threadId);
     if (identity) this.catchUp(identity, threadId).catch((e) => this.bb.log.warn(`memory ${identity}: ${message(e)}`));
@@ -212,35 +253,41 @@ export class MemoryService {
     }
   }
 
-  /** At a completed turn's idle: rotate once the context passes the threshold and the view is ready. */
-  async maybeRotate(identity: string, threadId: string): Promise<void> {
+  /**
+   * At a completed turn's idle: rotate once the context passes the threshold and the view is ready.
+   * With `turn`, only while that is still the last completed turn.
+   */
+  async maybeRotate(identity: string, threadId: string, turn?: number): Promise<void> {
     const s = this.state(identity);
     if (!s.on || s.main !== threadId || unfinished(s) || this.waits.has(threadId)) return;
+    // Registered before the first read, so a turn that starts during any of them cancels this attempt.
+    const wait = new AbortController();
+    this.waits.set(threadId, wait);
+    const sdk = this.bb.sdk.threads;
+    let last: EventRow | undefined;
     try {
-      const [last] = (await this.bb.sdk.threads.events.list({ threadId, types: ["turn/completed"], order: "desc", limit: "1" })) as unknown as EventRow[];
-      if (last?.data?.status !== "completed") return;
-      const { usage } = await this.bb.sdk.threads.context({ threadId });
+      [last] = (await sdk.events.list({ threadId, types: ["turn/completed"], order: "desc", limit: "1" })) as unknown as EventRow[];
+      if (last?.data?.status !== "completed" || (turn !== undefined && last.seq !== turn)) return;
+      // A session whose only turn is its bootstrap has nothing to carry on; rotating it would loop.
+      const turns = await sdk.events.list({ threadId, types: ["client/turn/requested"], order: "asc", limit: "2" });
+      if (turns.length < 2) return;
+      const { usage } = await sdk.context({ threadId });
       const used = usage ? usage.usedTokens / usage.modelContextWindow : Number.NaN;
       if (!Number.isFinite(used)) return;
       this.usage.set(identity, used);
       if (used < this.settings.rotateAtPercent / 100) return;
-      if (!this.ready(identity)) {
-        const wait = new AbortController();
-        this.waits.set(threadId, wait);
-        try {
-          const chat = this.chat(identity);
-          if (!(await this.summarizer.waitUntil(chat, () => this.ready(identity), this.timing.readinessMs, wait.signal))) {
-            if (!wait.signal.aborted && !this.disposed) this.warn(identity, "rotation skipped: summaries not ready");
-            return;
-          }
-        } finally {
-          this.waits.delete(threadId);
-        }
+      if (!(await this.readyWithin(identity, this.timing.readinessMs, wait.signal))) {
+        if (!wait.signal.aborted && !this.disposed) this.warn(identity, "rotation skipped: summaries not ready");
+        return;
       }
+      if (wait.signal.aborted) return;
       await handover(this, { identity, oldThreadId: threadId });
     } catch (error) {
-      if (error instanceof Busy) this.bb.log.info(`memory ${identity}: rotation waits: ${error.message}`);
-      else this.warn(identity, `rotation failed: ${message(error)}`);
+      if (!(error instanceof Busy)) return this.warn(identity, `rotation failed: ${message(error)}`);
+      this.bb.log.info(`memory ${identity}: rotation waits: ${error.message}`);
+      if (last && !wait.signal.aborted) this.retryLater(identity, last.seq);
+    } finally {
+      this.waits.delete(threadId);
     }
   }
 
@@ -254,7 +301,18 @@ export class MemoryService {
     return identity;
   }
 
+  /**
+   * Stops logging and rotating. A handover still waiting on a new thread that never ran is dropped, so a
+   * dead successor cannot hold the assistant: the old thread is the main chat again. One that is running
+   * finishes.
+   */
   off(identity: string): void {
+    const h = unfinished(this.state(identity));
+    if (h?.step === "spawned" && !this.ops.has(identity)) {
+      this.clearRetry(identity);
+      this.update(identity, { on: false, main: h.old, handover: null });
+      this.warn(identity, `Handover to ${h.new} dropped; ${h.old} is the main chat again and ${h.new} is left as it is`);
+    }
     const { main } = this.update(identity, { on: false });
     if (main) this.waits.get(main)?.abort();
   }

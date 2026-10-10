@@ -50,6 +50,19 @@ it("drops reasoning and a subagent's own transcript but keeps the call that star
   ]);
 });
 
+it("logs a background task and a background delegation when bb closes them", () => {
+  const done = (type: string, item: Record<string, unknown>): EventRow => ({ seq: ++seq, createdAt: at, type, data: { item: { id: `i${seq}`, status: "completed", ...item } } });
+  expect(records([
+    done("item/backgroundTask/completed", { type: "backgroundTask", taskType: "shell", description: "run tests", taskStatus: "completed", skipTranscript: false, summary: "12 passed" }),
+    done("item/delegation/completed", { type: "delegation", childRef: "a-2", label: "review", background: true, summary: "no findings" }),
+  ])).toEqual([
+    ["tool", 'backgroundTask {"taskType":"shell","description":"run tests","taskStatus":"completed","skipTranscript":false}'],
+    ["echo", "12 passed"],
+    ["tool", 'delegation {"childRef":"a-2","label":"review","background":true}'],
+    ["echo", "no findings"],
+  ]);
+});
+
 it("drops a plain successful recall but keeps a failed or compound one", () => {
   const command = (command: string, exitCode: number) =>
     item({ type: "commandExecution", command, cwd: "/", aggregatedOutput: "out", exitCode, approvalStatus: null });

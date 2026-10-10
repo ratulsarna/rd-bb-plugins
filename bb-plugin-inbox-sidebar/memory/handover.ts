@@ -9,8 +9,9 @@ import { unfinished } from "./state";
 
 type PromptInput = NonNullable<Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0]["input"]>[number];
 type QueuedRow = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages"]["list"]>>[number];
+type ListEntry = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>>[number];
 
-/** Not now: nothing changed, and the automatic path tries again at the next completed idle. */
+/** Not now: nothing changed, and the automatic path tries again later. */
 export class Busy extends Error {}
 
 export type Place = {
@@ -47,10 +48,29 @@ function plain(rows: QueuedRow[], k: number): boolean {
   return row.initiator !== "system" && row.payload.kind === "inline" && row.sendAt === null && !row.groupWithNext && !rows[k - 1]?.groupWithNext;
 }
 
+/** Not running a turn: a failed turn, such as a context overflow, is a main reason to move on. */
+const settled = (status: string) => status === "idle" || status === "error";
+const working = (t: ListEntry) => Object.values(t.activity).some((n) => n > 0);
+
 /**
- * Null when the old thread can move now, else why not. Archiving takes the whole tree of children with it,
- * so every descendant must be done, and quiet long enough that no report to the parent is still on its way.
+ * Null when every descendant of `root` is done, else why not. Archiving takes the whole tree with it, so
+ * each must be settled, and quiet long enough that no report to its parent is still on its way.
  */
+async function childrenBusy(svc: MemoryService, root: string): Promise<string | null> {
+  const now = Date.now();
+  for (let parents = [root]; parents.length > 0; ) {
+    const children = (await Promise.all(parents.map((id) => svc.bb.sdk.threads.list({ parentThreadId: id, includeHidden: true })))).flat();
+    for (const child of children) {
+      if (!settled(child.status)) return `Child ${child.id} is ${child.status}`;
+      if (working(child) || child.queuedWork !== "none") return `Child ${child.id} still has work`;
+      if (now - child.updatedAt < svc.timing.quietMs) return `Child ${child.id} just changed`;
+    }
+    parents = children.map((child) => child.id);
+  }
+  return null;
+}
+
+/** Null when the old thread can move now, else why not. */
 export async function safeMoment(svc: MemoryService, identity: string, old: string, { resuming }: { resuming: boolean }): Promise<string | null> {
   const s = svc.state(identity);
   const h = unfinished(s);
@@ -58,17 +78,12 @@ export async function safeMoment(svc: MemoryService, identity: string, old: stri
   // A wake-up from before the last handover finished must not move a chat that already moved.
   if (!resuming && s.main !== old) return `${old} is not the main chat`;
   const sdk = svc.bb.sdk.threads;
-  if ((await sdk.get({ threadId: old })).status !== "idle") return "The conversation is busy";
-  const now = Date.now();
-  for (let parents = [old]; parents.length > 0; ) {
-    const children = (await Promise.all(parents.map((id) => sdk.list({ parentThreadId: id, includeHidden: true })))).flat();
-    for (const child of children) {
-      if (child.status !== "idle" && child.status !== "error") return `Child ${child.id} is ${child.status}`;
-      if (Object.values(child.activity).some((n) => n > 0) || child.queuedWork !== "none") return `Child ${child.id} still has work`;
-      if (now - child.updatedAt < svc.timing.quietMs) return `Child ${child.id} just changed`;
-    }
-    parents = children.map((child) => child.id);
-  }
+  // The list entry carries the activity counters; `get` does not.
+  const { projectId } = await sdk.get({ threadId: old });
+  const root = (await sdk.list({ projectId, hasParent: false, includeHidden: true })).find((t) => t.id === old);
+  if (!root || !settled(root.status) || working(root)) return "The conversation is busy";
+  const children = await childrenBusy(svc, old);
+  if (children) return children;
   // Nothing scheduled or grouped may be left behind; a resume moves the plain rows that arrived while held.
   const rows = await sdk.queuedMessages.list({ threadId: old });
   if (rows.some((_, k) => !(resuming && plain(rows, k)))) return "The conversation has queued messages";
@@ -107,14 +122,17 @@ export async function handover(
 ): Promise<{ newThreadId: string; warning?: string }> {
   if (svc.ops.has(identity)) throw new Busy("A conversation change for this assistant is already running");
   return exclusive(svc, identity, async () => {
+    // Before the hold, so a wait for summaries never holds the user's messages.
+    await svc.catchUp(identity, old);
+    if (!(await svc.readyWithin(identity, svc.timing.readyCapMs))) throw new Busy(svc.notReady(identity));
     const busy = await safeMoment(svc, identity, old, { resuming: false });
     if (busy) throw new Busy(busy);
     svc.holds.add(old);
     try {
       // A message may have started a turn between the check and the hold.
-      if ((await svc.bb.sdk.threads.get({ threadId: old })).status !== "idle") throw new Busy("The conversation is busy");
+      if (!settled((await svc.bb.sdk.threads.get({ threadId: old })).status)) throw new Busy("The conversation is busy");
       await svc.catchUp(identity, old);
-      if (!svc.ready(identity)) throw new Busy("Memory summaries are still running");
+      if (!svc.ready(identity)) throw new Busy(svc.notReady(identity));
       const context = await assistantConversationContext(svc.bb, old);
       if (composer) await context.validate(composer.destination.hostId, composer.destination.homePath);
       const { destination, execution, visible } = composer ?? (await samePlace(svc, old));
@@ -148,7 +166,7 @@ export function resume(svc: MemoryService, identity: string): Promise<void> {
     }
     svc.holds.add(h.old);
     try {
-      if (await safeMoment(svc, identity, h.old, { resuming: true })) return retryLater(svc, identity);
+      if (await safeMoment(svc, identity, h.old, { resuming: true })) return svc.retryLater(identity);
       await complete(svc, identity);
     } finally {
       release(svc, h.old);
@@ -156,69 +174,69 @@ export function resume(svc: MemoryService, identity: string): Promise<void> {
   }).catch((error) => svc.warn(identity, `handover paused: ${message(error)}`));
 }
 
-/** One timer per identity, so a quiet period ending needs no lifecycle event to finish the handover. */
-function retryLater(svc: MemoryService, identity: string): void {
-  if (svc.disposed || svc.retries.has(identity)) return;
-  svc.retries.set(
-    identity,
-    setTimeout(() => {
-      svc.retries.delete(identity);
-      void resume(svc, identity);
-    }, svc.timing.retryMs),
-  );
-}
-
 /**
  * From a spawned new thread to done: move automations once the new thread runs (automations disable
- * themselves on a target that is not running yet), archive the old one, then move what was held there.
- * After the spawn nothing throws: the caller already has a new thread, so problems come back as a warning.
+ * themselves on a target that is not running yet), move what was held on the old thread, then archive it.
+ * Archiving drops the old thread's queued rows, so nothing may be left there by then. After the spawn
+ * nothing throws: the caller already has a new thread, so problems come back as text, and every return
+ * that leaves the handover unfinished tries again later.
  */
 async function complete(svc: MemoryService, identity: string): Promise<string | undefined> {
   let h = unfinished(svc.state(identity))!;
-  const warn = (text: string) => (svc.warn(identity, text), text);
+  const later = (text: string) => (svc.retryLater(identity), text);
+  const warn = (text: string) => (svc.warn(identity, text), later(text));
   const sdk = svc.bb.sdk.threads;
   try {
     if (h.step === "spawned") {
-      if (!(await runnable(svc, h.new))) return warn(`New conversation ${h.new} has not started; ${h.old} keeps its automations until it does`);
+      const started = await runnable(svc, h.new);
+      if (started === "failed") return warn(`New conversation ${h.new} failed to start; \`bb assistants memory off\` makes ${h.old} the main chat again`);
+      if (started === "late") return warn(`New conversation ${h.new} has not started; ${h.old} keeps its automations until it does`);
       const stuck = await repointAutomations(svc.bb, await targetingAutomationsOf(svc.bb, h.old), h.new);
       if (stuck.length > 0) return warn(`Old conversation kept, these automations still target it: ${stuck.join("; ")}`);
+      // A child can get a message while only the root is held.
+      const children = await childrenBusy(svc, h.old);
+      if (children) return later(`${h.old} is archived once its children are done: ${children}`);
+      const left = await moveHeld(svc, h.old, h.new);
+      if (left.length > 0) return warn(`Messages on ${h.old} that cannot move: ${left.join(", ")}; it is archived once they are sent or removed`);
       await sdk.archive({ threadId: h.old });
       h = svc.update(identity, { handover: { ...h, step: "archived" } }).handover!;
     }
-    const rows = await sdk.queuedMessages.list({ threadId: h.old });
-    const left: string[] = [];
-    for (const [k, row] of rows.entries()) {
-      if (!plain(rows, k)) {
-        left.push(row.id);
-        continue;
-      }
-      await sdk.queuedMessages.create({
-        threadId: h.new,
-        input: row.content,
-        ...(row.senderThreadId ? { senderThreadId: row.senderThreadId } : {}),
-        model: row.model,
-        reasoningLevel: row.reasoningLevel,
-        permissionMode: row.permissionMode,
-        serviceTier: row.serviceTier,
-      } as Parameters<typeof sdk.queuedMessages.create>[0]);
-      await sdk.queuedMessages.delete({ threadId: h.old, queuedMessageId: row.id });
-    }
     svc.update(identity, { handover: { ...h, step: "done" } });
-    clearTimeout(svc.retries.get(identity));
-    svc.retries.delete(identity);
-    if (left.length > 0) return warn(`Messages left on the archived conversation ${h.old}: ${left.join(", ")}`);
+    svc.clearRetry(identity);
     return undefined;
   } catch (error) {
     return warn(`Handover to ${h.new} paused: ${message(error)}`);
   }
 }
 
-/** Active or idle: a target automations accept. */
-async function runnable(svc: MemoryService, threadId: string): Promise<boolean> {
+/** Recreate the old thread's plain rows on the new one; returns the ids of what is still on the old thread. */
+async function moveHeld(svc: MemoryService, old: string, fresh: string): Promise<string[]> {
+  const sdk = svc.bb.sdk.threads.queuedMessages;
+  const rows = await sdk.list({ threadId: old });
+  for (const [k, row] of rows.entries()) {
+    if (!plain(rows, k)) continue;
+    await sdk.create({
+      threadId: fresh,
+      input: row.content,
+      ...(row.senderThreadId ? { senderThreadId: row.senderThreadId } : {}),
+      model: row.model,
+      reasoningLevel: row.reasoningLevel,
+      permissionMode: row.permissionMode,
+      serviceTier: row.serviceTier,
+    } as Parameters<typeof sdk.create>[0]);
+    await sdk.delete({ threadId: old, queuedMessageId: row.id });
+  }
+  // Listed again: a row that arrived while these moved must not be archived away.
+  return (await sdk.list({ threadId: old })).map((row) => row.id);
+}
+
+/** Active or idle: a target automations accept. A failed start is final, so it ends the wait at once. */
+async function runnable(svc: MemoryService, threadId: string): Promise<"ok" | "failed" | "late"> {
   for (const deadline = Date.now() + svc.timing.runnableMs; ; ) {
     const { status } = await svc.bb.sdk.threads.get({ threadId });
-    if (status === "active" || status === "idle") return true;
-    if (Date.now() >= deadline || svc.disposed) return false;
+    if (status === "active" || status === "idle") return "ok";
+    if (status === "error") return "failed";
+    if (Date.now() >= deadline || svc.disposed) return "late";
     await sleep(svc.timing.pollMs);
   }
 }

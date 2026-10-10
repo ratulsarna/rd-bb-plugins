@@ -77,9 +77,14 @@ is at or over the threshold, the plugin starts a new conversation in the same
 home with the same provider. Its first message holds the memory rules and the
 view, hidden from the timeline, then the old conversation's automations move
 to it and the old one is archived. It runs only when nothing is in flight:
-the old thread and all its children idle, nothing queued. While it moves,
-new messages to the old thread wait, then go to the new one. A turn that ends
-in failure or is interrupted never rotates. A harness can still compact in one
+the old thread idle (or failed) with no background work, all its children
+done, nothing queued. While it moves, new messages to the old thread wait,
+then go to the new one before the old one is archived. A message that cannot
+be moved (a system notice, a scheduled or grouped send) keeps the old thread
+until it is gone. A refused or unfinished move tries again every 30 seconds.
+Automatic rotation never follows a failed or interrupted turn, nor a session
+whose only turn is its first message. If the new conversation fails to start,
+`memory off` makes the old one the main chat again. A harness can still compact in one
 very long turn; that shows as a warning. **New thread with…** on a memory-on
 assistant does the same move, adding your message after the view.
 
@@ -90,7 +95,7 @@ assistant does the same move, adding your message after the view.
 | `bb assistants memory status <thread-id> [--clear]` | On or off, main chat, counts, view size, summary progress, last context use, import progress, warnings. `--clear` clears warnings. |
 | `bb assistants recall <id> [n]` | Open line `id+n` of the view into its two halves; `n = 1` gives the message whole. |
 | `bb assistants date <id>` | The date and time of message `id`. |
-| `bb assistants rotate <thread-id>` | Rotate the main chat now, if its summaries are ready. |
+| `bb assistants rotate <thread-id>` | Rotate the main chat now; waits up to a minute for summaries. |
 | `bb assistants import <thread-id> <source>...` | Before memory is first on: seed the log from old threads (`thr_…`) or absolute JSONL paths on the server (`{kind, text, date}` per line). Runs in the background and resumes when run again. |
 
 `recall` and `date` use the calling thread's assistant; outside a thread pass

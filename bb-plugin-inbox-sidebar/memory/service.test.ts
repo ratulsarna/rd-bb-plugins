@@ -53,13 +53,17 @@ it("logs a command's call and output from one event, and after a crash between t
   expect(svc.chat(IDENTITY).msgs.map((m) => [m.kind, m.text, m.src])).toEqual(logged);
 });
 
-it("rotates once at the idle after a completed turn over the threshold, never on an interrupted one or under it", async () => {
+it("rotates once at the idle after a completed turn over the threshold, never on an interrupted one, under it, or after the bootstrap alone", async () => {
   const w = start();
   const svc = w.service();
   await svc.on("thr_main");
+  // A fresh session's first turn is its bootstrap: with a low threshold it must not rotate on and on.
   w.say("thr_main", "hello");
   w.reply("thr_main", "hi");
+  w.turnEnd("thr_main");
   w.usage.set("thr_main", { usedTokens: 90_000, modelContextWindow: 100_000 });
+  await svc.onIdle("thr_main");
+  w.say("thr_main", "and now?");
   w.turnEnd("thr_main", "interrupted");
   await svc.onIdle("thr_main");
   w.turnEnd("thr_main");
@@ -83,6 +87,7 @@ it("stops waiting for summaries when the user starts another turn, and warns whe
   const svc = w.service({ readinessMs: 80 }, hanging);
   await svc.on("thr_main");
   w.say("thr_main", "x".repeat(900));
+  w.say("thr_main", "y");
   w.turnEnd("thr_main");
   w.usage.set("thr_main", { usedTokens: 90, modelContextWindow: 100 });
 
@@ -95,6 +100,48 @@ it("stops waiting for summaries when the user starts another turn, and warns whe
   await svc.onIdle("thr_main");
   expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual(["rotation skipped: summaries not ready"]);
   expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
+});
+
+it("cancels the attempt when a turn starts while the context use is being read", async () => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  w.say("thr_main", "one");
+  w.say("thr_main", "two");
+  w.turnEnd("thr_main");
+  let answer!: (value: unknown) => void;
+  w.harness.sdk.stub("threads.context", () => new Promise((resolve) => (answer = resolve)));
+  const idle = svc.onIdle("thr_main");
+  await settle();
+  svc.onActive("thr_main");
+  answer({ usage: { usedTokens: 90, modelContextWindow: 100 } });
+  await idle;
+  expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
+});
+
+it("tries a rotation a busy moment refused again on its timer, while the chat sits idle after the same turn", async () => {
+  const w = start();
+  const svc = w.service({ quietMs: 80, retryMs: 120 });
+  await svc.on("thr_main");
+  w.say("thr_main", "one");
+  w.say("thr_main", "two");
+  w.turnEnd("thr_main");
+  w.usage.set("thr_main", { usedTokens: 90, modelContextWindow: 100 });
+  w.thread("thr_child", { parentThreadId: "thr_main", updatedAt: Date.now() });
+  await svc.onIdle("thr_main");
+  expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
+  await settle(250);
+  expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+  expect(svc.state(IDENTITY).handover!.step).toBe("done");
+});
+
+it("logs background work when bb reports it done", async () => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  w.emit("thr_main", "item/backgroundTask/completed", { item: { type: "backgroundTask", id: "b", status: "completed", taskType: "shell", description: "build", taskStatus: "completed", skipTranscript: false, summary: "built" } });
+  await svc.catchUp(IDENTITY, "thr_main");
+  expect(svc.chat(IDENTITY).msgs.map((m) => m.text).at(-1)).toBe("built");
 });
 
 it("warns when the harness compacted the chat before it could rotate", async () => {
