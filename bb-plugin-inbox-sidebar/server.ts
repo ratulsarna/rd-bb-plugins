@@ -29,7 +29,7 @@ import {
   getFolderNameError,
   joinHostPath,
 } from "./lib/project-browser-path";
-import { handover } from "./memory/handover";
+import { handover, type Place } from "./memory/handover";
 import { MEMORY_CHANNEL, MemoryService } from "./memory/service";
 
 const threadIdInput = z.object({ threadId: z.string().trim().min(1) });
@@ -738,15 +738,13 @@ export default function plugin(bb: BbPluginApi) {
     run: async (argv, ctx) => {
       const [command, ...args] = argv;
       try {
-        let out: string;
         switch (command) {
           case "subtitle":
             if (!args[0]) break;
             return await subtitleCommand(args[0], args.slice(1));
           case "memory":
             if (!args[0] || !args[1]) break;
-            out = await memoryCommand(args[0], args[1], args[2]);
-            return { exitCode: 0, stdout: `${out}\n` };
+            return { exitCode: 0, stdout: `${await memoryCommand(args[0], args[1], args[2])}\n` };
           case "recall": {
             const { identity, numbers: [id, n = 1] } = await readMemory(args, ctx?.threadId);
             if (id === undefined) break;
@@ -1025,7 +1023,7 @@ export default function plugin(bb: BbPluginApi) {
               serviceTier: request.serviceTier,
               executionInputSources: request.executionInputSources,
             },
-            visible: request.input as Parameters<typeof bb.sdk.threads.spawn>[0]["input"] & object,
+            visible: request.input as Place["visible"],
           },
         });
       }

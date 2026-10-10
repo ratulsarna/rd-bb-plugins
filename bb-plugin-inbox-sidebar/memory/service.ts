@@ -121,7 +121,8 @@ export class MemoryService {
   /** Threads whose events go into this identity's log: the main chat while on, and an old one mid-handover. */
   private logged(identity: string): string[] {
     const s = this.state(identity);
-    return [...(s.on && s.main ? [s.main] : []), ...(unfinished(s) ? [unfinished(s)!.old] : [])];
+    const h = unfinished(s);
+    return [...(s.on && s.main ? [s.main] : []), ...(h ? [h.old] : [])];
   }
 
   private loggerOf(threadId: string): string | undefined {
@@ -130,7 +131,9 @@ export class MemoryService {
 
   async start(): Promise<void> {
     for (const identity of identities(this.root)) {
-      for (const threadId of this.logged(identity)) await this.catchUp(identity, threadId).catch((e) => this.bb.log.warn(`memory ${identity}: ${message(e)}`));
+      for (const threadId of this.logged(identity)) {
+        await this.catchUp(identity, threadId).catch((e) => this.bb.log.warn(`memory ${identity}: ${message(e)}`));
+      }
       if (unfinished(this.state(identity))) void resume(this, identity);
     }
   }
