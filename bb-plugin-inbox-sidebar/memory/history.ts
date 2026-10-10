@@ -11,8 +11,16 @@ const ITEM_DONE = new Set(["item/completed", "item/backgroundTask/completed", "i
 /** Event types the logger fetches. */
 export const LOGGED_TYPES = ["client/turn/requested", "item/completed", "item/backgroundTask/completed", "item/delegation/completed"] as const;
 
-/** Looking at memory is not news to remember; a failed or compound call is. */
-const RECALL = /^bb assistants (recall|date)\b[^;&|\n]*$/;
+/** Looking at memory is not news to remember; a failed or compound call is. Plain words only, no shell. */
+const RECALL = /^bb assistants (recall|date)( +[\w-]+)*$/;
+/** Codex runs each command through a shell, as `/bin/bash -lc 'bb assistants recall 21 1'`. */
+const SHELL = /^(?:\S*\/)?(?:bash|sh|zsh) -l?c (?:'([^']*)'|"([^"]*)")$/;
+
+/** The command itself, out of one shell wrapper. */
+function script(command: string): string {
+  const wrapped = SHELL.exec(command.trim());
+  return (wrapped ? (wrapped[1] ?? wrapped[2]) : command).trim();
+}
 const DROPPED = new Set(["reasoning", "plan", "contextCompaction", "userMessage"]);
 /** Display and bookkeeping fields: not what the agent did. */
 const NOISE = new Set(["id", "status", "presentation", "truncation", "parentToolCallId"]);
@@ -66,7 +74,7 @@ function itemRecords(item: any): Array<[Kind, string]> {
       if (item.text) out.push(["unii", item.text]);
       break;
     case "commandExecution":
-      if (RECALL.test(item.command.trim()) && item.exitCode === 0) break;
+      if (RECALL.test(script(item.command)) && item.exitCode === 0) break;
       out.push(["tool", `$ ${item.command}`]);
       echo([item.aggregatedOutput ?? "", item.exitCode === undefined ? "" : `exit ${item.exitCode}`].filter(Boolean).join("\n"));
       break;

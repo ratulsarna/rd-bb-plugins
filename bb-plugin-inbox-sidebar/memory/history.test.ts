@@ -71,11 +71,23 @@ it("drops a plain successful recall but keeps a failed or compound one", () => {
     command("bb assistants date 7", 0),
     command("bb assistants recall 3 2", 1),
     command("bb assistants recall 0 1 && rm -rf x", 0),
+    command("bb assistants recall 1 $(rm -rf x)", 0),
+    // Codex's shell wrapper, with either quotes and with or without a path.
+    command("/bin/bash -lc 'bb assistants recall 21 1'", 0),
+    command('zsh -c "bb assistants date 7 --assistant thr_a1"', 0),
+    command("/bin/bash -lc 'bb assistants recall 0 1 && rm -rf x'", 0),
+    command("/bin/bash -lc 'bb assistants recall 3 2'", 1),
   ])).toEqual([
     ["tool", "$ bb assistants recall 3 2"],
     ["echo", "out\nexit 1"],
     ["tool", "$ bb assistants recall 0 1 && rm -rf x"],
     ["echo", "out\nexit 0"],
+    ["tool", "$ bb assistants recall 1 $(rm -rf x)"],
+    ["echo", "out\nexit 0"],
+    ["tool", "$ /bin/bash -lc 'bb assistants recall 0 1 && rm -rf x'"],
+    ["echo", "out\nexit 0"],
+    ["tool", "$ /bin/bash -lc 'bb assistants recall 3 2'"],
+    ["echo", "out\nexit 1"],
   ]);
 });
 
