@@ -95,6 +95,7 @@ it("refuses another root in the same home without logging it", async () => {
 
 it("moves the chat: main, automations and held messages go to the new thread, then the old one is archived", async () => {
   const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000 });
+  svc.warn(IDENTITY, "rotation waits: an earlier obstacle");
   const moving = rotate();
   await vi.waitFor(() => expect(w.threads.has("thr_new1")).toBe(true));
   expect(svc.holds.has("thr_main")).toBe(true);
@@ -110,6 +111,7 @@ it("moves the chat: main, automations and held messages go to the new thread, th
   expect(calls("threads.queuedMessages.create")).toEqual([[{ threadId: "thr_new1", input: [{ type: "text", text: "one more thing", mentions: [] }], senderThreadId: "thr_side" }]]);
   expect(svc.chat(IDENTITY).msgs.at(-1)!.text).toBe("a late report");
   expect(svc.holds.size).toBe(0);
+  expect(svc.state(IDENTITY).warnings).toEqual([]);
 });
 
 it("moves a message queued while the old thread's last events are read", async () => {
@@ -362,6 +364,7 @@ describe("an old thread kept live", () => {
 
 it("finishes a handover that memory off arrived in the middle of", async () => {
   const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000 });
+  svc.warn(IDENTITY, "rotation waits: an earlier obstacle");
   const moving = rotate();
   await vi.waitFor(() => expect(w.threads.has("thr_new1")).toBe(true));
   svc.off(IDENTITY);

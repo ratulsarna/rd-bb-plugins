@@ -222,7 +222,11 @@ export async function handover(
       } as Parameters<typeof svc.bb.sdk.threads.spawn>[0]);
       svc.update(identity, { main: fresh.id, previous: [...svc.state(identity).previous, old] });
       const warning = await finish(svc, identity, old, fresh.id, own);
-      if (warning === undefined) return { newThreadId: fresh.id };
+      if (warning === undefined) {
+        // A clean move settles what earlier warnings asked for; the new chat starts without them.
+        svc.clearWarnings(identity);
+        return { newThreadId: fresh.id };
+      }
       svc.warn(identity, warning);
       return { newThreadId: fresh.id, warning };
     } finally {
