@@ -227,6 +227,22 @@ it("a batch that fails partway saves no view, and reading back finishes it", asy
   assert.ok(reopened.built([1, 0]));
 });
 
+it("a batch that fails partway leaves a log without gaps, whatever files it spans", async () => {
+  const dir = tmp();
+  const chat = Chat.open(dir);
+  chat.append("user", "first", "2026-09-05");
+  chat.append("user", "second", "2026-09-06");
+  chat.append("user", "third", "2026-09-05");
+  const second = path.join(dir, "main", "2026-09-06.jsonl");
+  fs.mkdirSync(second, { recursive: true });
+  await assert.rejects(chat.flush());
+  fs.rmSync(second, { recursive: true });
+  chat.reload();
+  assert.deepEqual(chat.msgs.map((m) => m.text), ["first"]);
+  await chat.close();
+  assert.deepEqual(Chat.open(dir).msgs.map((m) => m.text), ["first"]);
+});
+
 it("a commit waits for the one before, so the view never lands before the log it shows", async () => {
   const dir = tmp();
   const chat = Chat.open(dir);

@@ -59,6 +59,8 @@ describe("the safe moment", () => {
       w.thread("thr_g", { parentThreadId: "thr_c", status: "active" });
     }],
     ["an archived child still runs, which the archive would stop", (w: ReturnType<typeof world>) => w.thread("thr_c", { parentThreadId: "thr_main", archivedAt: 1, status: "active" })],
+    // Archived a moment ago: its report to its parent may still be on its way.
+    ["an archived child changed 1 second ago", (w: ReturnType<typeof world>) => w.thread("thr_c", { parentThreadId: "thr_main", archivedAt: 1, updatedAt: Date.now() - 1000 })],
     ["a hidden thread made from it runs", (w: ReturnType<typeof world>) => w.thread("thr_h", { sourceThreadId: "thr_main", visibility: "hidden", status: "active" })],
   ])("refuses with nothing changed when %s", async (_name, arrange) => {
     const { w, svc, rotate, calls } = await ready({}, { quietMs: 5000 });
@@ -167,6 +169,21 @@ describe("an automatic rotation", () => {
     await svc.onIdle("thr_main");
     expect(svc.state(IDENTITY).main).toBe("thr_new1");
     expect(w.threads.get("thr_g")!.archivedAt).not.toBeNull();
+  });
+
+  it("passes an archived child stuck stopping, which the archive leaves be", async () => {
+    const { w, svc } = await due();
+    w.thread("thr_c", { parentThreadId: "thr_main", archivedAt: 1, status: "stopping" });
+    await svc.onIdle("thr_main");
+    expect(svc.state(IDENTITY).main).toBe("thr_new1");
+  });
+
+  it("counts a child on a host with no assistant source as in no home", async () => {
+    const { w, svc } = await due();
+    w.environments.set("env_x", { id: "env_x", projectId: "fleet", hostId: "laptop", path: "/home/x/repo" });
+    w.thread("thr_c", { parentThreadId: "thr_main", environmentId: "env_x" });
+    await svc.onIdle("thr_main");
+    expect(svc.state(IDENTITY).main).toBe("thr_new1");
   });
 
   it("runs in plan mode", async () => {

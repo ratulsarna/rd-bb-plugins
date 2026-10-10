@@ -129,7 +129,9 @@ function readLines<T>(dir: string): T[] {
 
 export type Job = { ref: Ref; prompt: string };
 
-const emptyBatch = () => ({ main: new Map<string, string>(), tree: new Map<string, string>(), view: false });
+/** Lines in record order, as runs of one file each: whatever part of a batch lands is a prefix. */
+type Runs = Array<{ file: string; lines: string }>;
+const emptyBatch = () => ({ main: [] as Runs, tree: [] as Runs, view: false });
 
 export class Chat {
   readonly dir: string;
@@ -150,7 +152,7 @@ export class Chat {
   private sources = new Map<string, { at: number; records: number }>();
   /** A log or tree write failed: memory may be ahead of the disk until `reload`. */
   damaged = false;
-  /** Records and the view waiting for the next commit: per file, the lines to append. */
+  /** Records and the view waiting for the next commit. */
   private pending = emptyBatch();
   /** Commits run one after another, so a view never reaches the disk before what it shows. */
   private committing: Promise<void> = Promise.resolve();
@@ -257,12 +259,15 @@ export class Chat {
 
   private queue(part: "main" | "tree", file: string, value: unknown): void {
     this.writable();
-    const files = this.pending[part];
-    files.set(file, (files.get(file) ?? "") + JSON.stringify(value) + "\n");
+    const runs = this.pending[part];
+    const last = runs.at(-1);
+    const line = JSON.stringify(value) + "\n";
+    if (last?.file === file) last.lines += line;
+    else runs.push({ file, lines: line });
   }
 
   /**
-   * Commit what is queued: one append per touched file, the log before the tree that summarizes it, then
+   * Commit what is queued: one append per run of one file, the log before the tree that summarizes it, then
    * the view by temp file and rename. A failed write marks the chat damaged until `reload`.
    */
   flush(): Promise<void> {
@@ -278,7 +283,7 @@ export class Chat {
     // Taken with the batch, so the saved view shows nothing this batch does not write.
     const saved = view ? JSON.stringify({ view: this.view, cview: this.cview }) : undefined;
     try {
-      for (const [file, lines] of [...main, ...tree]) {
+      for (const { file, lines } of [...main, ...tree]) {
         await fs.promises.mkdir(path.dirname(file), { recursive: true });
         await fs.promises.appendFile(file, lines, { flush: true });
       }

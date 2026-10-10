@@ -75,7 +75,7 @@ async function oldBusy(svc: MemoryService, identity: string, old: string, own: b
   // archived threads too (no `archived` filter), since the archive walks through both.
   const all = await sdk.list({ includeHidden: true });
   const root = all.find((t) => t.id === old);
-  if (!root || !settled(root.status) || working(root)) return new Busy("The conversation is busy");
+  if (!root || root.archivedAt !== null || !settled(root.status) || working(root)) return new Busy("The conversation is busy");
   // A goal keeps the chat going on its own; waiting 30 seconds will not end it.
   if (root.activity.activeGoalCount > 0) return new Busy("The main chat has an active goal", true);
   const now = Date.now();
@@ -84,13 +84,16 @@ async function oldBusy(svc: MemoryService, identity: string, old: string, own: b
     const taken = parents.flatMap((id) => all.filter(takenWith(id))).filter((t) => !seen.has(t.id));
     for (const t of taken) {
       seen.add(t.id);
+      if (now - t.updatedAt < svc.timing.quietMs) return new Busy(`Child ${t.id} just changed`);
+      if (t.archivedAt !== null) {
+        // The archive stops an archived thread that still runs, and passes through any other.
+        if (t.status === "active" || working(t)) return new Busy(`Child ${t.id} still runs`);
+        continue;
+      }
       if (!settled(t.status)) return new Busy(`Child ${t.id} is ${t.status}`);
-      // Archived and settled: the archive passes through it and leaves it be.
-      if (t.archivedAt !== null) continue;
       if (t.activity.activeGoalCount > 0) return new Busy(`Child ${t.id} has an active goal`, true);
       if (t.queuedWork === "failed") return new Busy(`Child ${t.id} has failed queued messages`, true);
       if (working(t) || t.queuedWork !== "none") return new Busy(`Child ${t.id} still has work`);
-      if (now - t.updatedAt < svc.timing.quietMs) return new Busy(`Child ${t.id} just changed`);
       const beyond = own ? await outside(svc, identity, root, t) : null;
       if (beyond) return beyond;
     }
@@ -108,8 +111,9 @@ async function outside(svc: MemoryService, identity: string, root: ListEntry, t:
   // A child working elsewhere, as in a repository worktree, is in no assistant's home.
   if (!t.environmentId) return null;
   const owner = await svc.identityOf(t.environmentId);
-  // A lookup that failed says nothing about the owner: try again later.
-  if (!owner.ok || owner.awaitingSource) return new Busy(`Could not tell which assistant child ${t.id} belongs to`);
+  // A lookup that failed says nothing about the owner: try again later. A host with no source for the
+  // project has no assistant homes, so a child there is in none.
+  if (!owner.ok) return new Busy(`Could not tell which assistant child ${t.id} belongs to`);
   if (owner.identity !== null && owner.identity !== identity) return new Busy(`Child ${t.id} belongs to another assistant; ${takes}`, true);
   return null;
 }
