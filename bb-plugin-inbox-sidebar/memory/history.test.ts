@@ -138,11 +138,13 @@ it("says a date with its zone in words before the stored value, and leaves one w
   expect(spokenDate("2026-08-01")).toBe("2026-08-01");
 });
 
-it("logs nothing for bb's manual compact, but keeps a message that only mentions it", () => {
+it("logs nothing for bb's manual compact, but keeps a message that only mentions it or only types it", () => {
   /** bb's built-in compact command, as the manual compact action sends it. */
   const compact = [{ type: "text", text: "/compact", mentions: [{ start: 0, end: 8, resource: { kind: "command", trigger: "/", name: "compact", source: "command", origin: "builtin", label: "compact", argumentHint: null } }] }];
   expect(records([
     turn({ input: compact }),
     turn({ input: [{ ...compact[0], text: "/compact now please" }] }),
-  ])).toEqual([["user", "/compact now please"]]);
+    // Sent through the API, with no command mention.
+    turn({ input: [{ type: "text", text: "/compact" }] }),
+  ])).toEqual([["user", "/compact now please"], ["user", "/compact"]]);
 });

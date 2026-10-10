@@ -72,7 +72,7 @@ export function isBuiltinCompact(data: any): boolean {
     blocks.length === 1 &&
     only.type === "text" &&
     only.text.trim() === "/compact" &&
-    only.mentions.length === 1 &&
+    only.mentions?.length === 1 &&
     command.resource.kind === "command" &&
     command.resource.name === "compact" &&
     command.resource.origin === "builtin"

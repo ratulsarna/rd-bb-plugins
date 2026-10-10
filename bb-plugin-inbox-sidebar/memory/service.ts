@@ -377,6 +377,7 @@ export class MemoryService {
     const { identity } = await assistantConversationContext(this.bb, threadId);
     const s = this.state(identity);
     if (this.importing.has(identity)) throw new Error("an import is running for this assistant; turn memory on when it is done");
+    if (this.ops.has(identity)) throw new Error("this assistant is moving to a new conversation; turn memory on when it is done");
     if (s.on && s.main && s.main !== threadId) {
       if (!(await this.fate(s.main))) throw new Error(`memory is already on, with main chat ${s.main}`);
       // The old main chat leaves as an earlier one does: drained first, kept in `previous` until that works.
