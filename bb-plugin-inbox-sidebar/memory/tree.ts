@@ -129,6 +129,8 @@ function readLines<T>(dir: string): T[] {
 
 export type Job = { ref: Ref; prompt: string };
 
+const emptyBatch = () => ({ main: new Map<string, string>(), tree: new Map<string, string>(), view: false });
+
 export class Chat {
   readonly dir: string;
   readonly msgs: Msg[] = [];
@@ -148,6 +150,10 @@ export class Chat {
   private sources = new Map<string, { at: number; records: number }>();
   /** A log or tree write failed: memory may be ahead of the disk until `reload`. */
   damaged = false;
+  /** Records and the view waiting for the next commit: per file, the lines to append. */
+  private pending = emptyBatch();
+  /** Commits run one after another, so a view never reaches the disk before what it shows. */
+  private committing: Promise<void> = Promise.resolve();
   /** Summaries in flight at once. A lower one starts nothing until fewer run; running ones go on. */
   pool = DEFAULT_POOL;
   /** The line length a new task asks for; `LINE` stays the limit that sends a line back. */
@@ -164,7 +170,7 @@ export class Chat {
     try {
       chat.load();
     } catch (error) {
-      chat.close();
+      chat.unlock();
       throw error;
     }
     return chat;
@@ -197,7 +203,8 @@ export class Chat {
     const fresh = new Chat(this.dir);
     fresh.load();
     const running = [...this.running];
-    Object.assign(this, fresh, { pool: this.pool, target: this.target });
+    // The commit chain stays: a write still in flight must finish before the next one starts.
+    Object.assign(this, fresh, { pool: this.pool, target: this.target, committing: this.committing });
     for (const k of running) this.resumed(k.split(":").map(Number) as Ref);
   }
 
@@ -232,17 +239,53 @@ export class Chat {
     OPEN.add(this.dir);
   }
 
-  close(): void {
+  /** Writes what is still queued, then lets the next owner open the chat. */
+  async close(): Promise<void> {
+    await this.flush().catch(() => {});
+    this.unlock();
+  }
+
+  private unlock(): void {
     fs.rmSync(path.join(this.dir, "lock"), { force: true });
     OPEN.delete(this.dir);
   }
 
-  /** After a failed write nothing is appended, so a torn line stays the last one, until `reload`. */
-  private appendLine(file: string, value: unknown): void {
+  /** After a failed write nothing is queued, so a torn line stays the last one, until `reload`. */
+  private writable(): void {
     if (this.damaged) throw new Error(`chat ${this.dir}: a write failed; it is read back before the next turn`);
+  }
+
+  private queue(part: "main" | "tree", file: string, value: unknown): void {
+    this.writable();
+    const files = this.pending[part];
+    files.set(file, (files.get(file) ?? "") + JSON.stringify(value) + "\n");
+  }
+
+  /**
+   * Commit what is queued: one append per touched file, the log before the tree that summarizes it, then
+   * the view by temp file and rename. A failed write marks the chat damaged until `reload`.
+   */
+  flush(): Promise<void> {
+    const next = this.committing.then(() => this.commit());
+    this.committing = next.catch(() => {});
+    return next;
+  }
+
+  private async commit(): Promise<void> {
+    this.writable();
+    const { main, tree, view } = this.pending;
+    this.pending = emptyBatch();
+    // Taken with the batch, so the saved view shows nothing this batch does not write.
+    const saved = view ? JSON.stringify({ view: this.view, cview: this.cview }) : undefined;
     try {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.appendFileSync(file, JSON.stringify(value) + "\n", { flush: true });
+      for (const [file, lines] of [...main, ...tree]) {
+        await fs.promises.mkdir(path.dirname(file), { recursive: true });
+        await fs.promises.appendFile(file, lines, { flush: true });
+      }
+      if (saved === undefined) return;
+      const tmp = path.join(this.dir, "view.json.tmp");
+      await fs.promises.writeFile(tmp, saved, { flush: true });
+      await fs.promises.rename(tmp, path.join(this.dir, "view.json"));
     } catch (error) {
       this.damaged = true;
       throw error;
@@ -263,13 +306,15 @@ export class Chat {
    */
   append(kind: Kind, text: string, date: string, src?: Source): number[] {
     if (!KINDS.includes(kind)) throw new Error(`unknown kind ${kind}`);
+    // Memory is ahead of the disk: a replay would skip what never reached it.
+    this.writable();
     const ids: number[] = [];
     for (const part of pieces(kind, text)) {
       const n = src ? src.n++ : 0;
       if (src && n < this.logged(src)) continue;
       const m: Msg = { i: this.T, kind, text: part, size: bytes(part), date };
       if (src) m.src = `${src.stream}:${src.at}#${n}`;
-      this.appendLine(path.join(this.dir, "main", `${/^\d{4}-\d\d-\d\d/.test(date) ? date.slice(0, 10) : today()}.jsonl`), m);
+      this.queue("main", path.join(this.dir, "main", `${/^\d{4}-\d\d-\d\d/.test(date) ? date.slice(0, 10) : today()}.jsonl`), m);
       if (m.src) this.track(m.src);
       this.msgs.push(m);
       ids.push(m.i);
@@ -321,9 +366,7 @@ export class Chat {
     if (this.cview.shrinking || this.size(this.cview.refs) > CVIEW_HI) {
       this.cview.shrinking = !this.shrink(this.cview.refs, CVIEW_LO);
     }
-    const tmp = path.join(this.dir, "view.json.tmp");
-    fs.writeFileSync(tmp, JSON.stringify({ view: this.view, cview: this.cview }), { flush: true });
-    fs.renameSync(tmp, path.join(this.dir, "view.json"));
+    this.pending.view = true;
   }
 
   /** Merge the most due pairs until `refs` fits `target`; false when built parents run out first. */
@@ -394,7 +437,7 @@ export class Chat {
 
   private addNode(r: Ref, text: string): void {
     const n: Node = { l: r[0], i: r[1], text, size: bytes(text) };
-    this.appendLine(path.join(this.dir, "tree", `${today()}.jsonl`), n);
+    this.queue("tree", path.join(this.dir, "tree", `${today()}.jsonl`), n);
     this.nodes.set(key(r), n);
     if (r[0] === 0) {
       const k = this.unbuilt.indexOf(r[1]);

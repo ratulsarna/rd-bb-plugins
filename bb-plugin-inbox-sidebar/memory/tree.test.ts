@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { it } from "vitest";
+import { it, vi } from "vitest";
 import { bytes, Chat, LINE, mergeAt, pickMerge, type Ref, tooLong } from "./tree";
 
 // Taelin's rollback push (rollback_state_list.js), copied from the gist.
@@ -83,7 +83,7 @@ function tmp(): string {
 
 const text = (i: number) => (i % 5 === 0 ? `short ${i}` : `message ${i} `.padEnd(900, "m"));
 
-it("view stays in the sawtooth, covers the chat, and compactions only see built lines before their node", () => {
+it("view stays in the sawtooth, covers the chat, and compactions only see built lines before their node", async () => {
   const dir = tmp();
   const chat = Chat.open(dir);
   let batches = 0;
@@ -131,12 +131,12 @@ it("view stays in the sawtooth, covers the chat, and compactions only see built 
   assert.throws(() => chat.zoom(3, 2));
   assert.throws(() => chat.zoom(0, 3));
   assert.throws(() => chat.zoom(chat.T, 1));
-  chat.close();
+  await chat.close();
 }, 180_000);
 
-it("a restart mid-chat keeps the saved view and finishes the same tree", () => {
+it("a restart mid-chat keeps the saved view and finishes the same tree", async () => {
   const steady = Chat.open(tmp());
-  const restarted = (() => {
+  const restarted = await (async () => {
     const dir = tmp();
     let chat = Chat.open(dir);
     for (let i = 0; i < 1500; i++) {
@@ -146,7 +146,7 @@ it("a restart mid-chat keeps the saved view and finishes the same tree", () => {
     }
     const before = chat.viewLines();
     chat.take(); // in flight when the process dies
-    chat.close();
+    await chat.close();
     chat = Chat.open(dir);
     assert.deepEqual(chat.viewLines(), before, "reopening changed the view");
     return chat;
@@ -189,44 +189,98 @@ it("the too-long retry cuts at 512 bytes without splitting a character", () => {
   assert.match(tooLong(reply), /your line is 800 bytes/);
 });
 
-it("after a failed write nothing is appended until the chat reads itself back, then the record is logged", () => {
+it("after a failed write nothing is appended until the chat reads itself back, then the record is logged", async () => {
   const dir = tmp();
   const chat = Chat.open(dir);
   // A directory where the day's log file goes makes the write fail.
   fs.mkdirSync(path.join(dir, "main", "2026-09-05.jsonl"), { recursive: true });
   const src = () => ({ stream: "e", at: 4, n: 0 });
-  assert.throws(() => chat.append("user", "hi", "2026-09-05T10:00:00+05:30", src()));
-  assert.equal(chat.resumeAt("e"), undefined);
+  chat.append("user", "hi", "2026-09-05T10:00:00+05:30", src());
+  await assert.rejects(chat.flush());
   fs.rmSync(path.join(dir, "main", "2026-09-05.jsonl"), { recursive: true });
   // A torn line must stay the file's last, so a later write cannot glue a record onto it.
   assert.throws(() => chat.append("user", "hi", "2026-09-05T10:00:00+05:30", src()), /a write failed/);
+  await assert.rejects(chat.flush(), /a write failed/);
   chat.reload();
+  assert.equal(chat.resumeAt("e"), undefined);
   assert.deepEqual(chat.append("user", "hi", "2026-09-05T10:00:00+05:30", src()), [0]);
+  await chat.close();
+  assert.deepEqual(Chat.open(dir).msgs.map((m) => m.text), ["hi"]);
 });
 
-it.skipIf(!fs.existsSync("/proc/sys/kernel/random/boot_id"))("a lock from another boot is taken over even when its pid is alive now", () => {
+it("a batch that fails partway saves no view, and reading back finishes it", async () => {
+  const dir = tmp();
+  const chat = Chat.open(dir);
+  chat.append("user", "one", "2026-09-05");
+  chat.append("user", "two", "2026-09-05");
+  // The log goes out first; the tree file after it fails.
+  const treeFile = path.join(dir, "tree", `${new Date().toISOString().slice(0, 10)}.jsonl`);
+  fs.mkdirSync(treeFile, { recursive: true });
+  await assert.rejects(chat.flush());
+  assert.equal(fs.existsSync(path.join(dir, "view.json")), false);
+  fs.rmSync(treeFile, { recursive: true });
+  chat.reload();
+  assert.deepEqual(chat.viewLines(), ["0+1|user: one", "1+1|user: two"]);
+  await chat.close();
+  const reopened = Chat.open(dir);
+  assert.deepEqual(reopened.viewLines(), ["0+1|user: one", "1+1|user: two"]);
+  assert.ok(reopened.built([1, 0]));
+});
+
+it("a commit waits for the one before, so the view never lands before the log it shows", async () => {
+  const dir = tmp();
+  const chat = Chat.open(dir);
+  chat.append("echo", text(1), "2026-09-05");
+  const job = chat.take()!;
+  const append = fs.promises.appendFile;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let first = true;
+  const spy = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args: Parameters<typeof append>) => {
+    if (first) {
+      first = false;
+      await held;
+    }
+    return append(...args);
+  });
+  const logging = chat.flush();
+  // A summary lands and the next message arrives while the first commit is still writing.
+  chat.done(job.ref, "a line");
+  chat.append("user", "next", "2026-09-05");
+  const summary = chat.flush();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(fs.existsSync(path.join(dir, "view.json")), false);
+  release();
+  await Promise.all([logging, summary]);
+  spy.mockRestore();
+  const before = chat.viewLines();
+  await chat.close();
+  assert.deepEqual(Chat.open(dir).viewLines(), before);
+});
+
+it.skipIf(!fs.existsSync("/proc/sys/kernel/random/boot_id"))("a lock from another boot is taken over even when its pid is alive now", async () => {
   const boot = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   const dir = tmp();
   fs.writeFileSync(path.join(dir, "lock"), `${process.ppid} ${boot}`);
   assert.throws(() => Chat.open(dir), /owned by process/);
   fs.writeFileSync(path.join(dir, "lock"), `${process.ppid} 00000000-another-boot`);
-  Chat.open(dir).close();
+  await Chat.open(dir).close();
 });
 
-it("a write a crash cut short is cut off at open, and a corrupt whole record still fails the open", () => {
+it("a write a crash cut short is cut off at open, and a corrupt whole record still fails the open", async () => {
   const dir = tmp();
   let chat = Chat.open(dir);
   chat.append("user", "kept", "2026-09-06");
-  chat.close();
+  await chat.close();
   const file = path.join(dir, "main", "2026-09-06.jsonl");
   fs.appendFileSync(file, '{"i":1,"kind":"user","te');
   chat = Chat.open(dir);
   assert.equal(chat.T, 1);
   chat.append("user", "next", "2026-09-06");
-  chat.close();
+  await chat.close();
   chat = Chat.open(dir);
   assert.deepEqual(chat.msgs.map((m) => m.text), ["kept", "next"]);
-  chat.close();
+  await chat.close();
   fs.appendFileSync(file, "not json\n");
   assert.throws(() => Chat.open(dir), SyntaxError);
 });
@@ -241,12 +295,12 @@ it("a replay that logs nothing does not retry failed compactions", () => {
   assert.equal(chat.failures, 0);
 });
 
-it("a chat opens once per process; closing frees it", () => {
+it("a chat opens once per process; closing frees it", async () => {
   const dir = tmp();
   const chat = Chat.open(dir);
   assert.throws(() => Chat.open(dir), /already open/);
-  chat.close();
-  Chat.open(dir).close();
+  await chat.close();
+  await Chat.open(dir).close();
 });
 
 it("a lower pool starts nothing until fewer run, and a reload keeps the settings", () => {

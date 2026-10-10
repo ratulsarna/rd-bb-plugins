@@ -1,7 +1,7 @@
 import type { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { makeMessageDispatchHookContext } from "@get-bb/plugin-sdk/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "../server";
 import { Busy, handover } from "./handover";
 import { localIso, spokenDate } from "./history";
@@ -61,8 +61,8 @@ describe("the safe moment", () => {
   it("refuses a second handover of the same assistant while one runs", async () => {
     const { w, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000 });
     const first = rotate();
-    await settle();
     await expect(rotate()).rejects.toThrow(/already running/);
+    await vi.waitFor(() => expect(w.threads.has("thr_new1")).toBe(true));
     status(w, "thr_new1", "idle");
     await first;
     expect(calls("threads.spawn")).toHaveLength(1);
@@ -82,7 +82,7 @@ it("refuses another root in the same home without logging it", async () => {
 it("moves the chat: main, automations and held messages go to the new thread, then the old one is archived", async () => {
   const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000 });
   const moving = rotate();
-  await settle();
+  await vi.waitFor(() => expect(w.threads.has("thr_new1")).toBe(true));
   expect(svc.holds.has("thr_main")).toBe(true);
   // Arrived during the hold: a plain message moves; its execution settings are the new thread's now.
   w.queue("thr_main", { content: [{ type: "text", text: "one more thing", mentions: [] }], senderThreadId: "thr_side", model: "m-2" });
@@ -146,7 +146,7 @@ it("stops at a plugin reload before the spawn, and the reload waits for it", asy
   let answer!: (value: unknown) => void;
   w.harness.sdk.stub("threads.defaultExecutionOptions", () => new Promise((resolve) => (answer = resolve)));
   const moving = rotate();
-  await settle();
+  await vi.waitFor(() => expect(answer).toBeDefined());
   let stopped = false;
   const disposing = svc.dispose().then(() => (stopped = true));
   await settle();
@@ -171,14 +171,14 @@ describe("an obstacle after the spawn", () => {
     ["the new thread failed to start", { spawnStatus: "error" }, () => {}, /new conversation thr_new1 failed to start\. Archive it to resume rotation\./],
     ["the new thread has not started in time", { spawnStatus: "starting" }, () => {}, /thr_new1 has not started in time\. Archive it/],
     ["an automation cannot follow", {}, ({ w }) => void (w.failures.update = new Error("target not runnable")), /heartbeat: target not runnable\)\. Archive it, or move its automations, to resume rotation\./],
-    ["a child got work during the hold", { spawnStatus: "starting" }, ({ w }) => void setTimeout(() => {
+    ["a child got work during the hold", { spawnStatus: "starting" }, ({ w }) => void (w.taps.spawned = (id) => {
       w.thread("thr_child", { parentThreadId: "thr_main", status: "active" });
-      status(w, "thr_new1", "idle");
-    }, 10), /Child thr_child is active\. Archive it when that work is done/],
-    ["a held message cannot move", { spawnStatus: "starting" }, ({ w }) => void setTimeout(() => {
+      status(w, id, "idle");
+    }), /Child thr_child is active\. Archive it when that work is done/],
+    ["a held message cannot move", { spawnStatus: "starting" }, ({ w }) => void (w.taps.spawned = (id) => {
       w.queue("thr_main", { failureReason: "provider down" });
-      status(w, "thr_new1", "idle");
-    }, 10), /Messages are queued on thr_main: q1\. Send or remove them, then archive it/],
+      status(w, id, "idle");
+    }), /Messages are queued on thr_main: q1\. Send or remove them, then archive it/],
     ["the archive call fails", {}, ({ w }) => w.harness.sdk.stub("threads.archive", async () => { throw new Error("archive refused"); }), /kept live: archive refused\. Archive it to resume rotation\./],
   ])("stops when %s: the old thread stays live, the warning says what to do, nothing retries", async (_name, options, arrange, warning) => {
     const r = await ready(options, { runnableMs: 100, retryMs: 50 });
@@ -208,8 +208,7 @@ describe("an old thread kept live", () => {
     const { w, svc, calls } = await kept();
     w.say("thr_main", "still here");
     svc.onEvents("thr_main");
-    await settle();
-    expect(svc.chat(IDENTITY).msgs.at(-1)!.text).toBe("still here");
+    await vi.waitFor(() => expect(svc.chat(IDENTITY).msgs.at(-1)!.text).toBe("still here"));
 
     svc.clearWarnings(IDENTITY);
     w.say("thr_new1", "one");
@@ -250,8 +249,7 @@ describe("an old thread kept live", () => {
     expect(svc.state(IDENTITY).previous).toEqual(["thr_main"]);
     delete w.failures.events;
     if (trigger === "the next catch-up") svc.onEvents("thr_new1");
-    await settle(trigger === "its timer" ? FAST.retryMs * 2 : 20);
-    expect(svc.state(IDENTITY).previous).toEqual([]);
+    await vi.waitFor(() => expect(svc.state(IDENTITY).previous).toEqual([]));
     expect(svc.chat(IDENTITY).msgs.at(-1)!.text).toBe("last words");
   });
 
@@ -277,7 +275,7 @@ describe("an old thread kept live", () => {
 it("finishes a handover that memory off arrived in the middle of", async () => {
   const { w, svc, rotate, calls } = await ready({ spawnStatus: "starting" }, { runnableMs: 1000 });
   const moving = rotate();
-  await settle();
+  await vi.waitFor(() => expect(w.threads.has("thr_new1")).toBe(true));
   svc.off(IDENTITY);
   status(w, "thr_new1", "idle");
   await moving;
@@ -326,7 +324,7 @@ describe("through the plugin", () => {
     const hook = w.harness.inspection.registrations.hooks["message.dispatch"]!;
     const dispatch = (id: string) => hook(makeMessageDispatchHookContext({ thread: { id } }));
     const rotating = w.harness.behavior.runCli(["rotate", "thr_main"]);
-    await settle(50);
+    await vi.waitFor(() => expect(w.threads.has("thr_new1")).toBe(true));
     expect(await dispatch("thr_main")).toEqual({ action: "wait", reason: "Moving to a new conversation" });
     expect(await dispatch("thr_other")).toEqual({ action: "proceed" });
     w.queue("thr_main", { content: [{ type: "text", text: "sent during the move", mentions: [] }] });
@@ -375,8 +373,7 @@ describe("through the plugin", () => {
     const w = await loaded();
     w.emit("thr_main", "item/completed", { item: { type: "agentMessage", id: "m", text: "hi" } });
     await w.harness.behavior.emitThreadEvent("experimental_thread.events", { thread: w.threads.get("thr_main")!, sequence: 2 });
-    await settle();
-    expect(await w.harness.behavior.runCli(["recall", "0", "2"], { threadId: "thr_main" })).toMatchObject({ exitCode: 0, stdout: "0+1|user: hello\n1+1|unii: hi\n" });
+    await vi.waitFor(async () => expect(await w.harness.behavior.runCli(["recall", "0", "2"], { threadId: "thr_main" })).toMatchObject({ exitCode: 0, stdout: "0+1|user: hello\n1+1|unii: hi\n" }));
     expect(await w.harness.behavior.runCli(["date", "1", "--assistant", "thr_main"])).toMatchObject({ exitCode: 0, stdout: `${spokenDate(localIso(w.events.get("thr_main")!.at(-1)!.createdAt))}\n` });
     expect(await w.harness.behavior.runCli(["recall", "0"])).toMatchObject({ exitCode: 1, stderr: expect.stringMatching(/--assistant/) });
     expect(await w.harness.behavior.runCli(["recall", "5", "1"], { threadId: "thr_main" })).toMatchObject({ exitCode: 1, stderr: expect.stringMatching(/no line 5\+1/) });

@@ -75,6 +75,8 @@ export class Summarizer {
       chat.fail(job.ref);
       this.opts.log(`memory ${identity}: summary not saved: ${error instanceof Error ? error.message : String(error)}`);
     }
+    // A damaged chat is read back at the next turn, and the summary made again.
+    chat.flush().catch((error) => this.opts.log(`memory ${identity}: summary not saved: ${error instanceof Error ? error.message : String(error)}`));
     this.pump();
     this.changed.emit("progress");
   }

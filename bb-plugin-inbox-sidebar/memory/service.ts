@@ -258,8 +258,12 @@ export class MemoryService {
           const src = { stream, at: row.seq, n: 0 };
           for (const r of recordsOf(row)) chat.append(r.kind, r.text, r.date, src);
         }
-        after = row.seq;
-        this.cursors.set(cursor, row.seq);
+      }
+      // The cursor moves once the page is on disk: after a failed write the page is fetched again.
+      await chat.flush();
+      if (rows.length > 0) {
+        after = rows.at(-1)!.seq;
+        this.cursors.set(cursor, after);
       }
       this.summarizer.pump();
       if (rows.length < PAGE) return;
@@ -483,6 +487,7 @@ export class MemoryService {
       chat.append(kind, text, date, { stream, at: n, n: 0 });
       this.summarizer.pump();
     }
+    await chat.flush();
   }
 
   /** Lets logging, handovers and imports in flight stop at their next check, then closes the chats. */
@@ -493,7 +498,7 @@ export class MemoryService {
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();
     await Promise.allSettled([...this.logging.values(), ...this.ops.values(), ...this.importing.values()]);
-    for (const chat of this.chats.values()) chat.close();
+    await Promise.allSettled([...this.chats.values()].map((chat) => chat.close()));
     this.chats.clear();
   }
 

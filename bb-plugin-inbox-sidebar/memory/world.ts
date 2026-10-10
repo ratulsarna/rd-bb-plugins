@@ -34,7 +34,7 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
   const automations = [{ automation: { id: "beat", projectId: "fleet", name: "heartbeat", execution: { mode: "agent", targetThreadId: "thr_main" } } }];
   const failures: { update?: Error; events?: Error } = {};
   /** Runs on each events read, before it answers: a test can make something happen mid-read. */
-  const taps: { events?: (threadId: string) => void | Promise<void>; get?: (threadId: string) => void | Promise<void> } = {};
+  const taps: { events?: (threadId: string) => void | Promise<void>; get?: (threadId: string) => void | Promise<void>; spawned?: (threadId: string) => void } = {};
   let seq = 0;
   let spawned = 0;
   let rowIds = 0;
@@ -96,7 +96,11 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
         },
         context: async ({ threadId }) => ({ usage: usage.get(threadId) ?? null }),
         defaultExecutionOptions: async () => ({ model: "m-1", reasoningLevel: "high", permissionMode: "full", serviceTier: "default" }),
-        spawn: async () => structuredClone(thread(`thr_new${++spawned}`, { status: spawnStatus })),
+        spawn: async () => {
+          const t = thread(`thr_new${++spawned}`, { status: spawnStatus });
+          taps.spawned?.(t.id);
+          return structuredClone(t);
+        },
         archive: async ({ threadId }) => {
           archive(threadId, Date.now());
           return {};

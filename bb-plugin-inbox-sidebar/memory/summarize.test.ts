@@ -222,3 +222,14 @@ it("leaves the chat alone when a call finishes just as the plugin reloads", asyn
   await settle();
   for (const write of writes) expect(write).not.toHaveBeenCalled();
 });
+
+it("puts a finished summary on disk without waiting for the next message", async () => {
+  const h = harness(() => ({ out: "a line" }));
+  const c = chat();
+  h.summarizer.add("a", c);
+  c.append("echo", long("one"), "2026-09-01");
+  await c.flush();
+  expect(await h.summarizer.waitUntil(c, () => c.unsummarized === 0, 2000)).toBe(true);
+  const tree = path.join(c.dir, "tree");
+  await vi.waitFor(() => expect(fs.readdirSync(tree).map((f) => fs.readFileSync(path.join(tree, f), "utf8")).join("")).toContain("a line"));
+});

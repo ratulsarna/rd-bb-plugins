@@ -100,6 +100,8 @@ it("stops waiting for summaries when the user starts another turn, and warns whe
   w.usage.set("thr_main", { usedTokens: 90, modelContextWindow: 100 });
 
   const waiting = svc.onIdle("thr_main");
+  // The context read comes right before the wait for summaries.
+  await vi.waitFor(() => expect(w.harness.inspection.sdk.callsTo("threads.context")).toHaveLength(1));
   await settle(10);
   svc.onActive("thr_main");
   await waiting;
@@ -125,7 +127,7 @@ it("cancels the attempt when a turn starts while the context use is being read",
   let answer!: (value: unknown) => void;
   w.harness.sdk.stub("threads.context", () => new Promise((resolve) => (answer = resolve)));
   const idle = svc.onIdle("thr_main");
-  await settle();
+  await vi.waitFor(() => expect(answer).toBeDefined());
   svc.onActive("thr_main");
   answer({ usage: { usedTokens: 90, modelContextWindow: 100 } });
   await idle;
@@ -197,8 +199,7 @@ it("rotates at start when a rotation came due while the plugin was down", async 
   await svc.dispose();
   svc = w.service();
   await svc.start();
-  await settle(50);
-  expect(svc.state(IDENTITY).main).toBe("thr_new1");
+  await vi.waitFor(() => expect(svc.state(IDENTITY).main).toBe("thr_new1"));
 });
 
 it("stops at a plugin reload: logging in flight ends before it writes, and the reload waits for it", async () => {
@@ -209,7 +210,7 @@ it("stops at a plugin reload: logging in flight ends before it writes, and the r
   let release!: () => void;
   w.taps.events = () => new Promise<void>((resolve) => (release = resolve));
   const logging = svc.catchUp(IDENTITY, "thr_main");
-  await settle();
+  await vi.waitFor(() => expect(release).toBeDefined());
   let stopped = false;
   const disposing = svc.dispose().then(() => (stopped = true));
   await settle();
@@ -236,7 +237,7 @@ it("stops at a plugin reload during startup: the old startup cannot undo the new
   w.taps.get = () => new Promise<void>((resolve) => (release = resolve));
   svc = w.service();
   const starting = svc.start();
-  await settle();
+  await vi.waitFor(() => expect(release).toBeDefined());
   delete w.taps.get;
   await svc.dispose();
 
@@ -258,8 +259,7 @@ it("keeps a main chat unarchived after a failed drain as the main chat", async (
   await svc.onGone("thr_main", "archived");
   delete w.failures.events;
   w.threads.get("thr_main")!.archivedAt = null;
-  svc.onEvents("thr_main");
-  await settle();
+  await svc.onIdle("thr_main");
   expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_main", warnings: [] });
 });
 
@@ -292,8 +292,7 @@ it("drains an archived main chat before memory on takes a new one, and keeps it 
   expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_two", previous: ["thr_main"] });
   delete w.taps.events;
   svc.onEvents("thr_two");
-  await settle();
-  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_two", previous: [] });
+  await vi.waitFor(() => expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_two", previous: [] }));
   expect(svc.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(["last words"]);
 });
 
@@ -339,8 +338,7 @@ it("imports files and old threads before memory is on, resumably, and refuses on
 
   for (let run = 0; run < 2; run++) {
     svc.startImport(IDENTITY, [file, "thr_old"]);
-    await settle();
-    expect(svc.status(IDENTITY)).toMatch(/messages: 6\n[\s\S]*import: 2\/2 sources\n?/);
+    await vi.waitFor(() => expect(svc.status(IDENTITY)).toMatch(/messages: 6\n[\s\S]*import: 2\/2 sources\n?/));
   }
   expect(() => svc.startImport(IDENTITY, ["relative.jsonl"])).toThrow(/absolute path/);
   await svc.on("thr_main");
@@ -354,8 +352,7 @@ it("imports one thread into two assistants, each from its start", async () => {
   w.say("thr_old", "an old question");
   for (const identity of [IDENTITY, "fleet:zz-other"]) {
     svc.startImport(identity, ["thr_old"]);
-    await settle();
-    expect(svc.chat(identity).msgs.map((m) => m.text)).toEqual(["an old question"]);
+    await vi.waitFor(() => expect(svc.chat(identity).msgs.map((m) => m.text)).toEqual(["an old question"]));
   }
 });
 
@@ -364,17 +361,15 @@ it("resumes a file import a failed write stopped", async () => {
   const svc = w.service();
   const file = path.join(w.base, "past.jsonl");
   fs.writeFileSync(file, ["one", "two", "three"].map((text) => JSON.stringify({ kind: "note", text, date: "2026-08-01" })).join("\n") + "\n");
-  const append = fs.appendFileSync;
+  const append = fs.promises.appendFile;
   let writes = 0;
-  vi.spyOn(fs, "appendFileSync").mockImplementation((...args: Parameters<typeof append>) => {
-    if (++writes === 2) throw new Error("disk full");
+  vi.spyOn(fs.promises, "appendFile").mockImplementation((...args: Parameters<typeof append>) => {
+    if (++writes === 2) return Promise.reject(new Error("disk full"));
     return append(...args);
   });
   svc.startImport(IDENTITY, [file]);
-  await settle();
-  expect(svc.state(IDENTITY).import).toMatchObject({ done: 0, error: "disk full" });
+  await vi.waitFor(() => expect(svc.state(IDENTITY).import).toMatchObject({ done: 0, error: "disk full" }));
   svc.startImport(IDENTITY, [file]);
-  await settle();
-  expect(svc.state(IDENTITY).import).toMatchObject({ done: 1, error: null });
+  await vi.waitFor(() => expect(svc.state(IDENTITY).import).toMatchObject({ done: 1, error: null }));
   expect(svc.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(["one", "two", "three"]);
 });
