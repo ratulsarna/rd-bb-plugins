@@ -1,5 +1,6 @@
 import type { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import { makeMessageDispatchHookContext } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "../server";
@@ -26,6 +27,12 @@ async function ready(options: Parameters<typeof world>[0] = {}, timing: Partial<
   return { w, svc, rotate, calls };
 }
 
+/** A child of the old thread whose environment is another assistant's home. */
+const othersChild = (w: ReturnType<typeof world>, over: Parameters<ReturnType<typeof world>["thread"]>[1] = {}) => {
+  w.environments.set("env_b", { id: "env_b", projectId: "fleet", hostId: "srv", path: path.join(w.assistantsRoot, "zz-other") });
+  return w.thread("thr_c", { parentThreadId: "thr_main", environmentId: "env_b", ...over });
+};
+
 const status = (w: ReturnType<typeof world>, id: string, s: "idle" | "active") => void (w.threads.get(id)!.status = s);
 const target = (w: ReturnType<typeof world>) => w.automations[0].automation.execution.targetThreadId;
 
@@ -47,6 +54,11 @@ describe("the safe moment", () => {
     // Archiving the old thread takes these along too, as it does children.
     ["a thread whose lifecycle it owns runs", (w: ReturnType<typeof world>) => w.thread("thr_d", { lifecycleOwnerThreadId: "thr_main", status: "active" })],
     ["a thread in another project whose lifecycle it owns runs", (w: ReturnType<typeof world>) => w.thread("thr_x", { projectId: "elsewhere", lifecycleOwnerThreadId: "thr_main", status: "active" })],
+    ["a live grandchild sits under an archived child", (w: ReturnType<typeof world>) => {
+      w.thread("thr_c", { parentThreadId: "thr_main", archivedAt: 1 });
+      w.thread("thr_g", { parentThreadId: "thr_c", status: "active" });
+    }],
+    ["an archived child still runs, which the archive would stop", (w: ReturnType<typeof world>) => w.thread("thr_c", { parentThreadId: "thr_main", archivedAt: 1, status: "active" })],
     ["a hidden thread made from it runs", (w: ReturnType<typeof world>) => w.thread("thr_h", { sourceThreadId: "thr_main", visibility: "hidden", status: "active" })],
   ])("refuses with nothing changed when %s", async (_name, arrange) => {
     const { w, svc, rotate, calls } = await ready({}, { quietMs: 5000 });
@@ -123,6 +135,9 @@ describe("an automatic rotation", () => {
     ["the main chat has an active goal", (w) => void (w.threads.get("thr_main")!.activity.activeGoalCount = 1), "The main chat has an active goal"],
     ["a child has an active goal", (w) => void (w.thread("thr_c", { parentThreadId: "thr_main" }).activity.activeGoalCount = 1), "Child thr_c has an active goal"],
     ["a child has failed queued messages", (w) => w.thread("thr_c", { parentThreadId: "thr_main", queuedWork: "failed" }), "Child thr_c has failed queued messages"],
+    // Nobody composed this move, so it must not archive what is not this assistant's.
+    ["a child is in another project", (w) => w.thread("thr_c", { parentThreadId: "thr_main", projectId: "elsewhere" }), "Child thr_c is in another project; archiving thr_main would archive it"],
+    ["a child lives in another assistant's home", (w) => othersChild(w), "Child thr_c belongs to another assistant; archiving thr_main would archive it"],
   ])("waits with one warning and no retry loop when %s", async (_name, arrange, why) => {
     const { w, svc, calls } = await due();
     arrange(w);
@@ -131,6 +146,27 @@ describe("an automatic rotation", () => {
     await settle(150);
     expect(calls("threads.context")).toHaveLength(reads);
     expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual([`rotation waits: ${why}`]);
+  });
+
+  it("tries again when it cannot tell whose a child is", async () => {
+    const { w, svc, calls } = await due();
+    othersChild(w);
+    w.environments.delete("env_b");
+    w.harness.sdk.stub("environments.get", async () => { throw new Error("server busy"); });
+    await svc.onIdle("thr_main");
+    const reads = calls("threads.context").length;
+    await vi.waitFor(() => expect(calls("threads.context").length).toBeGreaterThan(reads));
+    expect(svc.state(IDENTITY).warnings).toEqual([]);
+    expect(calls("threads.spawn")).toEqual([]);
+  });
+
+  it("passes through an archived thread of another assistant to reach live ones of its own", async () => {
+    const { w, svc } = await due();
+    othersChild(w, { archivedAt: 1 });
+    w.thread("thr_g", { parentThreadId: "thr_c" });
+    await svc.onIdle("thr_main");
+    expect(svc.state(IDENTITY).main).toBe("thr_new1");
+    expect(w.threads.get("thr_g")!.archivedAt).not.toBeNull();
   });
 
   it("runs in plan mode", async () => {
@@ -178,7 +214,11 @@ describe("an obstacle after the spawn", () => {
     ["a held message cannot move", { spawnStatus: "starting" }, ({ w }) => void (w.taps.spawned = (id) => {
       w.queue("thr_main", { failureReason: "provider down" });
       status(w, id, "idle");
-    }), /Messages are queued on thr_main: q1\. Send or remove them, then archive it/],
+    }), /Messages are queued on thr_main: q1\. Sort that out, then archive it/],
+    ["a child of another assistant appears during the hold", { spawnStatus: "starting" }, ({ w }) => void (w.taps.spawned = (id) => {
+      othersChild(w);
+      status(w, id, "idle");
+    }), /Child thr_c belongs to another assistant; archiving thr_main would archive it\. Sort that out, then archive it/],
     ["the archive call fails", {}, ({ w }) => w.harness.sdk.stub("threads.archive", async () => { throw new Error("archive refused"); }), /kept live: archive refused\. Archive it to resume rotation\./],
   ])("stops when %s: the old thread stays live, the warning says what to do, nothing retries", async (_name, options, arrange, warning) => {
     const r = await ready(options, { runnableMs: 100, retryMs: 50 });
@@ -346,6 +386,19 @@ describe("through the plugin", () => {
     else old.deletedAt = Date.now();
     await w.harness.behavior.emitThreadEvent(`thread.${fate}`, { thread: old });
     expect(await status()).not.toMatch(/^kept live/m);
+  });
+
+  it("refuses `rotate` over a child of another assistant, but a composed move archives it, as the user chose it", async () => {
+    const w = await loaded();
+    othersChild(w);
+    expect(await w.harness.behavior.runCli(["rotate", "thr_main"])).toMatchObject({ exitCode: 1, stderr: expect.stringMatching(/Child thr_c belongs to another assistant/) });
+    expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
+    const request = {
+      replaceThreadId: "thr_main", title: "Test", destinationHostId: "srv", homePath: w.home,
+      request: { projectId: "fleet", providerId: "codex", model: "m-9", reasoningLevel: "low", permissionMode: "full", executionInputSources: {}, environment: {}, input: [{ type: "text", text: "New topic", mentions: [] }] },
+    };
+    expect(await w.harness.behavior.callRpc("createReplacementThread", request)).toEqual({ newThreadId: "thr_new1" });
+    expect(w.threads.get("thr_c")!.archivedAt).not.toBeNull();
   });
 
   it("starts a composed conversation with the view hidden before the user's words, and refuses a scheduled send first", async () => {

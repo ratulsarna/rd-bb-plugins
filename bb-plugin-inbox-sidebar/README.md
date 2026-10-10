@@ -81,8 +81,11 @@ does the same move, adding your message after the view.
 The move runs in one pass, and only when nothing is in flight: the old thread
 idle (or failed) with no background work and no active goal (plan mode is
 fine), everything its archive takes along (children, threads whose lifecycle
-it owns, hidden threads made from it, and theirs) done and quiet for 5
-seconds, nothing queued on it, and no earlier old thread still live. It
+it owns, hidden threads made from it, and theirs, through archived ones too)
+done and quiet for 5 seconds, nothing queued on it, and no earlier old thread
+still live. An automatic rotation and `rotate` also refuse when the archive
+would take a thread of another project or another assistant's home; **New
+thread with…** goes ahead, since you chose it. It
 waits for summaries first (up to a minute for **New thread with…** and
 `rotate`, five minutes for an automatic rotation), then holds new messages to
 the old thread. Once the new thread runs, the old one's automations and held
@@ -95,7 +98,8 @@ archive the old thread; its last events are logged first. A rotation refused
 because the thread was busy, a child was working or summaries were not ready
 tries again every 30 seconds while the chat sits idle after the same turn.
 Queued messages, an active goal or failed queued messages (on the old
-thread or a child), or a live old thread give one warning instead. A rotation that came due while the plugin was stopped runs at start. Automatic
+thread or a child), a thread of another assistant, or a live old thread give
+one warning instead. A rotation that came due while the plugin was stopped runs at start. Automatic
 rotation never follows a failed or interrupted turn, nor a session whose only
 turn is its hidden first message. `memory off` stops logging and rotation; a
 move already running finishes. If you archive or delete the main chat

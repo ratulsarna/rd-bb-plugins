@@ -63,14 +63,17 @@ const takenWith = (id: string) => (t: ListEntry) =>
   t.parentThreadId === id || t.lifecycleOwnerThreadId === id || (t.sourceThreadId === id && t.visibility === "hidden");
 
 /**
- * Null when the old thread and everything its archive takes can be archived now, else why not. Each of
- * those must be settled, and quiet long enough that no report to its parent is still on its way.
+ * Null when archiving the old thread is safe now, else why not. bb's archive walks the links above,
+ * through archived threads too: it archives each live one and stops any archived one still running.
+ * Each one it acts on must be settled, and quiet long enough that no report to its parent is still on
+ * its way. With `own`, it must also take nothing of another project or assistant: a rotation nobody
+ * composed cannot show the user what goes with it.
  */
-async function oldBusy(svc: MemoryService, old: string): Promise<Busy | null> {
+async function oldBusy(svc: MemoryService, identity: string, old: string, own: boolean): Promise<Busy | null> {
   const sdk = svc.bb.sdk.threads;
-  // List entries carry the activity counters and the links; `get` has neither. Not by project: the
-  // archive takes linked threads from any project.
-  const all = await sdk.list({ includeHidden: true, archived: false });
+  // List entries carry the activity counters and the links; `get` has neither. Every project, and
+  // archived threads too (no `archived` filter), since the archive walks through both.
+  const all = await sdk.list({ includeHidden: true });
   const root = all.find((t) => t.id === old);
   if (!root || !settled(root.status) || working(root)) return new Busy("The conversation is busy");
   // A goal keeps the chat going on its own; waiting 30 seconds will not end it.
@@ -82,10 +85,14 @@ async function oldBusy(svc: MemoryService, old: string): Promise<Busy | null> {
     for (const t of taken) {
       seen.add(t.id);
       if (!settled(t.status)) return new Busy(`Child ${t.id} is ${t.status}`);
+      // Archived and settled: the archive passes through it and leaves it be.
+      if (t.archivedAt !== null) continue;
       if (t.activity.activeGoalCount > 0) return new Busy(`Child ${t.id} has an active goal`, true);
       if (t.queuedWork === "failed") return new Busy(`Child ${t.id} has failed queued messages`, true);
       if (working(t) || t.queuedWork !== "none") return new Busy(`Child ${t.id} still has work`);
       if (now - t.updatedAt < svc.timing.quietMs) return new Busy(`Child ${t.id} just changed`);
+      const beyond = own ? await outside(svc, identity, root, t) : null;
+      if (beyond) return beyond;
     }
     parents = taken.map((t) => t.id);
   }
@@ -94,15 +101,28 @@ async function oldBusy(svc: MemoryService, old: string): Promise<Busy | null> {
   return null;
 }
 
+/** Why archiving `t` along with `root` would reach past this assistant, else null. */
+async function outside(svc: MemoryService, identity: string, root: ListEntry, t: ListEntry): Promise<Busy | null> {
+  const takes = `archiving ${root.id} would archive it`;
+  if (t.projectId !== root.projectId) return new Busy(`Child ${t.id} is in another project; ${takes}`, true);
+  // A child working elsewhere, as in a repository worktree, is in no assistant's home.
+  if (!t.environmentId) return null;
+  const owner = await svc.identityOf(t.environmentId);
+  // A lookup that failed says nothing about the owner: try again later.
+  if (!owner.ok || owner.awaitingSource) return new Busy(`Could not tell which assistant child ${t.id} belongs to`);
+  if (owner.identity !== null && owner.identity !== identity) return new Busy(`Child ${t.id} belongs to another assistant; ${takes}`, true);
+  return null;
+}
+
 /** Null when the main chat `old` can move now, else why not. */
-async function safeMoment(svc: MemoryService, identity: string, old: string): Promise<Busy | null> {
+async function safeMoment(svc: MemoryService, identity: string, old: string, own: boolean): Promise<Busy | null> {
   const s = svc.state(identity);
   // A wake-up from before the last handover must not move a chat that already moved.
   if (s.main !== old) return new Busy(`${old} is not the main chat`, true);
   if (s.previous.length > 0) {
     return new Busy(`Old conversation ${s.previous.join(", ")} is still live from an earlier rotation. Archive it to resume rotation.`, true);
   }
-  return oldBusy(svc, old);
+  return oldBusy(svc, identity, old, own);
 }
 
 /** The old thread's own machine, home and settings, for a rotation nobody composed. */
@@ -137,20 +157,22 @@ export async function handover(
   { identity, oldThreadId: old, composer }: { identity: string; oldThreadId: string; composer?: Place },
 ): Promise<{ newThreadId: string; warning?: string }> {
   if (svc.ops.has(identity)) throw new Busy("A conversation change for this assistant is already running");
+  // The composer is the user choosing this move; other paths must not reach past this assistant.
+  const own = composer === undefined;
   const op = (async () => {
     // Before any logging: another root in the same home must not enter this assistant's memory.
     if (svc.state(identity).main !== old) throw new Busy(`${old} is not the main chat`, true);
     // Before the hold, so a wait for summaries never holds the user's messages.
     await svc.catchUp(identity, old);
     if (!(await svc.readyWithin(identity, svc.timing.readyCapMs))) throw new Busy(svc.notReady(identity));
-    const busy = await safeMoment(svc, identity, old);
+    const busy = await safeMoment(svc, identity, old, own);
     if (busy) throw busy;
     svc.holds.add(old);
     try {
       // A message may have started work between the check and the hold.
       await svc.catchUp(identity, old);
       if (!svc.ready(identity)) throw new Busy(svc.notReady(identity));
-      const again = await safeMoment(svc, identity, old);
+      const again = await safeMoment(svc, identity, old, own);
       if (again) throw again;
       const context = await assistantConversationContext(svc.bb, old);
       if (composer) await context.validate(composer.destination.hostId, composer.destination.homePath);
@@ -166,7 +188,7 @@ export async function handover(
         environment: { type: "host", hostId: destination.hostId, workspace: { type: "unmanaged", path: destination.homePath } },
       } as Parameters<typeof svc.bb.sdk.threads.spawn>[0]);
       svc.update(identity, { main: fresh.id, previous: [...svc.state(identity).previous, old] });
-      const warning = await finish(svc, identity, old, fresh.id);
+      const warning = await finish(svc, identity, old, fresh.id, own);
       if (warning === undefined) return { newThreadId: fresh.id };
       svc.warn(identity, warning);
       return { newThreadId: fresh.id, warning };
@@ -187,7 +209,7 @@ export async function handover(
  * come first, and nothing waits between the last check and the archive.
  * Undefined when the old thread is archived, else what keeps it live and what to do.
  */
-async function finish(svc: MemoryService, identity: string, old: string, fresh: string): Promise<string | undefined> {
+async function finish(svc: MemoryService, identity: string, old: string, fresh: string, own: boolean): Promise<string | undefined> {
   const kept = (why: string, action = "Archive it to resume rotation.") => `Old conversation ${old} kept live: ${why}. ${action}`;
   try {
     const started = await runnable(svc, fresh);
@@ -196,8 +218,8 @@ async function finish(svc: MemoryService, identity: string, old: string, fresh: 
     if (stuck.length > 0) return kept(`automations still target it (${stuck.join("; ")})`, "Archive it, or move its automations, to resume rotation.");
     await svc.catchUp(identity, old);
     await moveHeld(svc, old, fresh);
-    const busy = await oldBusy(svc, old);
-    if (busy) return kept(busy.message, busy.lasting ? "Send or remove them, then archive it, to resume rotation." : "Archive it when that work is done to resume rotation.");
+    const busy = await oldBusy(svc, identity, old, own);
+    if (busy) return kept(busy.message, busy.lasting ? "Sort that out, then archive it, to resume rotation." : "Archive it when that work is done to resume rotation.");
     await svc.bb.sdk.threads.archive({ threadId: old });
     svc.update(identity, { previous: svc.state(identity).previous.filter((id) => id !== old) });
     return undefined;

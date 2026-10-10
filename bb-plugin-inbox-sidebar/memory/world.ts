@@ -66,12 +66,22 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
     return row;
   };
 
-  // Like bb: an archive takes the children, and queued rows vanish with their thread.
-  const archive = (id: string, at: number) => {
-    threads.get(id)!.archivedAt = at;
-    queued.delete(id);
-    for (const child of threads.values()) if (child.parentThreadId === id) archive(child.id, at);
+  // Like bb: an archive walks children, lifecycle dependents and hidden source threads, through archived
+  // ones and never through deleted ones, and archives each live one; queued rows vanish with it.
+  const archive = (id: string, at: number, seen = new Set<string>()) => {
+    const t = threads.get(id)!;
+    if (seen.has(id) || t.deletedAt !== null) return;
+    seen.add(id);
+    if (t.archivedAt === null) {
+      t.archivedAt = at;
+      queued.delete(id);
+    }
+    for (const o of threads.values()) {
+      if (o.parentThreadId === id || o.lifecycleOwnerThreadId === id || (o.sourceThreadId === id && o.visibility === "hidden")) archive(o.id, at, seen);
+    }
   };
+  /** Each environment's home: `env` is the assistant's own. */
+  const environments = new Map([["env", { id: "env", projectId: "fleet", hostId: "srv", path: home as string | null }]]);
 
   const sdk: FakeSdkOverrides = {
       threads: {
@@ -81,9 +91,11 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
           if (!t || t.deletedAt !== null) throw Object.assign(new Error(`HTTP 404: thread ${threadId} not found`), { status: 404 });
           return structuredClone(t);
         },
-        list: async ({ projectId, parentThreadId, hasParent } = {}) =>
+        // Like bb: without `archived`, both archived and live threads; never deleted ones.
+        list: async ({ projectId, parentThreadId, hasParent, archived, includeHidden } = {}) =>
           [...threads.values()]
-            .filter((t) => t.archivedAt === null && t.deletedAt === null && (projectId === undefined || t.projectId === projectId) && (parentThreadId !== undefined ? t.parentThreadId === parentThreadId : hasParent !== false || t.parentThreadId === null))
+            .filter((t) => t.deletedAt === null && (archived === undefined || archived === (t.archivedAt !== null)) && (includeHidden || t.visibility === "visible"))
+            .filter((t) => (projectId === undefined || t.projectId === projectId) && (parentThreadId !== undefined ? t.parentThreadId === parentThreadId : hasParent !== false || t.parentThreadId === null))
             .map((t) => structuredClone(t)),
         events: {
           list: async ({ threadId, types, afterSeq, order, limit }) => {
@@ -114,7 +126,13 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
           },
         },
       },
-      environments: { get: async () => ({ id: "env", projectId: "fleet", hostId: "srv", path: home }) },
+      environments: {
+        get: async ({ environmentId }) => {
+          const env = environments.get(environmentId);
+          if (!env) throw new Error(`environment ${environmentId} not found`);
+          return env;
+        },
+      },
       projects: { get: async () => ({ id: "fleet", name: "assistants", sources: [{ hostId: "srv", path: assistantsRoot }] }) },
       providers: { list: async () => [{ id: "codex", available: true }] },
       hosts: {
@@ -158,5 +176,5 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
     return harness.lifecycle.dispose();
   };
 
-  return { bb, harness, base, home, threads, events, queued, usage, automations, failures, taps, thread, emit, say, reply, turnEnd, queue, service, dispose };
+  return { bb, harness, base, home, assistantsRoot, environments, threads, events, queued, usage, automations, failures, taps, thread, emit, say, reply, turnEnd, queue, service, dispose };
 }

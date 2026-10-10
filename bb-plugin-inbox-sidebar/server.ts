@@ -12,7 +12,7 @@ import { z } from "zod";
 // Relative on purpose: a path install loads server.ts directly, where the
 // bundler's "@/" alias does not exist.
 import { pinnedRootIds } from "./lib/pinned-order";
-import { homeSegmentUnder } from "./lib/assistant-identity";
+import { createIdentityResolver } from "./lib/assistant-identity";
 import {
   assistantConversationContext,
   assistantDestinationSchema,
@@ -298,71 +298,7 @@ export default function plugin(bb: BbPluginApi) {
     }
   }
 
-  // Identity comes from the environment plus its project's registered
-  // sources, and sources change when a machine is added — so the cache lives
-  // for a minute, not forever. Environment facts themselves are stable.
-  const IDENTITY_TTL_MS = 60_000;
-  interface ResolvedIdentity {
-    /** False when the lookup itself failed — not an answer, a retry. */
-    ok: boolean;
-    /** Set iff the environment sits in a home of its project. */
-    identity: string | null;
-    /** True when a registered source on this host is all that's missing. */
-    awaitingSource: boolean;
-  }
-  const identityCache = new Map<
-    string,
-    { at: number; resolved: ResolvedIdentity }
-  >();
-  const identityOfEnvironment = async (
-    environmentId: string,
-  ): Promise<ResolvedIdentity> => {
-    const cached = identityCache.get(environmentId);
-    if (cached && Date.now() - cached.at < IDENTITY_TTL_MS) {
-      return cached.resolved;
-    }
-    let resolved: ResolvedIdentity = { ok: false, identity: null, awaitingSource: false };
-    try {
-      const env = await bb.sdk.environments.get({ environmentId });
-      let sources: Array<{ hostId: string; path: string }>;
-      try {
-        sources = (
-          await bb.sdk.projects.get({ projectId: env.projectId })
-        ).sources;
-      } catch (error) {
-        // A project lookup hiccup is transient; retry, keeping the key.
-        bb.log.warn(
-          `assistant identity for ${environmentId} unresolved: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        return resolved;
-      }
-      const source = sources.find(
-        (candidate: { hostId: string }) => candidate.hostId === env.hostId,
-      );
-      const segment =
-        source && env.path ? homeSegmentUnder(env.path, source.path) : null;
-      resolved = {
-        ok: true,
-        identity: segment === null ? null : `${env.projectId}:${segment}`,
-        awaitingSource: source === undefined,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/not found/i.test(message)) {
-        // The environment is gone for good: an answer, not a failure. Its
-        // rows keep their key.
-        resolved = { ok: true, identity: null, awaitingSource: false };
-      } else {
-        bb.log.warn(`assistant identity for ${environmentId} unresolved: ${message}`);
-      }
-    }
-    if (resolved.ok && !resolved.awaitingSource) {
-      identityCache.set(environmentId, { at: Date.now(), resolved });
-    }
-    return resolved;
-  };
+  const identityOfEnvironment = createIdentityResolver(bb);
 
   // Displays may fall back; writes and drag readiness require an answer so
   // a transient lookup or missing source cannot strand metadata under an id.

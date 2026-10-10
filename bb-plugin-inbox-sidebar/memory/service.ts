@@ -5,6 +5,7 @@ import path from "node:path";
 import type { spawn } from "node:child_process";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { assistantConversationContext } from "../lib/assistant-conversation";
+import { createIdentityResolver, type ResolvedIdentity } from "../lib/assistant-identity";
 import { Busy, handover } from "./handover";
 import { type EventRow, isBuiltinCompact, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
 import { dirName, identities, KEPT_WARNINGS, type MemoryState, readState, writeState } from "./state";
@@ -45,6 +46,8 @@ export class MemoryService {
   readonly ops = new Map<string, Promise<unknown>>();
   readonly retries = new Map<string, NodeJS.Timeout>();
   readonly summarizer: Summarizer;
+  /** Which assistant a thread's environment belongs to, as the rest of the plugin decides it. */
+  readonly identityOf: (environmentId: string) => Promise<ResolvedIdentity>;
   settings: MemorySettings = { rotateAtPercent: 55, summaryModel: "haiku", summaryPool: 8, summaryTarget: 512 };
   disposed = false;
   private readonly states = new Map<string, MemoryState>();
@@ -68,6 +71,7 @@ export class MemoryService {
     readonly timing: Timing = TIMING,
     spawnProcess?: typeof spawn,
   ) {
+    this.identityOf = createIdentityResolver(bb);
     this.summarizer = new Summarizer({ scratch: path.join(root, ".scratch"), log: (m) => bb.log.warn(m), spawn: spawnProcess });
   }
 
