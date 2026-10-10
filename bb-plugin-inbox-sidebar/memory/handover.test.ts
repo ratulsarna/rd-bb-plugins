@@ -169,17 +169,20 @@ it.each([
   expect(w.queued.get("thr_main") ?? []).toHaveLength(warning ? 1 : 0);
 });
 
-it("moves a late message off the archived thread even when saving the move then fails", async () => {
+it.each([
+  ["moves a late message", late, undefined],
+  ["names a late scheduled message", { sendAt: Date.now() + 60_000 }, "Messages stayed unsent on archived thr_main: q1. Send them again in thr_new1."],
+])("finishes a move whose last saves fail: %s, and the next rotation is not blocked", async (_name, row, warning) => {
   const { w, svc, rotate } = await ready();
-  afterLastCheck(w, late);
+  afterLastCheck(w, row);
   const update = svc.update.bind(svc);
   vi.spyOn(svc, "update").mockImplementation((identity, patch) => {
     if (w.threads.get("thr_main")!.archivedAt !== null) throw new Error("disk full");
     return update(identity, patch);
   });
-  await expect(rotate()).rejects.toThrow("disk full");
-  expect(w.queued.get("thr_new1")).toHaveLength(1);
-  expect(w.queued.get("thr_main")).toEqual([]);
+  expect(await rotate()).toEqual({ newThreadId: "thr_new1", ...(warning ? { warning } : {}) });
+  expect(w.queued.get("thr_new1") ?? []).toHaveLength(warning ? 0 : 1);
+  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new1", previous: [] });
 });
 
 describe("an automatic rotation", () => {

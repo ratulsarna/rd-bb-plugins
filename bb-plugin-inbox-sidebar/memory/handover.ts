@@ -267,12 +267,13 @@ async function finish(svc: MemoryService, identity: string, old: string, fresh: 
     return kept(message(error));
   }
   // An archived thread takes no new messages, so this sweep is the last: it moves any held after the
-  // check. It runs before anything else can fail.
+  // check. It runs before anything else can fail, and nothing after it does: the move is done.
   const swept = await moveHeld(svc, old, fresh).then(
     (left) => (left.length === 0 ? undefined : `Messages stayed unsent on archived ${old}: ${left.join(", ")}. Send them again in ${fresh}.`),
     (error) => `Messages on archived ${old} may not have moved: ${message(error)}. Send any left there again in ${fresh}.`,
   );
-  svc.update(identity, { previous: svc.state(identity).previous.filter((id) => id !== old) });
+  // Unsaved, the next start finds the old thread archived and drops it again.
+  svc.updateBestEffort(identity, { previous: svc.state(identity).previous.filter((id) => id !== old) });
   return swept;
 }
 

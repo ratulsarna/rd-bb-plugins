@@ -98,15 +98,18 @@ export class MemoryService {
     const s = this.state(identity);
     // A retry that fails the same way again is not news.
     if (s.warnings.at(-1)?.text === text) return;
-    const warnings = [...s.warnings, { at: Date.now(), text }].slice(-KEPT_WARNINGS);
-    try {
-      this.update(identity, { warnings });
-    } catch (error) {
-      // Shown anyway; the next state write that lands saves it.
-      this.states.set(identity, { ...s, warnings });
-      this.bb.log.warn(`memory ${identity}: could not save that warning: ${message(error)}`);
-    }
+    this.updateBestEffort(identity, { warnings: [...s.warnings, { at: Date.now(), text }].slice(-KEPT_WARNINGS) });
     this.bb.realtime.publish(MEMORY_CHANNEL, { identity });
+  }
+
+  /** `update` that never throws: applied in memory even when the disk refuses it; the next write that lands saves it. */
+  updateBestEffort(identity: string, patch: Partial<MemoryState>): void {
+    try {
+      this.update(identity, patch);
+    } catch (error) {
+      this.states.set(identity, { ...this.state(identity), ...patch });
+      this.bb.log.warn(`memory ${identity}: could not save ${Object.keys(patch).join(", ")}: ${message(error)}`);
+    }
   }
 
   /** The one Chat of this identity in this process. */
@@ -428,7 +431,7 @@ export class MemoryService {
   }
 
   clearWarnings(identity: string): void {
-    this.update(identity, { warnings: [] });
+    this.updateBestEffort(identity, { warnings: [] });
     this.bb.realtime.publish(MEMORY_CHANNEL, { identity });
   }
 
