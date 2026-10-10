@@ -11,7 +11,7 @@ const machines = [
 const seeds = {
   title: "Sam", projectId: "fleet", environmentId: "env-old", sourceHostId: "srv", machines,
   identity: "fleet:sam", vaultPath: "/srv/vault", providerId: "retired-provider", model: "retired-model", reasoningLevel: "high", permissionMode: "full", serviceTier: "priority",
-  homePath: "/srv/assistants/sam", homes: [{ name: "sam", path: "/srv/assistants/sam" }],
+  homePath: "/srv/assistants/sam", homes: [{ name: "sam", path: "/srv/assistants/sam" }], memory: false,
 };
 function destination(hostId: "srv" | "mac", providerAvailable = true) {
   const machine = machines.find((machine) => machine.hostId === hostId)!;

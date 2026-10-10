@@ -51,6 +51,62 @@ Assistant titles, identity-based subtitles and ordering stay shared across
 machines. Bots uses the first project whose lowercase name is `assistants`;
 a second project named `Assistants` is not hidden by capitalization.
 
+## Memory
+
+Memory gives one assistant a conversation that never ends, on any harness
+(Claude Code, Codex, Pi). It is off until you turn it on for that assistant.
+It follows Victor Taelin's OptChat design: every message is logged word for
+word, a tree of one-line summaries is built over the log, and a new session
+starts with a 64-128 KB view of the whole chat.
+
+What is logged: the main chat's user messages, the assistant's replies, its
+tool calls and their output, and reports other threads send into it. What is
+not: reasoning, plans, a subagent's own transcript (its call and report are
+logged), blocks bb marks agent-only, and a successful plain
+`bb assistants recall` or `date` call. Tool output over 30,000 characters
+keeps its head and tail.
+
+Where it lives: on the bb server, beside the plugin's database, in
+`memory/<project>__<home>/` (`main/` is the log, `tree/` the summaries,
+`view.json` the view, `memory.json` the state). It is outside `data.db`, so a
+plugin rollback leaves it alone. Summaries run `claude -p` on the server's
+Claude login, with no tools, in an empty folder.
+
+Rotation: when a turn ends normally, the thread is idle and its context use
+is at or over the threshold, the plugin starts a new conversation in the same
+home with the same provider. Its first message holds the memory rules and the
+view, hidden from the timeline, then the old conversation's automations move
+to it and the old one is archived. It runs only when nothing is in flight:
+the old thread and all its children idle, nothing queued. While it moves,
+new messages to the old thread wait, then go to the new one. A turn that ends
+in failure or is interrupted never rotates. A harness can still compact in one
+very long turn; that shows as a warning. **New thread with…** on a memory-on
+assistant does the same move, adding your message after the view.
+
+| Command | Does |
+|---|---|
+| `bb assistants memory on <thread-id>` | Turn memory on; this thread becomes the main chat and is logged from its start. |
+| `bb assistants memory off <thread-id>` | Stop logging and rotating. The log, `recall` and `date` stay. |
+| `bb assistants memory status <thread-id> [--clear]` | On or off, main chat, counts, view size, summary progress, last context use, import progress, warnings. `--clear` clears warnings. |
+| `bb assistants recall <id> [n]` | Open line `id+n` of the view into its two halves; `n = 1` gives the message whole. |
+| `bb assistants date <id>` | The date and time of message `id`. |
+| `bb assistants rotate <thread-id>` | Rotate the main chat now, if its summaries are ready. |
+| `bb assistants import <thread-id> <source>...` | Before memory is first on: seed the log from old threads (`thr_…`) or absolute JSONL paths on the server (`{kind, text, date}` per line). Runs in the background and resumes when run again. |
+
+`recall` and `date` use the calling thread's assistant; outside a thread pass
+`--assistant <thread-id>`.
+
+Settings: `rotateAtPercent` (55, 1-95), `summaryModel` (`haiku`),
+`summaryPool` (8 summary calls at once across all assistants) and
+`summaryTarget` (512 bytes asked per line; 512 stays the limit).
+
+Warnings (a compaction before rotation, summaries not ready in time, an
+automation that could not move) show as a `!` on the assistant's Bots row and
+in `memory status`.
+
+`scripts/eval.ts` asks a thread a list of questions and scores the answers:
+`node scripts/eval.ts <thread-id> <questions.json>`.
+
 ## RPC handoff
 
 Plugin id: `inbox-sidebar`. SDK `useRpc.call` returns the result directly.
@@ -74,6 +130,7 @@ standard `{ ok: true, result }` envelope.
   serviceTier?: string;
   homePath: string | null;
   homes: Array<{ name: string; path: string }>;
+  memory: boolean; // memory is on: the view goes before the first message
   machines: Array<{
     hostId: string;
     name: string;
@@ -143,6 +200,14 @@ HTTP success confirms conversation creation; provider provisioning can fail
 afterward, leaving a created thread with `thread_provisioning_failed`. Inspect
 that thread's status to verify startup. The source is archived once creation
 succeeds, without waiting for provider startup; reopen it from **Past chats**.
+
+When memory is on for the source assistant, `createReplacementThread` runs the
+memory handover instead: it refuses a `sendAt`, and refuses with a reason while
+the source is busy or its summaries are still running.
+
+`assistantMemory({})` returns
+`{ rows: Array<{ identity: string; warning: string | null }> }`: the latest
+warning of each assistant that has memory.
 
 `pastAssistantThreads({ threadId: string })` returns
 `{ rows: Array<{ id: string; createdAt: number; archivedAt: number }> }`: the

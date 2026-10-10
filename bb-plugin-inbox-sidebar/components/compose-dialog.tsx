@@ -147,6 +147,7 @@ export function ComposeDialog({
                   </>
                 )}
                 <button type="button" disabled={submitting} onClick={() => setAttempt((value) => value + 1)} className="mt-2 text-xs text-muted-foreground underline">Refresh destination</button>
+                {seeds.memory && <p className="mt-2 text-xs text-muted-foreground">Memory is added to the first message.</p>}
               </>
             )}
 

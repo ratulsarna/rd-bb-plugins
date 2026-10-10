@@ -239,6 +239,14 @@ describe("assistant machine creation through the public SDK host", () => {
     expect(f.calls("threads.archive")).toEqual([]);
   });
 
+  it("still replaces a conversation that is running when the assistant has no memory", async () => {
+    const f = await fixture();
+    f.thread.status = "active";
+    expect(await f.create()).toEqual({ newThreadId: "new" });
+    expect(f.calls("threads.archive")).toEqual([[{ threadId: "old" }]]);
+    expect(f.calls("threads.list")).toEqual([]);
+  });
+
   it("reports archive failure with the created id so the composer will not spawn twice", async () => {
     const f = await fixture();
     f.harness.sdk.stub("threads.archive", async () => { throw new Error("archive refused"); });
