@@ -4,6 +4,7 @@ import { makeMessageDispatchHookContext } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import plugin from "../server";
 import { Busy, handover } from "./handover";
+import { localIso } from "./history";
 import type { Timing } from "./service";
 import { IDENTITY, settle, world } from "./world";
 
@@ -43,6 +44,9 @@ describe("the safe moment", () => {
     }],
     ["a child changed 2 seconds ago", (w: ReturnType<typeof world>) => w.thread("thr_c", { parentThreadId: "thr_main", updatedAt: Date.now() - 2000 })],
     ["a message is queued on the old thread", (w: ReturnType<typeof world>) => w.queue("thr_main")],
+    // Archiving the old thread takes these along too, as it does children.
+    ["a thread whose lifecycle it owns runs", (w: ReturnType<typeof world>) => w.thread("thr_d", { lifecycleOwnerThreadId: "thr_main", status: "active" })],
+    ["a hidden thread made from it runs", (w: ReturnType<typeof world>) => w.thread("thr_h", { sourceThreadId: "thr_main", visibility: "hidden", status: "active" })],
   ])("refuses with nothing changed when %s", async (_name, arrange) => {
     const { w, svc, rotate, calls } = await ready({}, { quietMs: 5000 });
     arrange(w);
@@ -81,6 +85,36 @@ it("moves the chat: main, automations and held messages go to the new thread, th
   expect(calls("threads.queuedMessages.create")).toEqual([[{ threadId: "thr_new1", input: [{ type: "text", text: "one more thing", mentions: [] }], senderThreadId: "thr_side" }]]);
   expect(svc.chat(IDENTITY).msgs.at(-1)!.text).toBe("a late report");
   expect(svc.holds.size).toBe(0);
+});
+
+it("moves a message queued while the old thread's last events are read", async () => {
+  const { w, rotate } = await ready();
+  const late = [{ type: "text" as const, text: "just in time", mentions: [] }];
+  w.taps.events = (threadId) => {
+    if (threadId !== "thr_main" || !w.threads.has("thr_new1")) return;
+    delete w.taps.events;
+    w.queue("thr_main", { content: late });
+  };
+  expect(await rotate()).toEqual({ newThreadId: "thr_new1" });
+  expect(w.queued.get("thr_new1")!.map((r) => r.content)).toEqual([late]);
+  expect(w.threads.get("thr_main")!.archivedAt).not.toBeNull();
+});
+
+it("rotates in plan mode, and waits on an active goal with one warning and no retry loop", async () => {
+  const { w, svc, calls } = await ready({}, { retryMs: 30 });
+  w.turnEnd("thr_main");
+  w.usage.set("thr_main", { usedTokens: 90, modelContextWindow: 100 });
+  const { activity } = w.threads.get("thr_main")!;
+  activity.activeGoalCount = 1;
+  await svc.onIdle("thr_main");
+  const reads = calls("threads.context").length;
+  await settle(150);
+  expect(calls("threads.context")).toHaveLength(reads);
+  expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual(["rotation waits: The main chat has an active goal"]);
+  activity.activeGoalCount = 0;
+  activity.activePlanModeCount = 1;
+  await svc.onIdle("thr_main");
+  expect(svc.state(IDENTITY).main).toBe("thr_new1");
 });
 
 it("rotates an old thread whose last turn failed", async () => {
@@ -155,7 +189,7 @@ describe("an old thread kept live", () => {
     w.say("thr_main", "last words");
     w.threads.get("thr_main")!.archivedAt = Date.now();
     w.failures.events = new Error("server busy");
-    await svc.onArchived("thr_main");
+    await svc.onGone("thr_main", "archived");
     expect(svc.state(IDENTITY).previous).toEqual(["thr_main"]);
     // The next start drains it instead.
     delete w.failures.events;
@@ -164,6 +198,15 @@ describe("an old thread kept live", () => {
     await restarted.start();
     expect(restarted.state(IDENTITY).previous).toEqual([]);
     expect(restarted.chat(IDENTITY).msgs.at(-1)!.text).toBe("last words");
+  });
+
+  it("leaves the log when deleted while the plugin was down", async () => {
+    const { w, svc } = await kept();
+    w.threads.get("thr_main")!.deletedAt = Date.now();
+    svc.dispose();
+    const restarted = w.service();
+    await restarted.start();
+    expect(restarted.state(IDENTITY)).toMatchObject({ main: "thr_new1", previous: [] });
   });
 });
 
@@ -230,14 +273,16 @@ describe("through the plugin", () => {
     expect(w.queued.get("thr_new1")!.map((r) => r.content)).toEqual([[{ type: "text", text: "sent during the move", mentions: [] }]]);
   });
 
-  it("resumes rotation once the user archives an old thread a stopped handover kept", async () => {
+  it.each(["archived", "deleted"] as const)("resumes rotation once the user has %s an old thread a stopped handover kept", async (fate) => {
     const w = await loaded();
     w.failures.update = new Error("target not runnable");
     expect((await w.harness.behavior.runCli(["rotate", "thr_main"])).stdout).toMatch(/kept live/);
     const status = async () => (await w.harness.behavior.runCli(["memory", "status", "thr_new1"])).stdout;
     expect(await status()).toMatch(/^kept live: thr_main /m);
-    await w.bb.sdk.threads.archive({ threadId: "thr_main" });
-    await w.harness.behavior.emitThreadEvent("thread.archived", { thread: w.threads.get("thr_main")! });
+    const old = w.threads.get("thr_main")!;
+    if (fate === "archived") old.archivedAt = Date.now();
+    else old.deletedAt = Date.now();
+    await w.harness.behavior.emitThreadEvent(`thread.${fate}`, { thread: old });
     expect(await status()).not.toMatch(/^kept live/m);
   });
 
@@ -268,7 +313,7 @@ describe("through the plugin", () => {
     await w.harness.behavior.emitThreadEvent("experimental_thread.events", { thread: w.threads.get("thr_main")!, sequence: 2 });
     await settle();
     expect(await w.harness.behavior.runCli(["recall", "0", "2"], { threadId: "thr_main" })).toMatchObject({ exitCode: 0, stdout: "0+1|user: hello\n1+1|unii: hi\n" });
-    expect(await w.harness.behavior.runCli(["date", "1", "--assistant", "thr_main"])).toMatchObject({ exitCode: 0, stdout: expect.stringMatching(/^2026-09-01T/) });
+    expect(await w.harness.behavior.runCli(["date", "1", "--assistant", "thr_main"])).toMatchObject({ exitCode: 0, stdout: `${localIso(w.events.get("thr_main")!.at(-1)!.createdAt)}\n` });
     expect(await w.harness.behavior.runCli(["recall", "0"])).toMatchObject({ exitCode: 1, stderr: expect.stringMatching(/--assistant/) });
     expect(await w.harness.behavior.runCli(["recall", "5", "1"], { threadId: "thr_main" })).toMatchObject({ exitCode: 1, stderr: expect.stringMatching(/no line 5\+1/) });
   });

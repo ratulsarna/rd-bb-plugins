@@ -56,28 +56,36 @@ function plain(rows: QueuedRow[], k: number): boolean {
 
 /** Not running a turn: a failed turn, such as a context overflow, is a main reason to move on. */
 const settled = (status: string) => status === "idle" || status === "error";
-const working = (t: ListEntry) => Object.values(t.activity).some((n) => n > 0);
+/** Work in flight. Plan mode is a mode, not work; a goal counts on its own. */
+const working = ({ activity: a }: ListEntry) => a.activeWorkflowCount + a.activeBackgroundAgentCount + a.activeBackgroundCommandCount > 0;
+/** What bb's archive takes along with a thread: its children, lifecycle dependents and hidden source threads. */
+const takenWith = (id: string) => (t: ListEntry) =>
+  t.parentThreadId === id || t.lifecycleOwnerThreadId === id || (t.sourceThreadId === id && t.visibility === "hidden");
 
 /**
- * Null when the old thread and everything under it can be archived now, else why not. Archiving takes the
- * whole tree with it, so each descendant must be settled, and quiet long enough that no report to its
- * parent is still on its way.
+ * Null when the old thread and everything its archive takes can be archived now, else why not. Each of
+ * those must be settled, and quiet long enough that no report to its parent is still on its way.
  */
 async function oldBusy(svc: MemoryService, old: string): Promise<Busy | null> {
   const sdk = svc.bb.sdk.threads;
-  // The list entry carries the activity counters; `get` does not.
+  // List entries carry the activity counters and the links; `get` has neither.
   const { projectId } = await sdk.get({ threadId: old });
-  const root = (await sdk.list({ projectId, hasParent: false, includeHidden: true })).find((t) => t.id === old);
+  const all = await sdk.list({ projectId, includeHidden: true, archived: false });
+  const root = all.find((t) => t.id === old);
   if (!root || !settled(root.status) || working(root)) return new Busy("The conversation is busy");
+  // A goal keeps the chat going on its own; waiting 30 seconds will not end it.
+  if (root.activity.activeGoalCount > 0) return new Busy("The main chat has an active goal", true);
   const now = Date.now();
+  const seen = new Set([old]);
   for (let parents = [old]; parents.length > 0; ) {
-    const children = (await Promise.all(parents.map((id) => sdk.list({ parentThreadId: id, includeHidden: true })))).flat();
-    for (const child of children) {
-      if (!settled(child.status)) return new Busy(`Child ${child.id} is ${child.status}`);
-      if (working(child) || child.queuedWork !== "none") return new Busy(`Child ${child.id} still has work`);
-      if (now - child.updatedAt < svc.timing.quietMs) return new Busy(`Child ${child.id} just changed`);
+    const taken = parents.flatMap((id) => all.filter(takenWith(id))).filter((t) => !seen.has(t.id));
+    for (const t of taken) {
+      seen.add(t.id);
+      if (!settled(t.status)) return new Busy(`Child ${t.id} is ${t.status}`);
+      if (working(t) || t.activity.activeGoalCount > 0 || t.queuedWork !== "none") return new Busy(`Child ${t.id} still has work`);
+      if (now - t.updatedAt < svc.timing.quietMs) return new Busy(`Child ${t.id} just changed`);
     }
-    parents = children.map((child) => child.id);
+    parents = taken.map((t) => t.id);
   }
   const rows = await sdk.queuedMessages.list({ threadId: old });
   if (rows.length > 0) return new Busy(`Messages are queued on ${old}: ${rows.map((r) => r.id).join(", ")}`, true);
@@ -169,8 +177,9 @@ export async function handover(
 
 /**
  * After the spawn: once the new thread runs (automations disable themselves on a target that is not
- * running yet), move automations and held messages, check the old thread is still done, log its last
- * events and archive it. Archiving drops its queued rows and may prune its events, so both come first.
+ * running yet), move automations, log the old thread's last events, move held messages, check the old
+ * thread is still done and archive it. Archiving drops its queued rows and may prune its events, so both
+ * come first, and nothing waits between the last check and the archive.
  * Undefined when the old thread is archived, else what keeps it live and what to do.
  */
 async function finish(svc: MemoryService, identity: string, old: string, fresh: string): Promise<string | undefined> {
@@ -180,10 +189,10 @@ async function finish(svc: MemoryService, identity: string, old: string, fresh: 
     if (started !== "ok") return kept(`new conversation ${fresh} ${started === "failed" ? "failed to start" : "has not started in time"}`);
     const stuck = await repointAutomations(svc.bb, await targetingAutomationsOf(svc.bb, old), fresh);
     if (stuck.length > 0) return kept(`automations still target it (${stuck.join("; ")})`, "Archive it, or move its automations, to resume rotation.");
+    await svc.catchUp(identity, old);
     await moveHeld(svc, old, fresh);
     const busy = await oldBusy(svc, old);
     if (busy) return kept(busy.message, busy.lasting ? "Send or remove them, then archive it, to resume rotation." : "Archive it when that work is done to resume rotation.");
-    await svc.catchUp(identity, old);
     await svc.bb.sdk.threads.archive({ threadId: old });
     svc.update(identity, { previous: svc.state(identity).previous.filter((id) => id !== old) });
     return undefined;

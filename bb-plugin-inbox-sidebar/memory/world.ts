@@ -33,6 +33,8 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
   const usage = new Map<string, { usedTokens: number; modelContextWindow: number } | null>();
   const automations = [{ automation: { id: "beat", projectId: "fleet", name: "heartbeat", execution: { mode: "agent", targetThreadId: "thr_main" } } }];
   const failures: { update?: Error; events?: Error } = {};
+  /** Runs on each events read, before it answers: a test can make something happen mid-read. */
+  const taps: { events?: (threadId: string) => void } = {};
   let seq = 0;
   let spawned = 0;
   let rowIds = 0;
@@ -51,7 +53,7 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
 
   /** Append an event to a thread's log, as a provider would. */
   const emit = (threadId: string, type: string, data: Record<string, unknown>) => {
-    const row = { seq: ++seq, createdAt: Date.UTC(2026, 8, 1, 4, 30, seq), type, data };
+    const row = { seq: ++seq, createdAt: Date.now(), type, data };
     events.set(threadId, [...(events.get(threadId) ?? []), row]);
     return row;
   };
@@ -75,16 +77,17 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
       threads: {
         get: async ({ threadId }) => {
           const t = threads.get(threadId);
-          if (!t) throw new Error(`thread ${threadId} not found`);
+          if (!t || t.deletedAt !== null) throw Object.assign(new Error(`HTTP 404: thread ${threadId} not found`), { status: 404 });
           return structuredClone(t);
         },
         list: async ({ parentThreadId, hasParent } = {}) =>
           [...threads.values()]
-            .filter((t) => t.archivedAt === null && (parentThreadId !== undefined ? t.parentThreadId === parentThreadId : hasParent !== false || t.parentThreadId === null))
+            .filter((t) => t.archivedAt === null && t.deletedAt === null && (parentThreadId !== undefined ? t.parentThreadId === parentThreadId : hasParent !== false || t.parentThreadId === null))
             .map((t) => structuredClone(t)),
         events: {
           list: async ({ threadId, types, afterSeq, order, limit }) => {
             if (failures.events) throw failures.events;
+            taps.events?.(threadId);
             const rows = (events.get(threadId) ?? []).filter((r) => (!types || (types as readonly string[]).includes(r.type)) && r.seq > Number(afterSeq ?? 0));
             if (order === "desc") rows.reverse();
             return structuredClone(rows.slice(0, Number(limit ?? 100)));
@@ -150,5 +153,5 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
     return harness.lifecycle.dispose();
   };
 
-  return { bb, harness, base, home, threads, events, queued, usage, automations, failures, thread, emit, say, reply, turnEnd, queue, service, dispose };
+  return { bb, harness, base, home, threads, events, queued, usage, automations, failures, taps, thread, emit, say, reply, turnEnd, queue, service, dispose };
 }

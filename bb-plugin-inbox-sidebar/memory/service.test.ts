@@ -157,14 +157,62 @@ it("logs background work when bb reports it done", async () => {
   expect(svc.chat(IDENTITY).msgs.map((m) => m.text).at(-1)).toBe("built");
 });
 
-it("warns when the harness compacted the chat before it could rotate", async () => {
+it("warns when the harness compacted the chat before it could rotate, not for a compaction before memory was on", async () => {
   const w = start();
   const svc = w.service();
+  w.emit("thr_main", "thread/compacted", {});
+  await settle(5);
   await svc.on("thr_main");
+  expect(svc.rows()).toEqual([{ identity: IDENTITY, warning: null }]);
   w.emit("thr_main", "thread/compacted", {});
   await svc.catchUp(IDENTITY, "thr_main");
   expect(svc.rows()).toEqual([{ identity: IDENTITY, warning: "thr_main compacted before rotation" }]);
   expect(w.harness.inspection.realtimeSignals.some((s) => s.channel === "assistant-memory")).toBe(true);
+});
+
+it("rotates at start when a rotation came due while the plugin was down", async () => {
+  const w = start();
+  let svc = w.service();
+  await svc.on("thr_main");
+  w.say("thr_main", "one");
+  w.turnEnd("thr_main");
+  w.usage.set("thr_main", { usedTokens: 90, modelContextWindow: 100 });
+  svc.dispose();
+  svc = w.service();
+  await svc.start();
+  await settle(50);
+  expect(svc.state(IDENTITY).main).toBe("thr_new1");
+});
+
+it("lets go of a main chat archived or deleted by hand, and takes the next one", async () => {
+  const w = start();
+  let svc = w.service();
+  await svc.on("thr_main");
+  w.say("thr_main", "last words");
+  await w.bb.sdk.threads.archive({ threadId: "thr_main" });
+  await svc.onGone("thr_main", "archived");
+  expect(svc.state(IDENTITY)).toMatchObject({ on: true, main: null });
+  expect(svc.chat(IDENTITY).msgs.at(-1)!.text).toBe("last words");
+  expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual([
+    "Main chat thr_main was archived; run bb assistants memory on <thread> to pick the new one.",
+  ]);
+
+  w.thread("thr_two");
+  await svc.on("thr_two");
+  // Deleted while the plugin was down.
+  w.threads.get("thr_two")!.deletedAt = Date.now();
+  svc.dispose();
+  svc = w.service();
+  await svc.start();
+  expect(svc.state(IDENTITY).main).toBeNull();
+
+  // Archived with the event missed: `memory on` still takes a new main chat.
+  w.thread("thr_three");
+  await svc.on("thr_three");
+  w.threads.get("thr_three")!.archivedAt = Date.now();
+  w.thread("thr_four");
+  await svc.on("thr_four");
+  expect(svc.state(IDENTITY).main).toBe("thr_four");
 });
 
 it("imports files and old threads before memory is on, resumably, and refuses once it has been on", async () => {

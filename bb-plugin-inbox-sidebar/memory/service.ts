@@ -126,7 +126,7 @@ export class MemoryService {
   /** Threads whose events go into this identity's log while it is on: the main chat and earlier ones still live. */
   private logged(identity: string): string[] {
     const s = this.state(identity);
-    return s.on && s.main ? [s.main, ...s.previous] : [];
+    return s.on ? [...(s.main ? [s.main] : []), ...s.previous] : [];
   }
 
   private loggerOf(threadId: string): string | undefined {
@@ -135,29 +135,51 @@ export class MemoryService {
 
   async start(): Promise<void> {
     for (const identity of identities(this.root)) {
-      for (const threadId of this.state(identity).previous) {
-        const thread = await this.bb.sdk.threads.get({ threadId }).catch(() => null);
-        if (thread?.archivedAt != null) await this.drop(identity, threadId);
+      const { main, previous } = this.state(identity);
+      // Archived or deleted while the plugin was down.
+      for (const threadId of [...(main ? [main] : []), ...previous]) {
+        const fate = await this.fate(threadId);
+        if (fate) await this.gone(identity, threadId, fate);
       }
       for (const threadId of this.logged(identity)) {
         await this.catchUp(identity, threadId).catch((e) => this.bb.log.warn(`memory ${identity}: ${message(e)}`));
       }
+      // A rotation due when the plugin stopped has no idle left to wake it.
+      void this.retry(identity);
     }
   }
 
-  /** An archived earlier chat leaves the log after its last events are in, never before. */
-  private async drop(identity: string, threadId: string): Promise<void> {
+  /** "archived" or "deleted" when bb took the thread away; null when it is there, or unknown for now. */
+  private async fate(threadId: string): Promise<"archived" | "deleted" | null> {
     try {
-      await this.catchUp(identity, threadId);
-      this.update(identity, { previous: this.state(identity).previous.filter((id) => id !== threadId) });
+      return (await this.bb.sdk.threads.get({ threadId })).archivedAt === null ? null : "archived";
     } catch (error) {
-      this.bb.log.warn(`memory ${identity}: ${threadId} stays tracked until its last events are logged: ${message(error)}`);
+      return (error as { status?: unknown }).status === 404 ? "deleted" : null;
     }
   }
 
-  async onArchived(threadId: string): Promise<void> {
+  /**
+   * A main or earlier chat bb took away leaves the log: an archived one after its last events are in,
+   * never before; a deleted one has none left. A main chat leaves `main` empty until `memory on` picks one.
+   */
+  private async gone(identity: string, threadId: string, fate: "archived" | "deleted"): Promise<void> {
+    if (fate === "archived") {
+      try {
+        await this.catchUp(identity, threadId);
+      } catch (error) {
+        return this.bb.log.warn(`memory ${identity}: ${threadId} stays tracked until its last events are logged: ${message(error)}`);
+      }
+    }
+    const s = this.state(identity);
+    if (s.main !== threadId) return void this.update(identity, { previous: s.previous.filter((id) => id !== threadId) });
+    this.update(identity, { main: null });
+    this.warn(identity, `Main chat ${threadId} was ${fate}; run bb assistants memory on <thread> to pick the new one.`);
+  }
+
+  async onGone(threadId: string, fate: "archived" | "deleted"): Promise<void> {
     for (const identity of this.states.keys()) {
-      if (this.state(identity).previous.includes(threadId)) await this.drop(identity, threadId);
+      const { main, previous } = this.state(identity);
+      if (main === threadId || previous.includes(threadId)) await this.gone(identity, threadId, fate);
     }
   }
 
@@ -188,7 +210,9 @@ export class MemoryService {
       })) as unknown as EventRow[];
       for (const row of rows) {
         await before?.();
-        if (row.type === "thread/compacted") this.warn(identity, `${threadId} compacted before rotation`);
+        if (row.type === "thread/compacted") {
+          if (row.createdAt >= this.state(identity).since) this.warn(identity, `${threadId} compacted before rotation`);
+        }
         else {
           // One source per event: the tree numbers its records, so a replay skips exactly the ones it has.
           const src = { stream, at: row.seq, n: 0 };
@@ -231,7 +255,7 @@ export class MemoryService {
     this.retries.set(identity, timer);
   }
 
-  private async retry(identity: string, turn: number): Promise<void> {
+  private async retry(identity: string, turn?: number): Promise<void> {
     const { on, main } = this.state(identity);
     if (!on || !main) return;
     try {
@@ -307,8 +331,8 @@ export class MemoryService {
     const { identity } = await assistantConversationContext(this.bb, threadId);
     const s = this.state(identity);
     if (this.importing.has(identity)) throw new Error("an import is running for this assistant; turn memory on when it is done");
-    if (s.on && s.main !== threadId) throw new Error(`memory is already on, with main chat ${s.main}`);
-    this.update(identity, { on: true, everOn: true, main: threadId });
+    if (s.on && s.main && s.main !== threadId && !(await this.fate(s.main))) throw new Error(`memory is already on, with main chat ${s.main}`);
+    this.update(identity, { on: true, everOn: true, main: threadId, since: Date.now() });
     await this.catchUp(identity, threadId);
     return identity;
   }

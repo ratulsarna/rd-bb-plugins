@@ -7,8 +7,10 @@ export type MemoryState = {
   on: boolean;
   /** Set at the first `on`; an import is refused once true, since live logging owns the log from then. */
   everOn: boolean;
-  /** The current main chat. */
+  /** The current main chat; null after it was archived or deleted by hand. */
   main: string | null;
+  /** When memory was last turned on: a compaction before it is not news. A successor's events all come later. */
+  since: number;
   /** Earlier main chats a stopped handover kept live: still logged, and rotation waits until they are archived. */
   previous: string[];
   /** Newest last. */
@@ -18,7 +20,7 @@ export type MemoryState = {
 
 export const KEPT_WARNINGS = 20;
 
-export const emptyState = (): MemoryState => ({ on: false, everOn: false, main: null, previous: [], warnings: [], import: null });
+export const emptyState = (): MemoryState => ({ on: false, everOn: false, main: null, since: 0, previous: [], warnings: [], import: null });
 
 const PROJECT = /^[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*$/;
 

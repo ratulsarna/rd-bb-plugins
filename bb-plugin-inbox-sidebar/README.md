@@ -79,8 +79,10 @@ view, hidden from the timeline. **New thread with…** on a memory-on assistant
 does the same move, adding your message after the view.
 
 The move runs in one pass, and only when nothing is in flight: the old thread
-idle (or failed) with no background work, all its children done and quiet for
-5 seconds, nothing queued on it, and no earlier old thread still live. It
+idle (or failed) with no background work and no active goal (plan mode is
+fine), everything its archive takes along (children, threads whose lifecycle
+it owns, hidden threads made from it, and theirs) done and quiet for 5
+seconds, nothing queued on it, and no earlier old thread still live. It
 waits for summaries first (up to a minute for **New thread with…** and
 `rotate`, five minutes for an automatic rotation), then holds new messages to
 the old thread. Once the new thread runs, the old one's automations and held
@@ -92,11 +94,15 @@ and a warning says what to do. Nothing retries it. Rotation waits until you
 archive the old thread; its last events are logged first. A rotation refused
 because the thread was busy, a child was working or summaries were not ready
 tries again every 30 seconds while the chat sits idle after the same turn.
-Queued messages or a live old thread give one warning instead. Automatic
+Queued messages, an active goal or a live old thread give one warning
+instead. A rotation that came due while the plugin was stopped runs at start. Automatic
 rotation never follows a failed or interrupted turn, nor a session whose only
 turn is its hidden first message. `memory off` stops logging and rotation; a
-move already running finishes. A harness can still compact in one very long
-turn; that shows as a warning.
+move already running finishes. If you archive or delete the main chat
+yourself, memory logs its last events, has no main chat and warns; run
+`memory on` on the thread to carry on in. A harness can still compact in one
+very long turn; that shows as a warning (only for compactions after memory
+was turned on).
 
 Known gaps: **Send now** and a child's report skip the hold, so one sent in the
 seconds of a move can reach the old thread (it is logged, and the move stops if
