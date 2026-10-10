@@ -105,7 +105,8 @@ async function oldBusy(svc: MemoryService, identity: string, old: string, own: b
       }
     }
   }
-  // Then every activity check on a fresh list, with nothing to wait for in between.
+  // Then every activity check on a fresh list, read last, with nothing to wait for in between.
+  const rows = await sdk.queuedMessages.list({ threadId: old });
   const all = await list();
   const root = all.find((t) => t.id === old);
   if (!root || root.archivedAt !== null || !settled(root.status) || working(root)) return new Busy("The conversation is busy");
@@ -126,7 +127,6 @@ async function oldBusy(svc: MemoryService, identity: string, old: string, own: b
     // New since the owners were looked up, or moved: look again on the next try.
     if (own && judged.get(t.id) !== place(t)) return new Busy(`Child ${t.id} just changed`);
   }
-  const rows = await sdk.queuedMessages.list({ threadId: old });
   if (rows.length > 0) return new Busy(`Messages are queued on ${old}: ${rows.map((r) => r.id).join(", ")}`, true);
   return null;
 }

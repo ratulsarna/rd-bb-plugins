@@ -119,13 +119,10 @@ export function createIdentityResolver(
         );
         return resolved;
       }
-      const source = sources.find((candidate) => candidate.hostId === env.hostId);
-      const segment =
-        source && env.path ? homeSegmentUnder(env.path, source.path) : null;
       resolved = {
         ok: true,
-        identity: segment === null ? null : `${env.projectId}:${segment}`,
-        awaitingSource: source === undefined,
+        identity: assistantIdentity(env, sources),
+        awaitingSource: !sources.some((candidate) => candidate.hostId === env.hostId),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

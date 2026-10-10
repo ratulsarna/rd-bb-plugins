@@ -445,3 +445,30 @@ it("ends a wait for summaries with the storage reason when a write fails", async
   await expect(moving).rejects.toThrow(/memory write failed: disk full/);
   expect(Date.now() - started).toBeLessThan(1000);
 });
+
+it("ends an import a full disk stopped without an unhandled rejection, even when it cannot save why", async () => {
+  const w = start();
+  const svc = w.service();
+  const file = path.join(w.base, "past.jsonl");
+  fs.writeFileSync(file, JSON.stringify({ kind: "note", text: "one", date: "2026-08-01" }) + "\n");
+  let full = false;
+  const write = fs.writeFileSync;
+  vi.spyOn(fs, "writeFileSync").mockImplementation((...args: Parameters<typeof write>) => {
+    if (full && String(args[0]).endsWith("memory.json.tmp")) throw new Error("disk full");
+    return write(...args);
+  });
+  failNextWrite(() => (full = true));
+  const warn = vi.spyOn(svc.bb.log, "warn");
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    svc.startImport(IDENTITY, [file]);
+    await vi.waitFor(() => expect(full).toBe(true));
+    await settle(50);
+    expect(unhandled).toEqual([]);
+    expect(warn.mock.calls.flat().join("\n")).toMatch(/import stopped: memory write failed: disk full; could not save that: disk full/);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});

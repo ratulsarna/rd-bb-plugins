@@ -492,7 +492,12 @@ export class MemoryService {
       }
       if (!(await this.summarizer.waitUntil(chat, () => chat.idle(), Infinity))) throw fail("imported, but not all summarized");
     } catch (error) {
-      this.update(identity, { import: { sources, done, error: message(error) } });
+      // Best effort: on a full disk the state write that records why fails too.
+      try {
+        this.update(identity, { import: { sources, done, error: message(error) } });
+      } catch (cause) {
+        this.bb.log.warn(`memory ${identity}: import stopped: ${message(error)}; could not save that: ${message(cause)}`);
+      }
     }
   }
 

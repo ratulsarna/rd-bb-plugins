@@ -40,6 +40,8 @@ export class Summarizer {
 
   add(identity: string, chat: Chat): void {
     this.chats.push({ identity, chat });
+    // A failed write wakes the waits on this chat, which then end with it.
+    void chat.broken.then(() => this.changed.emit("progress"));
   }
 
   /** Stop giving `chat` work; calls already running for it finish and are dropped. */
@@ -141,7 +143,7 @@ export class Summarizer {
       if (this.disposed || stop.aborted) return false;
       if (chat.inFlight > 0 || chat.canTake()) {
         this.pump();
-        await Promise.race([once(this.changed, "progress", { signal: stop }).catch(() => undefined), chat.broken]);
+        await once(this.changed, "progress", { signal: stop }).catch(() => undefined);
       } else if (chat.failures === 0 || rounds++ >= 3) return false;
       else {
         chat.retryFailed();
