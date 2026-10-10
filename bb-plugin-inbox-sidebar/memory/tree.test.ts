@@ -64,16 +64,16 @@ it("measuring from a pair's first message breaks the order, as the gist says", (
 });
 
 /** A fake compactor: deterministic lines of near-full length, so the view really fills. */
-function fakeLine(blocks: string[]): string {
-  const task = blocks.at(-1)!;
+function fakeLine(prompt: string): string {
+  const task = prompt.split("</chat>").at(-1)!;
   const id = /compress message (\d+)|merge lines (\S+)/.exec(task)!;
   return `summary of ${id[1] ?? id[2]} `.padEnd(LINE - 20, "x");
 }
 
-function drive(chat: Chat, check: (blocks: string[], ref: Ref) => void): void {
+function drive(chat: Chat, check: (prompt: string, ref: Ref) => void): void {
   for (let job = chat.take(); job; job = chat.take()) {
-    check(job.blocks, job.ref);
-    chat.done(job.ref, fakeLine(job.blocks));
+    check(job.prompt, job.ref);
+    chat.done(job.ref, fakeLine(job.prompt));
   }
 }
 
@@ -99,10 +99,10 @@ it("view stays in the sawtooth, covers the chat, and compactions only see built 
     prev = view;
     assert.ok(view <= 128_000 + LINE + 20, `view at ${view} bytes`);
     assert.ok(cview <= 32_000 + LINE + 20, `compaction view at ${cview} bytes`);
-    drive(chat, (blocks, [l, i]) => {
+    drive(chat, (prompt, [l, i]) => {
       const first = i * 2 ** l;
       const limit = l === 0 ? first : (i + 1) * 2 ** l;
-      const chatPart = blocks.join("").split("</chat>")[0];
+      const chatPart = prompt.split("</chat>")[0];
       assert.ok(!chatPart.includes("not summarized"), "compaction view holds an unbuilt line");
       for (const m of chatPart.matchAll(/^(\d+)\+(\d+)\|/gm)) {
         assert.ok(Number(m[1]) + Number(m[2]) <= limit, `line ${m[1]}+${m[2]} is past node ${l}:${i}`);
@@ -270,10 +270,10 @@ it("a lower pool starts nothing until fewer run, and a reload keeps the settings
 it("a target of 256 shapes new tasks' ruler and word hint; 512 stays the limit", () => {
   const chat = Chat.open(tmp());
   chat.append("echo", text(1), "2026-09-09");
-  const before = chat.take()!.blocks.join("");
+  const before = chat.take()!.prompt;
   chat.tune({ target: 256 });
   chat.append("echo", text(2), "2026-09-09");
-  const after = chat.take()!.blocks.join("");
+  const after = chat.take()!.prompt;
   assert.match(before, /at most 512 bytes\n\(about 70 words\), the length of this ruler:\n-{512}\n/);
   assert.match(after, /at most 256 bytes\n\(about 40 words\), the length of this ruler:\n-{256}\n/);
   // A message under 512 bytes is still its own line, word for word.

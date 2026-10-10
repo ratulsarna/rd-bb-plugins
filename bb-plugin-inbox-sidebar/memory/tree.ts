@@ -77,20 +77,6 @@ ${head(reply, LINE)}| ← LIMIT`;
 /** The reply as a node line: trimmed, without an id+n| head the model may add anyway. */
 export const cleanLine = (reply: string) => reply.trim().replace(/^\d+\+\d+\|\s*/, "");
 
-/**
- * The view as text blocks of 4 lines, so a cache mark can sit on the last whole block.
- * The last block holds the leftover lines, the closing tag and `tail`.
- */
-export function viewBlocks(lines: string[], tail: string): string[] {
-  const blocks: string[] = [];
-  let k = 0;
-  for (; k + 4 <= lines.length; k += 4) blocks.push(lines.slice(k, k + 4).map((x) => x + "\n").join(""));
-  const rest = lines.slice(k).map((x) => x + "\n").join("");
-  blocks.push(`${rest}</chat>\n${tail}`);
-  blocks[0] = `<chat>\n${blocks[0]}`;
-  return blocks;
-}
-
 /** Tool output keeps its head and tail; other long text becomes several messages in a row. */
 function pieces(kind: Kind, text: string): string[] {
   const chars = [...text];
@@ -141,7 +127,7 @@ function readLines<T>(dir: string): T[] {
     });
 }
 
-export type Job = { ref: Ref; blocks: string[] };
+export type Job = { ref: Ref; prompt: string };
 
 export class Chat {
   readonly dir: string;
@@ -454,7 +440,7 @@ export class Chat {
     if (r[0] > 0) this.merges.shift();
     this.claimed.add(key(r));
     this.running.add(key(r));
-    return { ref: r, blocks: this.compactionBlocks(r) };
+    return { ref: r, prompt: this.compactionPrompt(r) };
   }
 
   /** Mark a node as running, for a compaction a restart found still in flight. */
@@ -478,7 +464,7 @@ export class Chat {
   }
 
   /** [compaction view] [task]: the view ends at the node and stops at the first unbuilt line. */
-  compactionBlocks(r: Ref): string[] {
+  compactionPrompt(r: Ref): string {
     const [s, e] = [start(r), end(r)];
     const limit = r[0] === 0 ? s : e;
     const lines: string[] = [];
@@ -511,7 +497,7 @@ ${this.line(a)}
 ${this.line(b)}
 </input>`;
     }
-    return viewBlocks(lines, task);
+    return `<chat>\n${lines.map((x) => x + "\n").join("")}</chat>\n${task}`;
   }
 
   /** Open line id+n into the two lines under it; n = 1 gives the message whole. */

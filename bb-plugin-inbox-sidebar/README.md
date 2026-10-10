@@ -111,6 +111,8 @@ it starts work there). If deleting a held message from the old thread fails
 after it was copied, the new thread has a copy too. After a move that stopped,
 the new thread's view lacks what happened on the old thread since; `recall`
 reaches it.
+Each assistant's whole log and tree stay in the server's memory, read in full
+when the plugin starts, so a very long history costs RAM and start time.
 
 | Command | Does |
 |---|---|

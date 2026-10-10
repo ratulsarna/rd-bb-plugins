@@ -134,7 +134,8 @@ it("cancels the attempt when a turn starts while the context use is being read",
 
 it("tries a rotation a busy moment refused again on its timer, while the chat sits idle after the same turn", async () => {
   const w = start();
-  const svc = w.service({ quietMs: 80, retryMs: 120 });
+  // Wide enough that a loaded machine still sees the first try refused.
+  const svc = w.service({ quietMs: 300, retryMs: 400 });
   await svc.on("thr_main");
   w.say("thr_main", "one");
   w.say("thr_main", "two");
@@ -143,9 +144,8 @@ it("tries a rotation a busy moment refused again on its timer, while the chat si
   w.thread("thr_child", { parentThreadId: "thr_main", updatedAt: Date.now() });
   await svc.onIdle("thr_main");
   expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
-  await settle(250);
-  expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
-  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new1", previous: [] });
+  await vi.waitFor(() => expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1), { timeout: 3000 });
+  await vi.waitFor(() => expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new1", previous: [] }));
 });
 
 it("logs background work when bb reports it done", async () => {

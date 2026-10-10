@@ -60,7 +60,7 @@ export class Summarizer {
     this.running++;
     let line: string | undefined;
     try {
-      line = await this.summarize(job.blocks);
+      line = await this.summarize(job.prompt);
     } catch (error) {
       if (!this.disposed) this.opts.log(`memory ${identity}: summary failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -80,8 +80,7 @@ export class Summarizer {
   }
 
   /** The first line that fits, else the shortest of `ATTEMPTS`; undefined for an empty reply. */
-  private async summarize(blocks: string[]): Promise<string | undefined> {
-    const input = blocks.join("");
+  private async summarize(input: string): Promise<string | undefined> {
     let best: string | undefined;
     let last: string | undefined;
     for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
