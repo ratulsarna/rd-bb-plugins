@@ -245,6 +245,15 @@ describe("an old thread kept live", () => {
     expect(svc.chat(IDENTITY).msgs.at(-1)!.text).toBe("last words");
   });
 
+  it("lets memory on drop an old thread archived while memory was off", async () => {
+    const { w, svc } = await kept();
+    svc.off(IDENTITY);
+    await w.bb.sdk.threads.archive({ threadId: "thr_main" });
+    await svc.onGone("thr_main", "archived");
+    await svc.on("thr_new1");
+    expect(svc.state(IDENTITY)).toMatchObject({ on: true, main: "thr_new1", previous: [] });
+  });
+
   it("leaves the log when deleted while the plugin was down", async () => {
     const { w, svc } = await kept();
     w.threads.get("thr_main")!.deletedAt = Date.now();

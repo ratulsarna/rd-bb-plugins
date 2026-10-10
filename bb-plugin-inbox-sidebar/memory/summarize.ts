@@ -65,6 +65,8 @@ export class Summarizer {
       if (!this.disposed) this.opts.log(`memory ${identity}: summary failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     this.running--;
+    // A plugin reload in between: the chat belongs to the next instance now.
+    if (this.disposed) return;
     try {
       if (line === undefined) chat.fail(job.ref);
       else chat.done(job.ref, line);
@@ -73,7 +75,6 @@ export class Summarizer {
       chat.fail(job.ref);
       this.opts.log(`memory ${identity}: summary not saved: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (this.disposed) return;
     this.pump();
     this.changed.emit("progress");
   }

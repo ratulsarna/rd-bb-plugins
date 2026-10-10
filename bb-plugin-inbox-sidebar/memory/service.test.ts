@@ -208,6 +208,20 @@ it("stops at a plugin reload: logging in flight ends before it writes, and the r
   expect(next.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(["hello"]);
 });
 
+it("keeps a main chat unarchived after a failed drain as the main chat", async () => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  await w.bb.sdk.threads.archive({ threadId: "thr_main" });
+  w.failures.events = new Error("server busy");
+  await svc.onGone("thr_main", "archived");
+  delete w.failures.events;
+  w.threads.get("thr_main")!.archivedAt = null;
+  svc.onEvents("thr_main");
+  await settle();
+  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_main", warnings: [] });
+});
+
 it("leaves a memory-off assistant alone when its main chat goes away", async () => {
   const w = start();
   let svc = w.service();

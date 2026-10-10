@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { Summarizer } from "./summarize";
 import { Chat } from "./tree";
 
@@ -206,4 +206,19 @@ it("retries a failed first leaf that blocks the window instead of waiting foreve
   c.append("echo", long("two"), "2026-09-01");
   expect(await h.summarizer.waitUntil(c, () => c.unsummarized === 0, 2000)).toBe(true);
   expect(h.calls.map((call) => /compress message (\d+)/.exec(call.prompt)![1])).toEqual(["0", "0", "1"]);
+});
+
+it("leaves the chat alone when a call finishes just as the plugin reloads", async () => {
+  const reply = deferred();
+  const h = harness(() => reply.promise);
+  const c = chat();
+  const writes = [vi.spyOn(c, "done"), vi.spyOn(c, "fail")];
+  h.summarizer.add("a", c);
+  c.append("echo", long("one"), "2026-09-01");
+  h.summarizer.pump();
+  await settle();
+  reply.resolve({ out: "a line" });
+  h.summarizer.dispose();
+  await settle();
+  for (const write of writes) expect(write).not.toHaveBeenCalled();
 });

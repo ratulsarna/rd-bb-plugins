@@ -143,17 +143,22 @@ export class MemoryService {
 
   async start(): Promise<void> {
     for (const identity of identities(this.root)) {
-      const { main, previous } = this.state(identity);
       // Archived or deleted while the plugin was down.
-      for (const threadId of [...(main ? [main] : []), ...previous]) {
-        const fate = await this.fate(threadId);
-        if (fate) await this.gone(identity, threadId, fate);
-      }
+      await this.reconcile(identity);
       for (const threadId of this.logged(identity)) {
         await this.catchUp(identity, threadId).catch((e) => this.bb.log.warn(`memory ${identity}: ${message(e)}`));
       }
       // A rotation due when the plugin stopped has no idle left to wake it.
       void this.retry(identity);
+    }
+  }
+
+  /** Let go of the tracked chats bb took away while nobody was looking. */
+  private async reconcile(identity: string): Promise<void> {
+    const { main, previous } = this.state(identity);
+    for (const threadId of [...(main ? [main] : []), ...previous]) {
+      const fate = await this.fate(threadId);
+      if (fate) await this.gone(identity, threadId, fate);
     }
   }
 
@@ -199,7 +204,11 @@ export class MemoryService {
     const threads = this.undrained.get(identity);
     // Taken out first: a drain that fails again puts its thread back.
     this.undrained.delete(identity);
-    for (const threadId of threads ?? []) await this.gone(identity, threadId, "archived");
+    for (const threadId of threads ?? []) {
+      // Unarchived since, it is a live chat again with nothing to drain; deleted, it has nothing left.
+      const fate = await this.fate(threadId);
+      if (fate) await this.gone(identity, threadId, fate);
+    }
   }
 
   /** Log what `threadId` added since the last call. Serialized per identity; a failure keeps the cursor for the next wake-up. */
@@ -358,13 +367,13 @@ export class MemoryService {
     const s = this.state(identity);
     if (this.importing.has(identity)) throw new Error("an import is running for this assistant; turn memory on when it is done");
     if (s.on && s.main && s.main !== threadId) {
-      const fate = await this.fate(s.main);
-      if (!fate) throw new Error(`memory is already on, with main chat ${s.main}`);
+      if (!(await this.fate(s.main))) throw new Error(`memory is already on, with main chat ${s.main}`);
       // The old main chat leaves as an earlier one does: drained first, kept in `previous` until that works.
-      this.update(identity, { main: null, previous: [...s.previous, s.main] });
-      await this.gone(identity, s.main, fate);
+      this.update(identity, { previous: [...s.previous, s.main] });
     }
     this.update(identity, { on: true, everOn: true, main: threadId, since: Date.now() });
+    // An earlier chat archived or deleted while memory was off would hold rotation back.
+    await this.reconcile(identity);
     await this.catchUp(identity, threadId);
     return identity;
   }
