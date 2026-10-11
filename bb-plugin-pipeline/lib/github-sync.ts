@@ -14,8 +14,9 @@ const PREFIX = "[pipeline-review:";
 type QueueEntry = PluginThreadEventPayloads["message.queued"]["entry"];
 type Settings = { jevApiKey?: string; jevThreshold: string; reviewRequestComment?: string; autoReviewFollowup?: boolean };
 
+// Only what a reviewer changes; GitHub moves an inline comment's commit to each new head.
 function fingerprint(item: GithubFeedback): string {
-  return createHash("sha256").update(JSON.stringify(item)).digest("hex");
+  return createHash("sha256").update(JSON.stringify([item.body, item.state])).digest("hex");
 }
 
 function initialState(url: string): GithubSyncState {
