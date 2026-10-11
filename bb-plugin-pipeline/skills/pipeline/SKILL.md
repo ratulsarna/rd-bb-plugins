@@ -91,7 +91,7 @@ When you receive a Pipeline pause instruction, follow its request ID. Start no n
 
 Once safe, the current intake or lead must run `bb pipeline report --paused <request-id>` as its last action and end its turn. Workers cannot acknowledge for the owner. Do not report working or continue task work until the user resumes it. Pipeline checks the token and waits for all real task activity to end before showing Paused; acknowledgement alone does not free its capacity slot.
 
-A pending question or offline machine can delay the instruction. Keep the task Pause requested rather than claiming it stopped. Stop now is available to the user as a fallback. Queued messages survive pause and stop; Resume releases them through the capacity gate and continues from the handoff. Task controls preserve the card's stage. Resume before moving, removing, or retrying a held card. Pipeline attention notifications are suppressed while held and for saved or Done cards.
+A pending question or offline machine can delay the instruction. Keep the task Pause requested rather than claiming it stopped. Stop now is available to the user as a fallback. Queued messages survive pause and stop; Resume releases them through the capacity gate and continues from the handoff. Task controls preserve the card's stage. Resume before moving or retrying a held card. Remove works in any state without resuming: it stops the task's threads, deletes its queued messages, and removes the card. Pipeline attention notifications are suppressed while held and for saved or Done cards.
 
 ## Attachments
 
