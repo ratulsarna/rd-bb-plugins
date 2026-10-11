@@ -797,6 +797,26 @@ describe("launch", () => {
     });
   });
 
+  it("settles only after a spawn in flight finishes, even when it fails", async () => {
+    let failSpawn!: (cause: Error) => void;
+    const { store, service } = setup({
+      spawn: () => new Promise((_, reject) => { failSpawn = reject; }),
+    });
+    seed(store);
+
+    const launching = service.launch("card_1", "intake");
+    await vi.waitFor(() => expect(failSpawn).toBeDefined());
+    let settled = false;
+    const settling = service.launchSettled("card_1").then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    failSpawn(new Error("Mac offline"));
+
+    await settling;
+    await launching;
+    expect(store.get("card_1")?.launchError).toContain("Mac offline");
+  });
+
   it("records a spawn error and retries exactly once", async () => {
     let fail = true;
     const { store, service, spawn } = setup({
@@ -1302,7 +1322,7 @@ describe("launch", () => {
 });
 
 describe("held cards", () => {
-  it("rejects launch, retry, move, removal, and owner handoff until resume", async () => {
+  it("rejects launch, retry, move, and owner handoff until resume", async () => {
     const { store, service, spawn } = setup();
     seed(store);
     const held = store.update("card_1", {
@@ -1318,9 +1338,6 @@ describe("held cards", () => {
     );
     await expect(service.move("card_1", "todo", "ui")).rejects.toThrow(
       "resume it before moving it",
-    );
-    expect(() => service.remove("card_1")).toThrow(
-      "resume it before removing it",
     );
     await expect(
       service.report({
@@ -2897,7 +2914,7 @@ describe("saved cards", () => {
     expect(held.spawn).not.toHaveBeenCalled();
   });
 
-  it("rejects indirect starts but allows quiet metadata reports and removal", async () => {
+  it("rejects indirect starts but allows quiet metadata reports", async () => {
     const { service, spawn, store, onAttention } = setup();
     const saved = await service.createCard({
       projectId: "proj_1",
@@ -2928,7 +2945,6 @@ describe("saved cards", () => {
     });
     expect(onAttention).not.toHaveBeenCalled();
     expect(spawn).not.toHaveBeenCalled();
-    expect(service.remove(saved.id)).toBe(true);
   });
 });
 

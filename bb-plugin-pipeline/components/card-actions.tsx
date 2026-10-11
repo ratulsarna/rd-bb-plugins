@@ -132,7 +132,7 @@ export function CardActions(
       <button
         type="button"
         className="pipeline-button pipeline-ghost pipeline-remove"
-        disabled={props.pending || !running}
+        disabled={props.pending}
         onClick={() => run(props.onRemove, props.onAction)}
       >
         <Icon name="Trash2" /> Remove

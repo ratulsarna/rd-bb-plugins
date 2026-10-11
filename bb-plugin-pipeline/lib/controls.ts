@@ -14,11 +14,11 @@ const containsInstruction = (entry: QueueEntry, text: string) =>
 export function createPipelineControls(
   bb: BbPluginApi,
   store: CardStore,
-  service: Pick<PipelineService, "launch" | "retry" | "onThreadQueueChanged">,
+  service: Pick<PipelineService, "launch" | "retry" | "onThreadQueueChanged" | "launchSettled">,
   options: { getPromptDocuments?(card: Card): Promise<Record<string, string>> } = {},
 ) {
   const tasks = createTaskThreads(bb, store);
-  const operations = new Map<string, Promise<Card>>();
+  const operations = new Map<string, Promise<unknown>>();
   const required = (id: string) => {
     const card = store.get(id);
     if (card === null) throw new Error(`unknown card ${id}`);
@@ -29,8 +29,8 @@ export function createPipelineControls(
     bb.realtime.publish("cards:changed", { projectId: card.projectId });
     return card;
   };
-  async function serialize(id: string, work: () => Promise<Card>): Promise<Card> {
-    const previous = operations.get(id) ?? Promise.resolve(required(id));
+  async function serialize<T>(id: string, work: () => Promise<T>): Promise<T> {
+    const previous: Promise<unknown> = operations.get(id) ?? Promise.resolve(required(id));
     const next = previous.catch(() => required(id)).then(work);
     operations.set(id, next);
     try { return await next; }
@@ -135,31 +135,79 @@ export function createPipelineControls(
     return settle(found.id);
   }
 
+  const taskThreadIds = (card: Card, occupied: TaskThread[]) => new Set([
+    ...occupied.map((thread) => thread.id),
+    ...[card.intakeThreadId, card.leadThreadId].filter((id) => id !== null),
+  ]);
+
+  // Stopping a pending thread abandons its start. Stop keeps that start for Resume; removal does not.
+  async function halt(card: Card, occupied: TaskThread[], keepPending: boolean): Promise<string[]> {
+    const failures: string[] = [];
+    for (const threadId of taskThreadIds(card, occupied)) {
+      const busy = occupied.some((entry) => entry.id === threadId);
+      try {
+        const thread = await bb.sdk.threads.get({ threadId, experimental_includeDeleted: true });
+        if ((keepPending && thread.status === "pending") || (thread.deletedAt !== null && !busy)) continue;
+        await bb.sdk.threads.stop({ threadId });
+      } catch (cause) {
+        if (isThreadNotFound(cause) && !busy) continue;
+        failures.push(`${threadId}: could not stop: ${errorMessage(cause)}`);
+      }
+    }
+    return failures;
+  }
+
   async function stop(id: string): Promise<Card> {
     return serialize(id, async () => {
       const card = required(id);
       requireStarted(card, "stopping it");
       update(id, { runState: "stopping", controlError: null }, "stop_requested");
       try {
-        const occupied = await tasks.occupied(id);
-        const ids = new Set(occupied.map((thread) => thread.id));
-        for (const root of [card.intakeThreadId, card.leadThreadId]) if (root !== null) ids.add(root);
-        const failures: string[] = [];
-        for (const threadId of ids) {
-          try {
-            const thread = await bb.sdk.threads.get({ threadId, experimental_includeDeleted: true });
-            if (thread.status === "pending" || (thread.deletedAt !== null && !occupied.some((entry) => entry.id === threadId))) continue;
-            await bb.sdk.threads.stop({ threadId });
-          } catch (cause) {
-            if (isThreadNotFound(cause) && !occupied.some((entry) => entry.id === threadId)) continue;
-            failures.push(`${threadId}: ${errorMessage(cause)}`);
-          }
-        }
+        const failures = await halt(card, await tasks.occupied(id), true);
         if (failures.length > 0) update(id, { controlError: failures.join("; ") });
         return await settle(id);
       } catch (cause) {
         return update(id, { controlError: errorMessage(cause) });
       }
+    });
+  }
+
+  // Removal always removes the card; whatever cleanup could not do comes back as warnings.
+  async function remove(id: string): Promise<{ removed: true; warnings: string[] }> {
+    return serialize(id, async () => {
+      const { projectId } = required(id);
+      const warnings: string[] = [];
+      const attempt = async <T>(failure: string, fallback: T, work: () => Promise<T>): Promise<T> => {
+        try { return await work(); } catch (cause) { warnings.push(`${failure}: ${errorMessage(cause)}`); return fallback; }
+      };
+      try {
+        // Holds the card's queued messages and new launches until cleanup ends; a missing card releases both.
+        update(id, { runState: "stopping", controlError: null }, "stop_requested");
+        await service.launchSettled(id);
+        const card = required(id);
+        const occupied = await attempt("could not list running threads", [], () => tasks.occupied(id));
+        // Clearing a goal restores a stopped runtime, so goals go first and the stop comes last.
+        for (const threadId of taskThreadIds(card, occupied)) {
+          try {
+            const { goal } = await bb.sdk.threads.timeline({ threadId, summaryOnly: "true" });
+            if (goal?.status === "active") await bb.sdk.threads.clearGoal({ threadId });
+          } catch (cause) {
+            if (!isThreadNotFound(cause)) warnings.push(`${threadId}: could not clear its goal: ${errorMessage(cause)}`);
+          }
+        }
+        warnings.push(...await halt(card, occupied, false));
+        for (const entry of await attempt("could not check queued messages", [], () => tasks.queued(id))) {
+          await attempt(`${entry.threadId}: could not delete a queued message`, undefined, () =>
+            bb.sdk.threads.queuedMessages.delete({ threadId: entry.threadId, queuedMessageId: entry.id }));
+        }
+        for (const thread of await attempt("could not confirm threads stopped", [], () => tasks.occupied(id))) {
+          warnings.push(`${thread.id}: still running`);
+        }
+      } finally {
+        store.remove(id);
+        bb.realtime.publish("cards:changed", { projectId });
+      }
+      return { removed: true as const, warnings };
     });
   }
 
@@ -240,7 +288,7 @@ export function createPipelineControls(
     }
   }
 
-  return { pause, resume, stop, acknowledge, onActivity, onMessageCancelled, startup };
+  return { pause, resume, stop, remove, acknowledge, onActivity, onMessageCancelled, startup };
 }
 
 export type PipelineControls = ReturnType<typeof createPipelineControls>;

@@ -228,7 +228,7 @@ export const rpcContract = defineRpcContract({
   },
   removeCard: {
     input: z.object({ cardId: z.string() }).strict(),
-    output: z.object({ removed: z.boolean() }).strict(),
+    output: z.object({ removed: z.boolean(), warnings: z.array(z.string()) }).strict(),
   },
   showCard: {
     input: z.object({ cardId: z.string() }).strict(),

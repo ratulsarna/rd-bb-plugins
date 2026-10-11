@@ -584,8 +584,9 @@ export function createPipelineCli(input: {
           }
           case "remove": {
             if (args.positionals.length !== 1) return failure("remove requires one card id", USAGE);
-            input.service.remove(args.positionals[0]!);
-            return success(args, { removed: true, id: args.positionals[0] }, `Removed ${args.positionals[0]}`);
+            const { warnings } = await input.controls.remove(args.positionals[0]!);
+            const text = [`Removed ${args.positionals[0]}`, ...warnings, ...(warnings.length > 0 ? ["Check these threads in BB."] : [])];
+            return success(args, { removed: true, id: args.positionals[0], warnings }, text.join("\n"));
           }
           default:
             return failure(`unknown command ${args.command}`, USAGE);

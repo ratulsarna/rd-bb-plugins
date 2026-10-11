@@ -200,7 +200,7 @@ function renderBoard(options?: {
         resumeCard: options?.resumeCard ?? (() => makeCard()),
         stopCard: options?.stopCard ?? (() => makeCard({ runState: "stopping" })),
         setRunNext: options?.setRunNext ?? (() => ({ ok: true as const })),
-        removeCard: options?.removeCard ?? (() => ({ removed: true })),
+        removeCard: options?.removeCard ?? (() => ({ removed: true, warnings: [] })),
         startCard: options?.startCard ?? (() => makeCard()),
         syncGithub: options?.syncGithub ?? (() => makeCard()),
         syncIssue: options?.syncIssue ?? (() => makeCard()),
@@ -392,10 +392,10 @@ describe("pipeline board", () => {
     await waitFor(() => expect(within(card).getByText("Paused")).toBeTruthy());
   });
 
-  it("blocks non-running mutations while preserving actions and owner-thread access", async () => {
+  it("blocks non-running moves and retries but still removes, keeping owner-thread access", async () => {
     const moveCard = vi.fn(() => makeCard());
     const retryLaunch = vi.fn(() => makeCard());
-    const removeCard = vi.fn(() => ({ removed: true }));
+    const removeCard = vi.fn(() => ({ removed: true, warnings: [] as string[] }));
     const { slot } = renderBoard({
       cards: [makeCard({ runState: "paused", launchError: "old launch failure" })],
       moveCard,
@@ -412,12 +412,11 @@ describe("pipeline board", () => {
     fireEvent.click(screen.getByRole("button", { name: "Actions for A pipeline card" }));
     expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
     expect((screen.getByRole("combobox", { name: "Move A pipeline card" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
-
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(moveCard).not.toHaveBeenCalled();
     expect(retryLaunch).not.toHaveBeenCalled();
-    expect(removeCard).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(removeCard).toHaveBeenCalledExactlyOnceWith({ cardId: "card_1" }));
   });
 
   it("does not offer lifecycle controls for done cards", async () => {
@@ -1735,8 +1734,22 @@ describe("pipeline board", () => {
   });
 
 
+  it("keeps removal warnings visible after the follow-up reload", async () => {
+    const removeCard = vi.fn(() => ({ removed: true, warnings: ["thr_worker: still running"] }));
+    const listCards = vi.fn().mockResolvedValueOnce({ cards: [makeCard()], queue: [] })
+      .mockResolvedValue({ cards: [], queue: [] });
+    renderBoard({ listCards, removeCard });
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for A pipeline card" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await screen.findByText("No open tasks");
+    await waitFor(() => expect(listCards).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("alert").textContent).toContain("thr_worker: still running");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("keeps a successful removal applied when the follow-up refresh fails", async () => {
-    const removeCard = vi.fn(() => ({ removed: true }));
+    const removeCard = vi.fn(() => ({ removed: true, warnings: [] as string[] }));
     const listCards = vi.fn().mockResolvedValueOnce({ cards: [makeCard()], queue: [] })
       .mockRejectedValueOnce(new Error("Refresh unavailable"))
       .mockResolvedValue({ cards: [], queue: [] });
