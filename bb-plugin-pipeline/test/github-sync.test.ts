@@ -451,6 +451,21 @@ describe("GitHub review handoff", () => {
     expect(s.classify).not.toHaveBeenCalled(); expect(s.send).not.toHaveBeenCalled();
   });
 
+  it("re-sends a handled comment when its text is edited, not when a push moves it to the new head", async () => {
+    const s = setup(); s.change({ feedback: [feedback()] }); await s.sync.poll();
+    const batch = s.store.getGithub("card")!.batch!;
+    s.sync.onMessage("dispatched", s.queue.shift()!);
+    await s.sync.waitForReview("card", "lead", batch.id);
+    s.change({ headSha: "def", feedback: [feedback({ commitSha: "def", updatedAt: 2 })] });
+    await s.makeSync().poll();
+    expect(s.classify).toHaveBeenCalledTimes(1); expect(s.send).toHaveBeenCalledTimes(1);
+    const edited = feedback({ commitSha: "def", updatedAt: 3, body: "This loses saved data on retry" });
+    s.change({ feedback: [edited] });
+    await s.makeSync().poll();
+    expect(s.store.getGithub("card")!.batch).toMatchObject({ headSha: "def", feedback: [edited] });
+    expect(s.send).toHaveBeenCalledTimes(2);
+  });
+
   it("requests review for a pushed fix without inheriting the previous revision's clean result", async () => {
     const s = setup();
     await s.sync.waitForReview("card", "lead");
