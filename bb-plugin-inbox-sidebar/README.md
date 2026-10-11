@@ -9,8 +9,6 @@ file dependency on a sibling `bb-sw-pipeline` checkout (on Ratul's Mac:
 Bots section and keeps the assistants project out of the inbox lanes.
 After any inbox-core change, run `npm run build` here before a reload: bb's
 change check looks only inside the plugin folder and skips `node_modules`.
-The postinstall here points inbox-core's `react` and `react-dom` at this
-plugin's copies, so tests and the bundler see one React.
 
 Use a Bots row's **New thread with …** action to open BB's normal composer.
 **Machine** chooses where the fresh root conversation starts. **Home** shows

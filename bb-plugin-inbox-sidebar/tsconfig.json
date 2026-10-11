@@ -16,6 +16,18 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      // inbox-core's own node_modules carries second copies of the SDK and
+      // zod; resolve both sides to this plugin's so one type identity spans
+      // registerInbox and the schemas crossing it.
+      "@get-bb/plugin-sdk": [
+        "./node_modules/@get-bb/plugin-sdk"
+      ],
+      "zod": [
+        "./node_modules/zod"
+      ],
+      "zod/*": [
+        "./node_modules/zod/*"
       ]
     },
     "noEmit": true,

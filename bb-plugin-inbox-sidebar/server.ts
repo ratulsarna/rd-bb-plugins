@@ -177,10 +177,7 @@ export default function plugin(bb: BbPluginApi) {
   ]);
   // The inbox's tables and RPCs share this database and plugin id; its
   // migration list is private, so the statements above carry the schema.
-  // inbox-core resolves the SDK from its own node_modules — same pinned
-  // version, but a second copy whose equality tsc cannot prove across this
-  // call (the structural walk overflows).
-  registerInbox(bb as unknown as Parameters<typeof registerInbox>[0], db);
+  registerInbox(bb, db);
 
   // Tables that predate identity keys store environment ids in a column of
   // the same role; rename the column first, then rewrite the values below.

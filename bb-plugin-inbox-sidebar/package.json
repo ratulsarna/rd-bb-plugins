@@ -5,8 +5,7 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build": "bb plugin build",
-    "postinstall": "node scripts/dedupe-react.mjs"
+    "build": "bb plugin build"
   },
   "engines": {
     "bb": ">=0.36",
