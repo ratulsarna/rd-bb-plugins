@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
-import type { boardRpcContract } from "@/server";
+import type { assistantRpcContract } from "@/server";
 
 /**
  * environmentId → img-ready data URL for each assistant home that has an
@@ -10,7 +10,7 @@ import type { boardRpcContract } from "@/server";
 export function useAssistantAvatars(
   environmentIds: readonly string[],
 ): ReadonlyMap<string, string> {
-  const rpc = useRpc<typeof boardRpcContract>();
+  const rpc = useRpc<typeof assistantRpcContract>();
   const [avatars, setAvatars] = useState<ReadonlyMap<string, string>>(
     () => new Map(),
   );

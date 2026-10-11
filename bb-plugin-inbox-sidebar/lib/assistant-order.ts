@@ -1,4 +1,4 @@
-import { projectPinnedReorder } from "./pinned-order";
+import { projectPinnedReorder } from "inbox-core/lib/pinned-order";
 
 /**
  * Bot ordering. Unlike pins, bb has no notion of this order — the plugin's own

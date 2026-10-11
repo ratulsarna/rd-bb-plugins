@@ -3,7 +3,7 @@ import {
   useRealtime,
   useRealtimeConnectionState,
 } from "@get-bb/plugin-sdk/app";
-import { shouldRefreshOnReconnect } from "@/lib/reconnect";
+import { shouldRefreshOnReconnect } from "inbox-core/lib/reconnect";
 
 /**
  * A value read from the plugin: on mount, on every signal on `channel`, and

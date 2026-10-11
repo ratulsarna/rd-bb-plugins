@@ -4,7 +4,7 @@ import {
   createFakePluginHost,
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
-import plugin, { boardRpcContract } from "../server";
+import plugin, { assistantRpcContract } from "../server";
 
 type ExecutionOptions = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["defaultExecutionOptions"]>>;
 const cases: { options: ExecutionOptions; unavailableProvider?: boolean }[] = [
@@ -56,7 +56,7 @@ it.each(cases)("serializes restart seeds with execution options: $options, unava
   plugin(bb);
 
   try {
-    const seeds = boardRpcContract.assistantSeeds.output.parse(
+    const seeds = assistantRpcContract.assistantSeeds.output.parse(
       await harness.behavior.callRpc("assistantSeeds", { threadId: "thread-sam" }),
     );
     expect(seeds).toMatchObject({

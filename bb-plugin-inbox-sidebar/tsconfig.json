@@ -27,7 +27,6 @@
     "components",
     "lib",
     "memory",
-    "test",
-    "types/dnd-kit-react-jsx.d.ts"
+    "test"
   ]
 }

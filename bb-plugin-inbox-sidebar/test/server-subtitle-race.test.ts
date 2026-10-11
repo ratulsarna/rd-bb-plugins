@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import plugin, { boardRpcContract } from "../server";
+import plugin, { assistantRpcContract } from "../server";
 
 it.each(["", "Edited subtitle"])("persists a subtitle mutation (%j) across deferred migration and source registration", async (subtitle) => {
   let sourceRegistered = false;
@@ -31,7 +31,7 @@ it.each(["", "Edited subtitle"])("persists a subtitle mutation (%j) across defer
     expect(db.prepare("SELECT subtitle FROM assistant_subtitles WHERE identity = 'env-remote'").get()).toEqual({ subtitle: "Remote legacy subtitle" });
     expect(await harness.behavior.callRpc("setAssistantSubtitle", { threadId: "thread-sam", subtitle })).toEqual({ ok: true });
     expect(await harness.behavior.runCli(["subtitle", "thread-sam"])).toMatchObject({ exitCode: 0, stdout: `${subtitle || "(none)"}\n` });
-    const displayed = boardRpcContract.listAssistantSubtitles.output.parse(await harness.behavior.callRpc("listAssistantSubtitles", {}));
+    const displayed = assistantRpcContract.listAssistantSubtitles.output.parse(await harness.behavior.callRpc("listAssistantSubtitles", {}));
     expect(displayed.rows.filter((row) => row.identity === "fleet:sam")).toEqual(subtitle ? [{ identity: "fleet:sam", subtitle }] : []);
 
     const deferred = await harness.lifecycle.reload(plugin);
@@ -49,7 +49,7 @@ it.each(["", "Edited subtitle"])("persists a subtitle mutation (%j) across defer
           ...(subtitle ? [{ identity: "fleet:sam", subtitle }] : []),
         ];
         expect(db.prepare("SELECT identity, subtitle FROM assistant_subtitles ORDER BY identity").all()).toEqual(expected);
-        const displayed = boardRpcContract.listAssistantSubtitles.output.parse(await completed.harness.behavior.callRpc("listAssistantSubtitles", {}));
+        const displayed = assistantRpcContract.listAssistantSubtitles.output.parse(await completed.harness.behavior.callRpc("listAssistantSubtitles", {}));
         expect(displayed.rows.sort((a, b) => a.identity.localeCompare(b.identity))).toEqual(expected);
         expect(await completed.harness.behavior.runCli(["subtitle", "thread-sam"])).toMatchObject({ exitCode: 0, stdout: `${subtitle || "(none)"}\n` });
         expect(db.prepare("SELECT * FROM _bb_migrations ORDER BY id").all()).toEqual(migrations);
@@ -101,13 +101,13 @@ it.each(["", "New subtitle"])("preserves a subtitle mutation (%j) while migratio
       ...(subtitle ? [{ identity: "fleet:sam", subtitle }] : []),
     ];
     expect(db.prepare("SELECT identity, subtitle FROM assistant_subtitles ORDER BY identity").all()).toEqual(expected);
-    const displayed = boardRpcContract.listAssistantSubtitles.output.parse(await harness.behavior.callRpc("listAssistantSubtitles", {}));
+    const displayed = assistantRpcContract.listAssistantSubtitles.output.parse(await harness.behavior.callRpc("listAssistantSubtitles", {}));
     expect(displayed.rows.sort((a, b) => a.identity.localeCompare(b.identity))).toEqual(expected);
     expect(await harness.behavior.runCli(["subtitle", "thread-sam"])).toMatchObject({ exitCode: 0, stdout: `${subtitle || "(none)"}\n` });
     const restarted = await harness.lifecycle.reload(plugin);
     try {
       expect(restarted.bb.storage.database().prepare("SELECT identity, subtitle FROM assistant_subtitles ORDER BY identity").all()).toEqual(expected);
-      const displayed = boardRpcContract.listAssistantSubtitles.output.parse(await restarted.harness.behavior.callRpc("listAssistantSubtitles", {}));
+      const displayed = assistantRpcContract.listAssistantSubtitles.output.parse(await restarted.harness.behavior.callRpc("listAssistantSubtitles", {}));
       expect(displayed.rows.sort((a, b) => a.identity.localeCompare(b.identity))).toEqual(expected);
       expect(await restarted.harness.behavior.runCli(["subtitle", "thread-sam"])).toMatchObject({ exitCode: 0, stdout: `${subtitle || "(none)"}\n` });
       expect(restarted.bb.storage.database().prepare("SELECT * FROM _bb_migrations ORDER BY id").all()).toEqual(migrations);

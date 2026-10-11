@@ -3,8 +3,8 @@ import {
   useRealtimeConnectionState,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
-import type { boardRpcContract } from "@/server";
-import { shouldRefreshOnReconnect } from "@/lib/reconnect";
+import type { assistantRpcContract } from "@/server";
+import { shouldRefreshOnReconnect } from "inbox-core/lib/reconnect";
 
 /** The rpc takes at most 100 environment ids per call. */
 const BATCH_SIZE = 100;
@@ -28,7 +28,7 @@ export interface AssistantIdentitiesApi {
 export function useAssistantIdentities(
   environmentIds: readonly string[],
 ): AssistantIdentitiesApi {
-  const rpc = useRpc<typeof boardRpcContract>();
+  const rpc = useRpc<typeof assistantRpcContract>();
   const [identities, setIdentities] = useState<ReadonlyMap<string, string>>(
     () => new Map(),
   );

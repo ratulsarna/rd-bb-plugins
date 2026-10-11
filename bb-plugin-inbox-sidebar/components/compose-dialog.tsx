@@ -11,11 +11,11 @@ import {
 import { toast } from "sonner";
 import type { z } from "zod";
 import type { AssistantDestination } from "@/lib/assistant-conversation";
-import type { boardRpcContract } from "@/server";
-import { usePortalScopeProps } from "@/lib/portal-scope";
+import type { assistantRpcContract } from "@/server";
+import { usePortalScopeProps } from "inbox-core/lib/portal-scope";
 import { restartPrompt } from "@/lib/restart-prompt";
 
-type Seeds = z.infer<typeof boardRpcContract.assistantSeeds.output>;
+type Seeds = z.infer<typeof assistantRpcContract.assistantSeeds.output>;
 
 /** Starts a fresh root conversation through bb's normal composer. */
 export function ComposeDialog({
@@ -27,7 +27,7 @@ export function ComposeDialog({
   onClose: () => void;
   onNavigate: () => void;
 }) {
-  const rpc = useRpc<typeof boardRpcContract>();
+  const rpc = useRpc<typeof assistantRpcContract>();
   const navigate = useBbNavigate();
   const portalScope = usePortalScopeProps();
   const [seedResult, setSeedResult] = useState<{ threadId: string; value: Seeds } | null>(null);

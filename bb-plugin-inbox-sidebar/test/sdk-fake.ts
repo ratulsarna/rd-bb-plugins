@@ -1,8 +1,8 @@
 import { createElement, useEffect, useState } from "react";
 import type { NewThreadComposerProps, NewThreadRequest } from "@get-bb/plugin-sdk/app";
 import type { z } from "zod";
-import type { boardRpcContract } from "@/server";
-import type { PipelinePullRequest } from "@/server";
+import type { assistantRpcContract } from "@/server";
+import type { PipelinePullRequest } from "inbox-core/server";
 import type { ComponentType, PointerEvent as ReactPointerEvent } from "react";
 import type {
   PluginRealtimeConnectionState,
@@ -10,7 +10,7 @@ import type {
   PluginSidebarSplitLayout,
   PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
-import type { BoardThread, ThreadOverride } from "@/lib/lanes";
+import type { BoardThread, ThreadOverride } from "inbox-core/lib/lanes";
 import { project } from "./fixtures";
 
 /**
@@ -21,8 +21,8 @@ import { project } from "./fixtures";
  * thing that satisfies the hooks this plugin actually calls.
  */
 export interface FakeSdkConfig {
-  assistantSeeds: Record<string, z.infer<typeof boardRpcContract.assistantSeeds.output>>;
-  assistantDestinations: Record<string, z.infer<typeof boardRpcContract.assistantDestination.output>>;
+  assistantSeeds: Record<string, z.infer<typeof assistantRpcContract.assistantSeeds.output>>;
+  assistantDestinations: Record<string, z.infer<typeof assistantRpcContract.assistantDestination.output>>;
   composerRequest: NewThreadRequest | null;
   threadStatus: "loading" | "ready" | "error";
   threads: BoardThread[];

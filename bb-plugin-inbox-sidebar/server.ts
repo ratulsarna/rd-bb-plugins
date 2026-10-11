@@ -1,17 +1,14 @@
-// The settled-thread store. This state lives in the plugin's own database,
-// never on bb's thread — uninstalling the plugin takes it with it.
-//
-// Three override kinds, one row per thread. Auto-settle needs both
-// directions: "settled" parks a thread the timer would have kept, and
-// "active" un-parks one the timer would otherwise re-settle on the next
-// render. "snoozed" hides a thread until `until`; once that has passed the
-// row is a woken snooze until the thread is opened.
+// The assistant half of the sidebar: identity keys, subtitles, the fleet
+// order, conversation moves and memory. The inbox itself (settles, snoozes,
+// pins, projects) lives in inbox-core and is registered on the same database
+// below — this plugin only adds the assistant RPCs and the `bb assistants`
+// CLI on top.
 import path from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 // Relative on purpose: a path install loads server.ts directly, where the
 // bundler's "@/" alias does not exist.
-import { pinnedRootIds } from "./lib/pinned-order";
+import { registerInbox } from "inbox-core/server";
 import { createIdentityResolver } from "./lib/assistant-identity";
 import {
   assistantConversationContext,
@@ -20,104 +17,12 @@ import {
   repointAutomations,
   targetingAutomationsOf,
 } from "./lib/assistant-conversation";
-import {
-  getProjectPathError,
-  normalizeProjectPath,
-  projectNameFromPath,
-} from "./lib/project-path";
-import {
-  getFolderNameError,
-  joinHostPath,
-} from "./lib/project-browser-path";
 import { handover, type Place } from "./memory/handover";
 import { MEMORY_CHANNEL, MemoryService } from "./memory/service";
 
 const threadIdInput = z.object({ threadId: z.string().trim().min(1) });
-const snoozeInput = threadIdInput.extend({ until: z.number().int().positive() });
-const pinnedOrderOutput = z.object({ ids: z.array(z.string()) });
 
-export const boardRpcContract = defineRpcContract({
-  threadPullRequests: {
-    input: z.object({ threadIds: z.array(z.string().trim().min(1)).max(100) }),
-    output: z.object({
-      rows: z.array(z.object({
-        threadId: z.string(),
-        pullRequest: z.object({
-          number: z.number().int().positive(),
-          title: z.string(),
-          url: z.string(),
-          state: z.enum(["open", "draft", "closed", "merged"]),
-        }).nullable(),
-      })),
-    }),
-  },
-  projectCreationContext: {
-    input: z.object({}),
-    output: z.object({
-      primaryHostId: z.string().nullable(),
-      hosts: z.array(z.object({ id: z.string(), name: z.string() })),
-    }),
-  },
-  projectDirectory: {
-    input: z.object({
-      hostId: z.string().trim().min(1),
-      path: z.string().nullable(),
-    }),
-    output: z.object({
-      directory: z.string(),
-      parent: z.string().nullable(),
-      entries: z.array(z.object({ name: z.string(), path: z.string() })),
-    }),
-  },
-  createProjectFolder: {
-    input: z.object({
-      hostId: z.string().trim().min(1),
-      parentPath: z.string().trim().min(1),
-      name: z.string(),
-    }),
-    output: z.object({ path: z.string() }),
-  },
-  addProject: {
-    input: z.object({
-      hostId: z.string().trim().min(1),
-      path: z.string(),
-    }),
-    output: z.object({ projectId: z.string() }),
-  },
-  listOverrides: {
-    input: z.object({}),
-    output: z.object({
-      rows: z.array(
-        z.discriminatedUnion("override", [
-          z.object({
-            threadId: z.string(),
-            override: z.enum(["settled", "active"]),
-            at: z.number(),
-          }),
-          z.object({
-            threadId: z.string(),
-            override: z.literal("snoozed"),
-            at: z.number(),
-            until: z.number(),
-          }),
-        ]),
-      ),
-    }),
-  },
-  settle: { input: threadIdInput, output: z.object({ ok: z.boolean() }) },
-  unsettle: { input: threadIdInput, output: z.object({ ok: z.boolean() }) },
-  snooze: { input: snoozeInput, output: z.object({ ok: z.boolean() }) },
-  wake: { input: threadIdInput, output: z.object({ ok: z.boolean() }) },
-  acknowledgeWake: { input: snoozeInput, output: z.object({ ok: z.boolean() }) },
-  pinnedOrder: { input: z.object({}), output: pinnedOrderOutput },
-  movePinned: {
-    input: z.object({
-      threadId: z.string().trim().min(1),
-      previousThreadId: z.string().trim().min(1).nullable(),
-      nextThreadId: z.string().trim().min(1).nullable(),
-    }),
-    output: pinnedOrderOutput,
-  },
+export const assistantRpcContract = defineRpcContract({
   assistantSeeds: {
     input: threadIdInput,
     output: z.object({
@@ -225,16 +130,6 @@ export const boardRpcContract = defineRpcContract({
   },
 });
 
-export type PipelinePullRequest = NonNullable<
-  z.infer<typeof boardRpcContract.threadPullRequests.output>["rows"][number]["pullRequest"]
->;
-
-/** Realtime channel the board re-reads overrides on. */
-export const SETTLED_CHANNEL = "settled";
-
-/** Realtime channel the board re-reads the pinned order on. */
-export const PINNED_CHANNEL = "pinned-order";
-
 /** Realtime channel the assistant list re-reads subtitles on. */
 export const SUBTITLE_CHANNEL = "assistant-subtitles";
 
@@ -242,10 +137,6 @@ export const SUBTITLE_CHANNEL = "assistant-subtitles";
 export const ASSISTANT_ORDER_CHANNEL = "assistant-order";
 
 export { MEMORY_CHANNEL };
-
-type OverrideDbRow =
-  | { thread_id: string; override: "settled" | "active"; at: number; until: null }
-  | { thread_id: string; override: "snoozed"; at: number; until: number };
 
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -284,6 +175,12 @@ export default function plugin(bb: BbPluginApi) {
     `DROP TABLE thread_overrides`,
     `ALTER TABLE thread_overrides_next RENAME TO thread_overrides`,
   ]);
+  // The inbox's tables and RPCs share this database and plugin id; its
+  // migration list is private, so the statements above carry the schema.
+  // inbox-core resolves the SDK from its own node_modules — same pinned
+  // version, but a second copy whose equality tsc cannot prove across this
+  // call (the structural walk overflows).
+  registerInbox(bb as unknown as Parameters<typeof registerInbox>[0], db);
 
   // Tables that predate identity keys store environment ids in a column of
   // the same role; rename the column first, then rewrite the values below.
@@ -426,108 +323,6 @@ export default function plugin(bb: BbPluginApi) {
         .all() as Array<{ identity: string }>
     ).map((row) => row.identity);
 
-  const write = (
-    threadId: string,
-    override: "settled" | "active" | "snoozed",
-    until: number | null = null,
-  ): void => {
-    db.prepare(
-      `INSERT INTO thread_overrides (thread_id, override, at, until) VALUES (?, ?, ?, ?)
-       ON CONFLICT(thread_id) DO UPDATE SET
-         override = excluded.override,
-         at = excluded.at,
-         until = excluded.until`,
-    ).run(threadId, override, Date.now(), until);
-    bb.realtime.publish(SETTLED_CHANNEL, { threadId });
-  };
-
-  // Ends the live snoozes among `threadIds` now. `occurredAt` is when the
-  // cause happened: events reach us late, so a request that arrived before
-  // the user snoozed must not end that snooze.
-  const wakeSnoozed = (threadIds: readonly string[], occurredAt: number): void => {
-    const now = Date.now();
-    const placeholders = threadIds.map(() => "?").join(", ");
-    const woken = db
-      .prepare(
-        `UPDATE thread_overrides SET until = ?
-         WHERE thread_id IN (${placeholders})
-           AND override = 'snoozed' AND until > ? AND at <= ?
-         RETURNING thread_id`,
-      )
-      .all(now, ...threadIds, now, occurredAt) as Array<{ thread_id: string }>;
-    for (const row of woken) {
-      bb.realtime.publish(SETTLED_CHANNEL, { threadId: row.thread_id });
-    }
-  };
-
-  // A question or failure anywhere under a snoozed root wakes it. A subagent
-  // that only finished does not, though the board rolls that up as needs-you.
-  const wakeForNeed = async (
-    thread: { id: string; parentThreadId: string | null },
-    occurredAt: number,
-  ) => {
-    const live = db
-      .prepare(
-        `SELECT 1 FROM thread_overrides WHERE override = 'snoozed' AND until > ? LIMIT 1`,
-      )
-      .get(Date.now());
-    if (!live) return;
-    const lineage = [thread.id];
-    // The event already names the parent, so a failed lookup further up can
-    // only cost the ancestors above it.
-    let parentId = thread.parentThreadId;
-    try {
-      while (parentId && !lineage.includes(parentId)) {
-        lineage.push(parentId);
-        parentId = (await bb.sdk.threads.get({ threadId: parentId }))
-          .parentThreadId;
-      }
-    } catch (error) {
-      // Wake what we reached; a missing ancestor must not keep the thread asleep.
-      bb.log.warn(
-        `snooze wake: ancestor lookup failed for ${thread.id}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    wakeSnoozed(lineage, occurredAt);
-  };
-
-  // Shared by the rpc (sidebar editor) and the CLI (agents). Resolves the
-  // thread to its home's identity; empty subtitle clears.
-  const writeSubtitle = async (
-    threadId: string,
-    subtitle: string,
-  ): Promise<string> => {
-    const thread = await bb.sdk.threads.get({ threadId });
-    if (!thread.environmentId) {
-      throw new Error(
-        `thread ${threadId} has no environment — not an assistant home`,
-      );
-    }
-    const identity = await storageKeyOfEnvironment(thread.environmentId, true);
-    // Remove this environment's alias so it cannot outlive the mutation.
-    if (identity !== thread.environmentId) {
-      db.prepare(`DELETE FROM assistant_subtitles WHERE identity = ?`).run(thread.environmentId);
-    }
-    const migrationPending = !db.prepare(`SELECT done FROM assistant_key_migration`).get();
-    if (subtitle === "" && !migrationPending) {
-      db.prepare(
-        `DELETE FROM assistant_subtitles WHERE identity = ?`,
-      ).run(identity);
-    } else {
-      // Empty subtitles persist clears while aliases await sources. Advance
-      // past stored timestamps so clock skew cannot let a legacy alias win.
-      const latest = db.prepare(`SELECT MAX(at) AS at FROM assistant_subtitles`).get() as { at: number | null };
-      db.prepare(
-        `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)
-         ON CONFLICT(identity) DO UPDATE SET
-           subtitle = excluded.subtitle,
-           at = excluded.at`,
-      ).run(identity, subtitle, Math.max(Date.now(), latest.at ?? 0) + 1);
-    }
-    bb.realtime.publish(SUBTITLE_CHANNEL, { identity });
-    return identity;
-  };
-
   // Memory state lives beside each assistant's tree, outside data.db: see memory/state.ts.
   const memory = new MemoryService(bb, path.join(path.dirname(db.name), "memory"));
   bb.onDispose(() => memory.dispose());
@@ -598,6 +393,41 @@ export default function plugin(bb: BbPluginApi) {
     import: "usage: bb assistants import <thread-id> <thread-id|/path/to/file.jsonl>...",
   };
   const usageOf = (command: string) => USAGE[command as keyof typeof USAGE] ?? Object.values(USAGE).join("\n");
+
+  const writeSubtitle = async (
+    threadId: string,
+    subtitle: string,
+  ): Promise<string> => {
+    const thread = await bb.sdk.threads.get({ threadId });
+    if (!thread.environmentId) {
+      throw new Error(
+        `thread ${threadId} has no environment — not an assistant home`,
+      );
+    }
+    const identity = await storageKeyOfEnvironment(thread.environmentId, true);
+    // Remove this environment's alias so it cannot outlive the mutation.
+    if (identity !== thread.environmentId) {
+      db.prepare(`DELETE FROM assistant_subtitles WHERE identity = ?`).run(thread.environmentId);
+    }
+    const migrationPending = !db.prepare(`SELECT done FROM assistant_key_migration`).get();
+    if (subtitle === "" && !migrationPending) {
+      db.prepare(
+        `DELETE FROM assistant_subtitles WHERE identity = ?`,
+      ).run(identity);
+    } else {
+      // Empty subtitles persist clears while aliases await sources. Advance
+      // past stored timestamps so clock skew cannot let a legacy alias win.
+      const latest = db.prepare(`SELECT MAX(at) AS at FROM assistant_subtitles`).get() as { at: number | null };
+      db.prepare(
+        `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)
+         ON CONFLICT(identity) DO UPDATE SET
+           subtitle = excluded.subtitle,
+           at = excluded.at`,
+      ).run(identity, subtitle, Math.max(Date.now(), latest.at ?? 0) + 1);
+    }
+    bb.realtime.publish(SUBTITLE_CHANNEL, { identity });
+    return identity;
+  };
 
   const subtitleCommand = async (threadId: string, rest: string[]) => {
     if (rest.length === 0) {
@@ -711,127 +541,7 @@ export default function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.rpc.register(boardRpcContract, {
-    threadPullRequests(input) {
-      return bb.sdk.plugins.callRpc({
-        pluginId: "pipeline",
-        method: "threadPullRequests",
-        input,
-        outputSchema: boardRpcContract.threadPullRequests.output,
-      });
-    },
-    async projectCreationContext() {
-      const [config, allHosts] = await Promise.all([
-        bb.sdk.system.config(),
-        bb.sdk.hosts.list(),
-      ]);
-      const hosts = allHosts
-        .filter((host) => host.status === "connected")
-        .map(({ id, name }) => ({ id, name }));
-      const primaryHostId = hosts.some(
-        (host) => host.id === config.primaryHostId,
-      )
-        ? config.primaryHostId
-        : (hosts[0]?.id ?? null);
-      return { primaryHostId, hosts };
-    },
-    async projectDirectory({ hostId, path }) {
-      const listing = await bb.sdk.hosts.directory({
-        hostId,
-        ...(path ? { path } : {}),
-      });
-      return {
-        directory: listing.directory,
-        parent: listing.parent,
-        entries: listing.entries
-          .filter((entry) => entry.kind === "directory")
-          .map(({ name, path: entryPath }) => ({ name, path: entryPath })),
-      };
-    },
-    async createProjectFolder({ hostId, parentPath, name }) {
-      const trimmedName = name.trim();
-      const nameError = getFolderNameError(trimmedName);
-      if (nameError) throw new Error(nameError);
-
-      const path = joinHostPath(parentPath, trimmedName);
-      await bb.sdk.files.mkdir({ hostId, path });
-      return { path };
-    },
-    async addProject({ hostId, path }) {
-      const pathError = getProjectPathError(path);
-      if (pathError) throw new Error(pathError);
-
-      const normalizedPath = normalizeProjectPath(path);
-      const project = await bb.sdk.projects.create({
-        name: projectNameFromPath(normalizedPath),
-        source: { type: "local_path", hostId, path: normalizedPath },
-      });
-      return { projectId: project.id };
-    },
-    async listOverrides() {
-      const rows = (
-        db
-          .prepare(`SELECT thread_id, override, at, until FROM thread_overrides`)
-          .all() as OverrideDbRow[]
-      ).map((row) =>
-        row.override === "snoozed"
-          ? { threadId: row.thread_id, override: row.override, at: row.at, until: row.until }
-          : { threadId: row.thread_id, override: row.override, at: row.at },
-      );
-      return { rows };
-    },
-    async settle({ threadId }) {
-      write(threadId, "settled");
-      return { ok: true };
-    },
-    async unsettle({ threadId }) {
-      write(threadId, "active");
-      return { ok: true };
-    },
-    async snooze({ threadId, until }) {
-      if (until <= Date.now()) throw new Error("Snooze time is in the past");
-      write(threadId, "snoozed", until);
-      return { ok: true };
-    },
-    async wake({ threadId }) {
-      wakeSnoozed([threadId], Date.now());
-      return { ok: true };
-    },
-    // Opening a woken thread hands it back to the ordinary rules as "active",
-    // which restarts the quiet clock: a week-long snooze must not auto-settle
-    // the moment it is opened. Keyed on the `until` the client saw, so a late
-    // acknowledgement cannot undo a newer snooze or settle. No check against
-    // our own clock: a browser a few seconds ahead would be refused forever.
-    async acknowledgeWake({ threadId, until }) {
-      const now = Date.now();
-      const changed = db
-        .prepare(
-          `UPDATE thread_overrides SET override = 'active', at = ?, until = NULL
-           WHERE thread_id = ? AND override = 'snoozed' AND until = ?`,
-        )
-        .run(now, threadId, until).changes;
-      if (changed > 0) bb.realtime.publish(SETTLED_CHANNEL, { threadId });
-      return { ok: true };
-    },
-    // Pin order is bb's, not ours: we read its list and write through its
-    // reorder call. Nothing about it is stored in this plugin's database.
-    async pinnedOrder() {
-      return {
-        ids: pinnedRootIds(await bb.sdk.threads.list({ archived: false })),
-      };
-    },
-    async movePinned({ threadId, previousThreadId, nextThreadId }) {
-      // Same derivation as the read. The app itself never trusts the response
-      // array's order — it merges the returned sort keys and re-sorts — so
-      // neither do we.
-      const threads = await bb.sdk.threads.reorderPinned({
-        threadId,
-        previousThreadId,
-        nextThreadId,
-      });
-      bb.realtime.publish(PINNED_CHANNEL, { threadId });
-      return { ids: pinnedRootIds(threads) };
-    },
+  bb.rpc.register(assistantRpcContract, {
     async assistantSeeds({ threadId }) {
       const context = await assistantConversationContext(bb, threadId);
       // A source conversation can outlive its provider; use normal composer defaults then.
@@ -1016,25 +726,5 @@ export default function plugin(bb: BbPluginApi) {
           .map((past) => ({ id: past.id, createdAt: past.createdAt, archivedAt: past.archivedAt! })),
       };
     },
-
   });
-
-  // A deleted thread must not leave an override behind that would park a
-  // future thread reusing the id, and stale rows accumulate otherwise.
-  bb.events.on("thread.deleted", ({ thread }) => {
-    db.prepare(`DELETE FROM thread_overrides WHERE thread_id = ?`).run(
-      thread.id,
-    );
-    bb.realtime.publish(SETTLED_CHANNEL, { threadId: thread.id });
-  });
-
-  // Our own needs-you signals: a pending request or a failure. Both events
-  // fire only for a new one, so a request already open when the user
-  // snoozed never wakes the thread.
-  bb.events.on("interaction.pending", ({ thread, interaction }) =>
-    wakeForNeed(thread, interaction.createdAt),
-  );
-  bb.events.on("thread.failed", ({ thread }) =>
-    wakeForNeed(thread, thread.updatedAt),
-  );
 }

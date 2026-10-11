@@ -1,5 +1,17 @@
 # Inbox Sidebar assistant conversations
 
+## Inbox
+
+The thread list (Pinned, Inbox, Snoozed, Settled) comes from `inbox-core`, a
+file dependency on a sibling `bb-sw-pipeline` checkout (on Ratul's Mac:
+`~/Developer/bb/bb-sw-pipeline`). Setup: `npm ci` in that checkout's
+`inbox-core`, then `npm ci` here. This plugin composes the board with the
+Bots section and keeps the assistants project out of the inbox lanes.
+After any inbox-core change, run `npm run build` here before a reload: bb's
+change check looks only inside the plugin folder and skips `node_modules`.
+The postinstall here points inbox-core's `react` and `react-dom` at this
+plugin's copies, so tests and the bundler see one React.
+
 Use a Bots row's **New thread with …** action to open BB's normal composer.
 **Machine** chooses where the fresh root conversation starts. **Home** shows
 the same assistant home segment under that machine's mapped assistants root.
