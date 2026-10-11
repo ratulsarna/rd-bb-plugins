@@ -345,6 +345,33 @@ describe("removing a task", () => {
     await removing;
   });
 
+  it("holds automated messages that reach a removed task's threads, but not a person's", async () => {
+    const s = setup();
+    // After removal only the spawn metadata ties the lead to its task.
+    s.threads.set("lead", { ...s.threads.get("lead")!, originPluginId: "pipeline" });
+    s.harness.inspection.sdk.stub("threads.getPluginMetadata", async ({ threadId }) => threadId === "lead" ? { cardId: "card" } : {});
+    s.thread("worker", "lead");
+    s.thread("unrelated");
+    await s.controls.remove("card");
+    const lead = { ...s.threads.get("lead")!, status: "idle" as const };
+    const decide = (overrides: Partial<Parameters<typeof makeMessageDispatchHookContext>[0]>) =>
+      s.capacity.decide(makeMessageDispatchHookContext({ thread: lead, host: { id: "host_a" }, ...overrides }));
+    const held = { action: "wait", reason: "Pipeline: task was removed" };
+
+    // Core flushes the stopped worker's outcome to the lead about 2 s after removal returns.
+    expect(await decide({ initiator: "system", senderThreadId: null })).toEqual(held);
+    expect(await decide({ initiator: "agent", senderThreadId: "worker" })).toEqual(held);
+    expect(await decide({
+      initiator: "mixed", senderThreadId: "mixed",
+      queuedMessages: [
+        makeQueueEntry({ threadId: "lead", initiator: "user", senderThreadId: null }),
+        makeQueueEntry({ threadId: "lead", initiator: "agent", senderThreadId: "worker" }),
+      ],
+    })).toEqual(held);
+    expect(await decide({ initiator: "user", senderThreadId: null })).toEqual({ action: "proceed" });
+    expect(await decide({ initiator: "agent", senderThreadId: "unrelated" })).toEqual({ action: "proceed" });
+  });
+
   it("removes the card even when stops fail, naming each thread left behind", async () => {
     const s = setup();
     s.thread("offline-worker", "lead");
