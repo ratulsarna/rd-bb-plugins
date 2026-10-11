@@ -28,6 +28,7 @@ const PAUSE_WAIT: MessageDispatchHookDecision = {
   action: "wait",
   reason: "Pipeline: task is paused or pausing",
 };
+const REMOVED_REASON = "Pipeline: task was removed";
 
 function hostBlocker(host: Host | undefined): string | null {
   if (host === undefined || host.status !== "connected") return "Machine offline";
@@ -133,8 +134,10 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore, getTas
     }
     for (const row of queued) {
       if (row.hostId === null) continue;
-      const value = machine(row.hostId);
       const card = store.get(row.cardId);
+      const wait = row.entry.waitingOn;
+      if (card === null && wait?.kind === "plugin" && wait.pluginId === bb.pluginId && wait.reason === REMOVED_REASON) continue;
+      const value = machine(row.hostId);
       const labels = reasons(row, card, hosts.find((host) => host.id === row.hostId));
       const existing = value.waiting.find((item) => item.cardId === row.cardId);
       if (existing !== undefined) existing.reasons = [...new Set([...existing.reasons, ...labels])];
@@ -235,11 +238,29 @@ export function createPipelineCapacity(bb: BbPluginApi, store: CardStore, getTas
       const task = await taskFor(context.thread);
       if (task === null) return { action: "proceed" };
 
+      // A removed task's threads stay usable by hand, but nothing automatic may restart them: core
+      // notices (child outcomes land about 2 s after a stop) or messages from the task's own threads.
+      const automatedForRemovedTask = async (): Promise<boolean> => {
+        const authors = context.queuedMessages.length > 0 ? context.queuedMessages : [context];
+        for (const { initiator, senderThreadId } of authors) {
+          if (initiator === "system") return true;
+          if (senderThreadId === null || senderThreadId === "mixed") continue;
+          try {
+            const sender = await sdk.threads.get({ threadId: senderThreadId, experimental_includeDeleted: true });
+            if ((await taskFor(sender))?.cardId === task.cardId) return true;
+          } catch (cause) {
+            if (!isThreadNotFound(cause)) throw cause;
+          }
+        }
+        return false;
+      };
+
       const pauseGate = async (): Promise<MessageDispatchHookDecision | null> => {
         while (true) {
           const card = store.get(task.cardId);
-          if (card !== null && !card.startRequested) return { action: "wait", reason: "Pipeline: task has not been started" };
-          if (card === null || card.runState === "running") return null;
+          if (card === null) return await automatedForRemovedTask() ? { action: "wait", reason: REMOVED_REASON } : null;
+          if (!card.startRequested) return { action: "wait", reason: "Pipeline: task has not been started" };
+          if (card.runState === "running") return null;
           if (card.runState !== "pause_requested") return PAUSE_WAIT;
           if (context.thread.id === ownerThread(card) && context.input.text === pauseInstruction(card)) {
             return null;

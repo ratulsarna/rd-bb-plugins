@@ -46,9 +46,11 @@ Choose **Pause** from a task's actions menu, or run `bb pipeline pause <card-id>
 
 The card shows **Pause requested** until the owner acknowledges, then **Pausing** until its threads, tracked background work, and active goals have stopped. Only then does it show **Paused**. A task whose kickoff has not started can pause immediately. An offline machine or a pending question can delay delivery; **Retry pause** retries a failed or cancelled instruction.
 
-**Resume** continues the owning thread from its handoff and releases preserved queued messages, subject to the configured task limit. A task paused before its queued kickoff runs resumes that kickoff; a deleted owner is relaunched. Archived owners must be restored in BB first. Moving, removing, or retrying a held card requires resuming it.
+**Resume** continues the owning thread from its handoff and releases preserved queued messages, subject to the configured task limit. A task paused before its queued kickoff runs resumes that kickoff; a deleted owner is relaunched. Archived owners must be restored in BB first. Moving or retrying a held card requires resuming it.
 
 **Stop now** (`bb pipeline stop <card-id>`) is the immediate fallback. It requests a stop for the task's intake, lead, and occupied descendants, and waits for confirmed shutdown before showing Paused. It preserves queued messages and files. An unavailable machine can leave the card **Stopping**; retry Stop now when it reconnects. BB can stop provider sessions and their tracked work, but cannot guarantee shutdown of arbitrary detached processes.
+
+**Remove** (`bb pipeline remove <card-id>`) works in any state, without resuming. It clears active goals on the intake, lead, and running threads, stops them like Stop now, deletes the task's queued messages, then removes the card. Paused goals, and goals on child threads that were already idle, stay as they are; they do nothing until someone messages that thread. The card is removed even when a step fails, for example on an offline machine; Remove then lists each thread it could not stop or clean up, so you can handle it in BB. Removal never deletes threads, branches, worktrees, PRs, or issues. Afterwards the threads stay usable by hand: messages you send are not held for removal (they still wait for a task slot like any Pipeline work), but automatic ones, such as BB's worker notices and retries or messages from the task's own threads, wait in the thread's queue as "Pipeline: task was removed". Send now cannot release them, as with a paused task's held messages; delete them, or type what the thread should do.
 
 ## Notifications
 
@@ -134,8 +136,7 @@ Intake reuses the ready BB environment at that checkout. Before first use, open 
 
 Cards without a machine show a machine picker on the board. Assign one there or with `set-machine` before launching further work. Assignment does not relocate existing threads, and an assigned card's machine cannot be changed.
 
-Removing a card removes only its board data. It does not stop the intake or lead threads; archive those threads in BB if needed.
-Their running work continues to count toward the limit after the card is removed.
+Removing a card stops its threads but keeps them in BB; archive them there if needed. A thread Remove could not stop keeps running and counts toward the limit until you stop it in BB.
 
 ## Configuration
 

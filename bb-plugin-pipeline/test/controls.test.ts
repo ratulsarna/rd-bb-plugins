@@ -12,6 +12,7 @@ function setup() {
   const threads = new Map<string, ReturnType<typeof makeThreadResponse>>();
   const busy = new Set<string>();
   const queue: ReturnType<typeof makeQueueEntry>[] = [];
+  const goals = new Map<string, "active" | "paused">();
   const host = createFakePluginHost({ pluginId: "pipeline", sdk: { threads: {
     get: async ({ threadId }) => {
       const thread = threads.get(threadId);
@@ -28,6 +29,8 @@ function setup() {
     } },
     send: async () => ({ ok: true, delivery: "sent" }),
     stop: async ({ threadId }) => { busy.delete(threadId); return { ok: true }; },
+    timeline: async ({ threadId }) => ({ goal: goals.has(threadId) ? { status: goals.get(threadId) } : null }) as never,
+    clearGoal: async ({ threadId }) => { goals.delete(threadId); return { ok: true }; },
   } } });
   hosts.push(host);
   const db = host.bb.storage.database();
@@ -36,7 +39,10 @@ function setup() {
   store.create({ id: "card", projectId: "project", hostId: "host_a", title: "Task", body: "", attachments: [], source: "ui" });
   store.update("card", { leadThreadId: "lead", ownerRole: "lead", column: "implementing" });
   const launch = vi.fn(async () => store.get("card")!);
-  const service = { launch, retry: vi.fn(async () => store.get("card")!), onThreadQueueChanged: vi.fn(async () => {}) };
+  const service = {
+    launch, retry: vi.fn(async () => store.get("card")!), onThreadQueueChanged: vi.fn(async () => {}),
+    launchSettled: vi.fn(async () => {}),
+  };
   const controls = createPipelineControls(host.bb, store, service);
   const capacity = createPipelineCapacity(host.bb, store);
   const thread = (id: string, parentThreadId: string | null = null, status: "active" | "idle" | "pending" = "active") => {
@@ -48,7 +54,7 @@ function setup() {
   thread("lead");
   const card = () => store.get("card")!;
   const acknowledge = () => controls.acknowledge({ threadId: "lead", requestId: card().pauseRequestId! });
-  return { ...host, store, threads, busy, queue, controls, capacity, launch, service, thread, card, acknowledge };
+  return { ...host, store, threads, busy, queue, goals, controls, capacity, launch, service, thread, card, acknowledge };
 }
 
 describe("graceful task controls", () => {
@@ -297,5 +303,150 @@ describe("graceful task controls", () => {
     s.harness.inspection.sdk.stub("threads.send", async () => { s.busy.add("lead"); throw new Error("reply lost"); });
     await recovered.resume("card");
     expect(s.card()).toMatchObject({ runState: "pausing", controlError: "reply lost" });
+  });
+});
+
+describe("removing a task", () => {
+  const stopped = (s: ReturnType<typeof setup>) => s.harness.inspection.sdk.callsTo("threads.stop").map((call) => (call[0] as { threadId: string }).threadId);
+
+  it("removes a paused task, stopping its work and dropping only its queued messages", async () => {
+    const s = setup();
+    s.thread("worker", "lead");
+    s.thread("idle-worker", "lead", "idle");
+    s.thread("unrelated");
+    s.queue.push(
+      makeQueueEntry({ id: "lead-message", threadId: "lead" }),
+      makeQueueEntry({ id: "idle-worker-message", threadId: "idle-worker" }),
+      makeQueueEntry({ id: "unrelated-message", threadId: "unrelated" }),
+    );
+    s.store.update("card", { runState: "paused" });
+
+    await expect(s.controls.remove("card")).resolves.toEqual({ removed: true, warnings: [] });
+    expect(s.store.get("card")).toBeNull();
+    expect(stopped(s)).toEqual(expect.arrayContaining(["lead", "worker"]));
+    expect(stopped(s)).not.toContain("unrelated");
+    expect(s.queue.map((entry) => entry.id)).toEqual(["unrelated-message"]);
+  });
+
+  it("holds a running task's queued messages until cleanup ends", async () => {
+    const s = setup();
+    let release!: () => void;
+    s.harness.inspection.sdk.stub("threads.stop", async ({ threadId }) => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      s.busy.delete(threadId);
+      return { ok: true };
+    });
+    const removing = s.controls.remove("card");
+    await vi.waitFor(() => expect(release).toBeDefined());
+    const lead = s.threads.get("lead")!;
+    const decision = await s.capacity.decide(makeMessageDispatchHookContext({ thread: { ...lead, status: "idle" } }));
+    expect(decision.action).toBe("wait");
+    release();
+    await removing;
+  });
+
+  it("holds automated messages that reach a removed task's threads, but not a person's", async () => {
+    const s = setup();
+    // After removal only the spawn metadata ties the lead to its task.
+    s.threads.set("lead", { ...s.threads.get("lead")!, originPluginId: "pipeline" });
+    s.harness.inspection.sdk.stub("threads.getPluginMetadata", async ({ threadId }) => threadId === "lead" ? { cardId: "card" } : {});
+    s.thread("worker", "lead");
+    s.thread("unrelated");
+    await s.controls.remove("card");
+    const lead = { ...s.threads.get("lead")!, status: "idle" as const };
+    const decide = (overrides: Partial<Parameters<typeof makeMessageDispatchHookContext>[0]>) =>
+      s.capacity.decide(makeMessageDispatchHookContext({ thread: lead, host: { id: "host_a" }, ...overrides }));
+    const held = { action: "wait", reason: "Pipeline: task was removed" };
+
+    // Core flushes the stopped worker's outcome to the lead about 2 s after removal returns.
+    expect(await decide({ initiator: "system", senderThreadId: null })).toEqual(held);
+    expect(await decide({ initiator: "agent", senderThreadId: "worker" })).toEqual(held);
+    expect(await decide({
+      initiator: "mixed", senderThreadId: "mixed",
+      queuedMessages: [
+        makeQueueEntry({ threadId: "lead", initiator: "user", senderThreadId: null }),
+        makeQueueEntry({ threadId: "lead", initiator: "agent", senderThreadId: "worker" }),
+      ],
+    })).toEqual(held);
+    expect(await decide({ initiator: "user", senderThreadId: null })).toEqual({ action: "proceed" });
+    expect(await decide({ initiator: "agent", senderThreadId: "unrelated" })).toEqual({ action: "proceed" });
+  });
+
+  it("removes the card even when stops fail, naming each thread left behind", async () => {
+    const s = setup();
+    s.thread("offline-worker", "lead");
+    s.thread("refusing-worker", "lead");
+    s.harness.inspection.sdk.stub("threads.stop", async ({ threadId }) => {
+      if (threadId === "refusing-worker") throw new Error("machine offline");
+      if (threadId !== "offline-worker") s.busy.delete(threadId);
+      return { ok: true };
+    });
+
+    const { warnings } = await s.controls.remove("card");
+    expect(s.store.get("card")).toBeNull();
+    expect(warnings).toEqual(expect.arrayContaining([
+      "refusing-worker: could not stop: machine offline",
+      "offline-worker: still running",
+      "refusing-worker: still running",
+    ]));
+    expect(warnings).toHaveLength(3);
+  });
+
+  it("still stops the intake and lead when the running-thread scan fails", async () => {
+    const s = setup();
+    s.store.update("card", { intakeThreadId: "intake" });
+    s.thread("intake");
+    s.harness.inspection.sdk.stub("threads.listRunning", async () => { throw new Error("server busy"); });
+
+    const { warnings } = await s.controls.remove("card");
+    expect(s.store.get("card")).toBeNull();
+    expect(stopped(s)).toEqual(expect.arrayContaining(["intake", "lead"]));
+    expect(warnings).toEqual([
+      "could not list running threads: server busy",
+      "could not confirm threads stopped: server busy",
+    ]);
+  });
+
+  it("stops an occupied child that has not started yet, which Stop leaves for later", async () => {
+    const s = setup();
+    s.thread("late-worker", "lead", "pending");
+    s.busy.add("late-worker");
+    await s.controls.remove("card");
+    expect(stopped(s)).toContain("late-worker");
+  });
+
+  it("clears active goals before stopping and leaves paused goals", async () => {
+    const s = setup();
+    s.thread("worker", "lead");
+    s.goals.set("lead", "active");
+    s.goals.set("worker", "paused");
+    const order: string[] = [];
+    s.harness.inspection.sdk.stub("threads.clearGoal", async ({ threadId }) => { order.push(`clear ${threadId}`); s.goals.delete(threadId); return { ok: true }; });
+    s.harness.inspection.sdk.stub("threads.stop", async ({ threadId }) => { order.push(`stop ${threadId}`); s.busy.delete(threadId); return { ok: true }; });
+
+    await s.controls.remove("card");
+    expect(order[0]).toBe("clear lead");
+    expect(order).not.toContain("clear worker");
+    expect(s.goals.get("worker")).toBe("paused");
+  });
+
+  it("includes a thread linked by a launch that was in flight", async () => {
+    const s = setup();
+    s.store.update("card", { runState: "paused" });
+    s.service.launchSettled.mockImplementation(async () => {
+      s.thread("intake");
+      s.store.update("card", { intakeThreadId: "intake" });
+    });
+    await s.controls.remove("card");
+    expect(stopped(s)).toContain("intake");
+  });
+
+  it("removes a saved task without touching threads", async () => {
+    const s = setup();
+    s.store.update("card", { startRequested: false, leadThreadId: null, ownerRole: "intake", column: "backlog" });
+    s.busy.clear();
+    await expect(s.controls.remove("card")).resolves.toEqual({ removed: true, warnings: [] });
+    expect(s.store.get("card")).toBeNull();
+    expect(s.harness.inspection.sdk.callsTo("threads.stop")).toHaveLength(0);
   });
 });

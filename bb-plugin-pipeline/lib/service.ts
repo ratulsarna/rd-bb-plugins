@@ -100,7 +100,7 @@ export interface PipelineService {
   retry(cardId: string): Promise<Card>;
   report(input: ReportInput): Promise<Card>;
   move(cardId: string, column: Column, source: "ui" | "cli"): Promise<Card>;
-  remove(cardId: string): boolean;
+  launchSettled(cardId: string): Promise<void>;
   onThreadActive(thread: PipelineThread): Promise<void>;
   onThreadIdle(thread: PipelineThread, lastText: string | null): Promise<void>;
   onThreadFailed(thread: PipelineThread, error: string | null): Promise<void>;
@@ -1248,12 +1248,8 @@ export function createPipelineService(
       return next;
     },
     move,
-    remove(cardId) {
-      const card = required(cardId);
-      requireRunning(card, "removing it");
-      const removed = store.remove(cardId);
-      if (removed) dependencies.publish(card.projectId);
-      return removed;
+    async launchSettled(cardId) {
+      await launches.get(cardId)?.catch(() => {});
     },
     onThreadActive(thread) {
       return reconcileThread(thread);

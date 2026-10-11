@@ -90,5 +90,17 @@ export function createTaskThreads(bb: BbPluginApi, store: CardStore) {
     return (await occupancy()).filter((entry) => entry.task.cardId === cardId).map((entry) => entry.thread);
   }
 
-  return { resolver, occupancy, occupied };
+  async function queued(cardId: string) {
+    const taskFor = resolver();
+    const entries = [];
+    for (const entry of await bb.sdk.threads.queue.list()) {
+      let thread: TaskThread;
+      try { thread = await bb.sdk.threads.get({ threadId: entry.threadId, experimental_includeDeleted: true }); }
+      catch (cause) { if (isThreadNotFound(cause)) continue; throw cause; }
+      if ((await taskFor(thread))?.cardId === cardId) entries.push(entry);
+    }
+    return entries;
+  }
+
+  return { resolver, occupancy, occupied, queued };
 }

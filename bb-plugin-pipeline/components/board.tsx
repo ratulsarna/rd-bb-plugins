@@ -81,6 +81,8 @@ function PipelineTasks() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<{ cardId: string; message: string } | null>(null);
+  // Kept apart from `error`, which every successful load clears.
+  const [removalNotice, setRemovalNotice] = useState<string | null>(null);
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
   const [dropColumn, setDropColumn] = useState<Column | null>(null);
   const [pendingCards, setPendingCards] = useState<Set<string>>(new Set());
@@ -236,16 +238,20 @@ function PipelineTasks() {
     }));
   }
 
-  async function updateCard(card: Card, update: () => Promise<Card | { removed: boolean } | { ok: true }>) {
+  async function updateCard(card: Card, update: () => Promise<Card | { removed: boolean; warnings: string[] } | { ok: true }>) {
     if (pendingCards.has(card.id) || card.projectId !== projectIdRef.current) return;
     setPendingCards((current) => new Set(current).add(card.id));
     setError(null);
     setActionError(null);
+    setRemovalNotice(null);
     try {
       const result = await update();
       if (projectIdRef.current === card.projectId) {
         if ("removed" in result && result.removed) {
           setCards((current) => current.filter((item) => item.id !== card.id));
+          if (result.warnings.length > 0) {
+            setRemovalNotice(`Removed "${card.title}". ${result.warnings.join("; ")}. Check these threads in BB.`);
+          }
         } else if ("id" in result) {
           mergeCardResult(result);
         }
@@ -362,9 +368,7 @@ function PipelineTasks() {
         onRetry={() => {
           if (card.runState === "running") void updateCard(card, () => rpc.call("retryLaunch", { cardId: card.id }));
         }}
-        onRemove={() => {
-          if (card.runState === "running") void updateCard(card, () => rpc.call("removeCard", { cardId: card.id }));
-        }}
+        onRemove={() => void updateCard(card, () => rpc.call("removeCard", { cardId: card.id }))}
         onSyncGithub={() => void updateCard(card, () => rpc.call("syncGithub", { cardId: card.id }))}
         onSyncIssue={() => void updateCard(card, () => rpc.call("syncIssue", { cardId: card.id }))}
         onRetryReview={() => void updateCard(card, () => rpc.call("retryReview", { cardId: card.id }))}
@@ -458,6 +462,7 @@ function PipelineTasks() {
           }} options={[{ value: "all", label: "All stages" }, ...stageColumns.map((column) => ({ value: column, label: COLUMN_LABELS[column] }))]} />
         </label>
       </div>
+      {removalNotice === null ? null : <div role="alert" className="pipeline-error"><Icon name="AlertCircle" /><span>{removalNotice}</span><button type="button" className="pipeline-button pipeline-ghost" onClick={() => setRemovalNotice(null)}>Dismiss</button></div>}
       {error === null ? null : <div role="alert" className="pipeline-error"><Icon name="AlertCircle" /><span>{error}</span><button type="button" className="pipeline-button pipeline-ghost" disabled={loading} onClick={() => void load()}>Refresh</button></div>}
       <div className="pipeline-scroll" onKeyDown={(event) => { if (event.key === "Escape") clearDrag(); }}>
         {filteredCards.length === 0 ? (

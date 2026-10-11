@@ -189,9 +189,7 @@ export default async function plugin(bb: BbPluginApi) {
     pauseCard: ({ cardId }) => controls.pause(cardId),
     resumeCard: ({ cardId }) => controls.resume(cardId),
     stopCard: ({ cardId }) => controls.stop(cardId),
-    removeCard({ cardId }) {
-      return { removed: service.remove(cardId) };
-    },
+    removeCard: ({ cardId }) => controls.remove(cardId),
     async showCard({ cardId }) {
       const card = store.get(cardId);
       if (card === null) throw new Error(`unknown card ${cardId}`);
