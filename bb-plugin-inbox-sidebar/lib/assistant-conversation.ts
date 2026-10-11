@@ -142,3 +142,73 @@ export async function assistantConversationContext(bb: BbPluginApi, threadId: st
   const machines = directory.map((host) => machine(host.hostId)).filter((host) => host.assistantsRoot !== null);
   return { thread, env, identity, segment, status, machines, destination, validate };
 }
+
+// The automations plugin's overview RPC. Cross-plugin: this shape is a
+// subset of its real output, enough to find every automation whose agent
+// execution points at a thread being replaced.
+const automationsOverviewOutput = z.object({
+  automations: z.array(
+    z.object({
+      automation: z.object({
+        id: z.string(),
+        projectId: z.string(),
+        name: z.string(),
+        execution: z
+          .object({
+            mode: z.string(),
+            targetThreadId: z.string().optional(),
+          })
+          .passthrough(),
+      }),
+    }),
+  ),
+});
+
+export type TargetingAutomation = { id: string; projectId: string; name: string };
+
+/** Every automation whose agent execution targets `threadId`. */
+export async function targetingAutomationsOf(
+  bb: BbPluginApi,
+  threadId: string,
+): Promise<TargetingAutomation[]> {
+  const { automations } = await bb.sdk.plugins.callRpc({
+    pluginId: "automations",
+    method: "automations_overview",
+    input: null,
+    outputSchema: automationsOverviewOutput,
+  });
+  return automations
+    .map((row) => row.automation)
+    .filter(
+      (automation) =>
+        automation.execution.mode === "agent" &&
+        automation.execution.targetThreadId === threadId,
+    )
+    .map(({ id, projectId, name }) => ({ id, projectId, name }));
+}
+
+/** Points each automation at `threadId`; returns `name: reason` for those that could not follow. */
+export async function repointAutomations(
+  bb: BbPluginApi,
+  automations: TargetingAutomation[],
+  threadId: string,
+): Promise<string[]> {
+  const stuck: string[] = [];
+  for (const automation of automations) {
+    try {
+      await bb.sdk.plugins.callRpc({
+        pluginId: "automations",
+        method: "automations_update",
+        input: {
+          projectId: automation.projectId,
+          automationId: automation.id,
+          agent: { target: { type: "target-thread", threadId } },
+        },
+        outputSchema: z.unknown(),
+      });
+    } catch (error) {
+      stuck.push(`${automation.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return stuck;
+}

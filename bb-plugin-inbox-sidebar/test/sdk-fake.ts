@@ -41,6 +41,8 @@ export interface FakeSdkConfig {
   assistantIdentities: Record<string, string>;
   /** What `listAssistantSubtitles` returns; keyed by assistant identity. */
   subtitles: Array<{ identity: string; subtitle: string }>;
+  /** What `assistantMemory` returns; keyed by assistant identity. */
+  memoryWarnings: Array<{ identity: string; warning: string | null }>;
   /** Makes `movePinned` reject, so the refetch path can be exercised. */
   failMovePinned: boolean;
   /** Makes `pinnedOrder` reject, leaving the order unknown. */
@@ -78,6 +80,7 @@ const DEFAULTS: FakeSdkConfig = {
   assistantOrder: [],
   assistantIdentities: {},
   subtitles: [],
+  memoryWarnings: [],
   failMovePinned: false,
   failPinnedOrder: false,
   deferRpc: [],
@@ -299,6 +302,9 @@ const rpc = {
     }
     if (method === "listAssistantSubtitles") {
       return { rows: config.subtitles };
+    }
+    if (method === "assistantMemory") {
+      return { rows: config.memoryWarnings };
     }
     if (method === "listAssistantAvatars") {
       return { rows: [] };

@@ -1,12 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import { toast } from "sonner";
-import {
-  useRealtime,
-  useRealtimeConnectionState,
-  useRpc,
-} from "@get-bb/plugin-sdk/app";
+import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { boardRpcContract } from "@/server";
-import { shouldRefreshOnReconnect } from "@/lib/reconnect";
+import { useLiveRead } from "@/lib/use-live-read";
 
 export interface AssistantSubtitlesApi {
   /** identity → subtitle, from the plugin's own store. */
@@ -17,44 +13,18 @@ export interface AssistantSubtitlesApi {
 
 export function useAssistantSubtitles(): AssistantSubtitlesApi {
   const rpc = useRpc<typeof boardRpcContract>();
-  const connectionState = useRealtimeConnectionState();
-  const [subtitles, setSubtitles] = useState<ReadonlyMap<string, string>>(
-    () => new Map(),
+  // Every mutation publishes on the channel, so one subscription refreshes all clients.
+  const [subtitles, refresh] = useLiveRead<ReadonlyMap<string, string>>(
+    "assistant-subtitles",
+    async () =>
+      new Map(
+        (await rpc.call("listAssistantSubtitles", {})).rows.map((row) => [
+          row.identity,
+          row.subtitle,
+        ]),
+      ),
+    new Map(),
   );
-
-  // Responses can land out of order (a mutation's refresh racing a realtime
-  // one); only the newest request may write.
-  const requestSeq = useRef(0);
-  const refresh = useCallback(async () => {
-    const seq = ++requestSeq.current;
-    try {
-      const result = await rpc.call("listAssistantSubtitles", {});
-      if (seq !== requestSeq.current) return;
-      setSubtitles(
-        new Map(result.rows.map((row) => [row.identity, row.subtitle])),
-      );
-    } catch {
-      // Reads are best-effort: rows simply show no subtitle.
-    }
-  }, [rpc]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  // Every mutation publishes here, so one subscription refreshes all clients.
-  useRealtime("assistant-subtitles", () => {
-    void refresh();
-  });
-
-  const previousConnectionState = useRef(connectionState);
-  useEffect(() => {
-    const previous = previousConnectionState.current;
-    previousConnectionState.current = connectionState;
-    if (shouldRefreshOnReconnect(previous, connectionState)) {
-      void refresh();
-    }
-  }, [connectionState, refresh]);
 
   return useMemo<AssistantSubtitlesApi>(
     () => ({
@@ -64,7 +34,7 @@ export function useAssistantSubtitles(): AssistantSubtitlesApi {
           .call("setAssistantSubtitle", { threadId, subtitle })
           .catch(() => {
             toast.error("Could not save subtitle");
-            void refresh();
+            refresh();
           }),
     }),
     [refresh, rpc, subtitles],
