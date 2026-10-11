@@ -207,6 +207,8 @@ export function createPipelineControls(
         store.remove(id);
         bb.realtime.publish("cards:changed", { projectId });
       }
+      // Messages held while the card was stopping still carry its pause wait; re-decide them as a removed task's.
+      await attempt("could not recheck queued messages", undefined, () => bb.experimental_hooks.recheck("message.dispatch"));
       return { removed: true as const, warnings };
     });
   }
