@@ -52,7 +52,7 @@ export default defineConfig({
         web: {
           enabled: true,
           include: [
-            // Nested entries optimize inbox-core's own copies — the same
+            // Nested entries optimize inbox-core's own copies, the same
             // files core's imports resolve to, so the module runner's
             // rewrite matches and the chunks bind the aliased react.
             "inbox-core > @dnd-kit/core",

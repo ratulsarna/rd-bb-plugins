@@ -1,7 +1,7 @@
 // The assistant half of the sidebar: identity keys, subtitles, the fleet
 // order, conversation moves and memory. The inbox itself (settles, snoozes,
 // pins, projects) lives in inbox-core and is registered on the same database
-// below — this plugin only adds the assistant RPCs and the `bb assistants`
+// below. This plugin only adds the assistant RPCs and the `bb assistants`
 // CLI on top.
 import path from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
