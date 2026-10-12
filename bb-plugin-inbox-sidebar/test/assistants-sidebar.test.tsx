@@ -492,6 +492,7 @@ it.each(["down", "up", "same then down"])("drags any retained conversation as on
   const expected = direction === "up" ? ["assist-1:sam", "assist-1:forge"] : ["assist-1:forge", "assist-1:sam"];
   await waitFor(() => expect(rpcCalls.filter((call) => call.method === "setAssistantOrder").map((call) => call.input)).toEqual([{ identities: expected }]));
   await waitFor(() => expect(ids()).toEqual(direction === "up" ? ["sam-server", "sam-mac", "forge-server", "forge-mac"] : ["forge-server", "forge-mac", "sam-server", "sam-mac"]));
+});
 
 // The keys today's build wrote: the section component used to hardcode the
 // plugin id. Core's copy derives the same keys from the bundling plugin's id,
@@ -517,5 +518,4 @@ describe("collapse keys carry over", () => {
     expect(within(inbox).getByText("Inbox (1)")).toBeDefined();
     expect(within(inbox).queryByText("Plain work")).toBeNull();
   });
-});
 });

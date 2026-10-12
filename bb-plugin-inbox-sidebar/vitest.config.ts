@@ -5,7 +5,6 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   resolve: {
-    dedupe: ["react", "react-dom"],
     alias: [
       // One React: inbox-core's dep tree resolves react from inbox-core's own
       // node_modules, but its CJS entries require react natively, which

@@ -6,9 +6,9 @@
 import path from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { registerInbox } from "inbox-core/server";
 // Relative on purpose: a path install loads server.ts directly, where the
 // bundler's "@/" alias does not exist.
-import { registerInbox } from "inbox-core/server";
 import { createIdentityResolver } from "./lib/assistant-identity";
 import {
   assistantConversationContext,
@@ -320,6 +320,44 @@ export default function plugin(bb: BbPluginApi) {
         .all() as Array<{ identity: string }>
     ).map((row) => row.identity);
 
+  // Shared by the rpc (sidebar editor) and the CLI (agents). Resolves the
+  // thread to its home's identity; empty subtitle clears.
+  const writeSubtitle = async (
+    threadId: string,
+    subtitle: string,
+  ): Promise<string> => {
+    const thread = await bb.sdk.threads.get({ threadId });
+    if (!thread.environmentId) {
+      throw new Error(
+        `thread ${threadId} has no environment — not an assistant home`,
+      );
+    }
+    const identity = await storageKeyOfEnvironment(thread.environmentId, true);
+    // Remove this environment's alias so it cannot outlive the mutation.
+    if (identity !== thread.environmentId) {
+      db.prepare(`DELETE FROM assistant_subtitles WHERE identity = ?`).run(thread.environmentId);
+    }
+    const migrationPending = !db.prepare(`SELECT done FROM assistant_key_migration`).get();
+    if (subtitle === "" && !migrationPending) {
+      db.prepare(
+        `DELETE FROM assistant_subtitles WHERE identity = ?`,
+      ).run(identity);
+    } else {
+      // Empty subtitles persist clears while aliases await sources. Advance
+      // past stored timestamps so clock skew cannot let a legacy alias win.
+      const latest = db.prepare(`SELECT MAX(at) AS at FROM assistant_subtitles`).get() as { at: number | null };
+      db.prepare(
+        `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)
+         ON CONFLICT(identity) DO UPDATE SET
+           subtitle = excluded.subtitle,
+           at = excluded.at`,
+      ).run(identity, subtitle, Math.max(Date.now(), latest.at ?? 0) + 1);
+    }
+    bb.realtime.publish(SUBTITLE_CHANNEL, { identity });
+    return identity;
+  };
+
+
   // Memory state lives beside each assistant's tree, outside data.db: see memory/state.ts.
   const memory = new MemoryService(bb, path.join(path.dirname(db.name), "memory"));
   bb.onDispose(() => memory.dispose());
@@ -390,41 +428,6 @@ export default function plugin(bb: BbPluginApi) {
     import: "usage: bb assistants import <thread-id> <thread-id|/path/to/file.jsonl>...",
   };
   const usageOf = (command: string) => USAGE[command as keyof typeof USAGE] ?? Object.values(USAGE).join("\n");
-
-  const writeSubtitle = async (
-    threadId: string,
-    subtitle: string,
-  ): Promise<string> => {
-    const thread = await bb.sdk.threads.get({ threadId });
-    if (!thread.environmentId) {
-      throw new Error(
-        `thread ${threadId} has no environment — not an assistant home`,
-      );
-    }
-    const identity = await storageKeyOfEnvironment(thread.environmentId, true);
-    // Remove this environment's alias so it cannot outlive the mutation.
-    if (identity !== thread.environmentId) {
-      db.prepare(`DELETE FROM assistant_subtitles WHERE identity = ?`).run(thread.environmentId);
-    }
-    const migrationPending = !db.prepare(`SELECT done FROM assistant_key_migration`).get();
-    if (subtitle === "" && !migrationPending) {
-      db.prepare(
-        `DELETE FROM assistant_subtitles WHERE identity = ?`,
-      ).run(identity);
-    } else {
-      // Empty subtitles persist clears while aliases await sources. Advance
-      // past stored timestamps so clock skew cannot let a legacy alias win.
-      const latest = db.prepare(`SELECT MAX(at) AS at FROM assistant_subtitles`).get() as { at: number | null };
-      db.prepare(
-        `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)
-         ON CONFLICT(identity) DO UPDATE SET
-           subtitle = excluded.subtitle,
-           at = excluded.at`,
-      ).run(identity, subtitle, Math.max(Date.now(), latest.at ?? 0) + 1);
-    }
-    bb.realtime.publish(SUBTITLE_CHANNEL, { identity });
-    return identity;
-  };
 
   const subtitleCommand = async (threadId: string, rest: string[]) => {
     if (rest.length === 0) {
