@@ -11,9 +11,9 @@ import {
   type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
 import { ComposeDialog } from "@/components/compose-dialog";
-import { CollapsibleSection } from "@/components/section";
-import { SortableRows } from "@/components/sortable-rows";
-import type { RowReorder } from "@/components/sidebar-row";
+import { CollapsibleSection } from "inbox-core/components/section";
+import { SortableRows } from "inbox-core/components/sortable-rows";
+import type { RowReorder } from "inbox-core/components/sidebar-row";
 import { assistantDisplayOrder, projectAssistantReorder } from "@/lib/assistant-order";
 import { selectedAssistantsProjectId } from "@/lib/assistant-identity";
 import { useAssistantAvatars } from "@/lib/use-assistant-avatars";
@@ -21,8 +21,8 @@ import { useAssistantIdentities } from "@/lib/use-assistant-identities";
 import { useAssistantMemoryWarnings } from "@/lib/use-assistant-memory";
 import { useAssistantOrder } from "@/lib/use-assistant-order";
 import { useAssistantSubtitles } from "@/lib/use-assistant-subtitles";
-import { usePortalScopeProps } from "@/lib/portal-scope";
-import type { boardRpcContract } from "@/server";
+import { usePortalScopeProps } from "inbox-core/lib/portal-scope";
+import type { assistantRpcContract } from "@/server";
 
 interface BotsSectionProps {
   activeThreadId: string | null;
@@ -434,7 +434,7 @@ function PastChats({
   threadId: string;
   onOpen: (threadId: string) => void;
 }) {
-  const rpc = useRpc<typeof boardRpcContract>();
+  const rpc = useRpc<typeof assistantRpcContract>();
   const portalScope = usePortalScopeProps();
   const [rows, setRows] = useState<Array<{ id: string; createdAt: number; archivedAt: number }> | null>(null);
   const [error, setError] = useState<string | null>(null);

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { toast } from "sonner";
 import { useRpc } from "@get-bb/plugin-sdk/app";
-import type { boardRpcContract } from "@/server";
+import type { assistantRpcContract } from "@/server";
 import { useLiveRead } from "@/lib/use-live-read";
 
 export interface AssistantSubtitlesApi {
@@ -12,7 +12,7 @@ export interface AssistantSubtitlesApi {
 }
 
 export function useAssistantSubtitles(): AssistantSubtitlesApi {
-  const rpc = useRpc<typeof boardRpcContract>();
+  const rpc = useRpc<typeof assistantRpcContract>();
   // Every mutation publishes on the channel, so one subscription refreshes all clients.
   const [subtitles, refresh] = useLiveRead<ReadonlyMap<string, string>>(
     "assistant-subtitles",

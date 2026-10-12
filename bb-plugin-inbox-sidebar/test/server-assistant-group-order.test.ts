@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
 import { assistantDisplayOrder, projectAssistantReorder } from "../lib/assistant-order";
-import { projectPinnedReorder } from "../lib/pinned-order";
+import { projectPinnedReorder } from "inbox-core/lib/pinned-order";
 
 it("moves shared assistant groups up and down, writes unique order and preserves it on a fresh host", async () => {
   const { bb, harness } = createFakePluginHost({

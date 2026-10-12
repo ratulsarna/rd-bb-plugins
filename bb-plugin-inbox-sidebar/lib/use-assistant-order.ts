@@ -4,8 +4,8 @@ import {
   useRealtimeConnectionState,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
-import type { boardRpcContract } from "@/server";
-import { shouldRefreshOnReconnect } from "@/lib/reconnect";
+import type { assistantRpcContract } from "@/server";
+import { shouldRefreshOnReconnect } from "inbox-core/lib/reconnect";
 
 export interface AssistantOrderApi {
   /** The stored Bots order, freshest known. Assistant identities. */
@@ -26,7 +26,7 @@ export interface AssistantOrderApi {
  * would survive until the next unrelated refresh.
  */
 export function useAssistantOrder(): AssistantOrderApi {
-  const rpc = useRpc<typeof boardRpcContract>();
+  const rpc = useRpc<typeof assistantRpcContract>();
   const connectionState = useRealtimeConnectionState();
   const [ids, setIds] = useState<readonly string[]>(() => []);
   const [ready, setReady] = useState(false);

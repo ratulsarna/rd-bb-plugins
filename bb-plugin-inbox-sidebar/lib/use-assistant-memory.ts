@@ -1,10 +1,10 @@
 import { useRpc } from "@get-bb/plugin-sdk/app";
-import type { boardRpcContract } from "@/server";
+import type { assistantRpcContract } from "@/server";
 import { useLiveRead } from "@/lib/use-live-read";
 
 /** identity → latest memory warning, for assistants with memory. */
 export function useAssistantMemoryWarnings(): ReadonlyMap<string, string> {
-  const rpc = useRpc<typeof boardRpcContract>();
+  const rpc = useRpc<typeof assistantRpcContract>();
   const [warnings] = useLiveRead<ReadonlyMap<string, string>>(
     "assistant-memory",
     async () =>

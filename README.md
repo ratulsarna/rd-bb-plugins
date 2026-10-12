@@ -4,7 +4,7 @@ Personal plugins for [bb](https://github.com/ymichael/bb).
 
 ## Plugins
 
-- [`bb-plugin-inbox-sidebar`](./bb-plugin-inbox-sidebar) — organize threads in an inbox sidebar and start assistant conversations on mapped machines. [t3code](https://github.com/pingdotgg/t3code) style.
+- [`bb-plugin-inbox-sidebar`](./bb-plugin-inbox-sidebar) — organize threads in an inbox sidebar and start assistant conversations on mapped machines. [t3code](https://github.com/pingdotgg/t3code) style. Needs a `bb-sw-pipeline` checkout beside this repo (its inbox-core is a file dependency); see the plugin README for setup.
 - [`bb-plugin-private-sync`](./bb-plugin-private-sync) — sync private folders through your BB server, with per-machine paths, exclusions, and preserved conflicts.
 - [`bb-plugin-bb-sidebar`](./bb-plugin-bb-sidebar) — vendored [yusuf8834/bb-sidebar](https://github.com/yusuf8834/bb-sidebar) with the assistants fleet as a Bots section on top. See its `VENDOR.md`.
 - [`bb-plugin-usage`](./bb-plugin-usage) — view Codex and Claude Code subscription usage.

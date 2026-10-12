@@ -1,4 +1,4 @@
-import type { BoardThread, ThreadOverride } from "@/lib/lanes";
+import type { BoardThread, ThreadOverride } from "inbox-core/lib/lanes";
 import type { PluginSidebarProject } from "@get-bb/plugin-sdk/app";
 
 export const NOW = Date.now();

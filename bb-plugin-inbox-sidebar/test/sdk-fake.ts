@@ -1,16 +1,15 @@
 import { createElement, useEffect, useState } from "react";
 import type { NewThreadComposerProps, NewThreadRequest } from "@get-bb/plugin-sdk/app";
 import type { z } from "zod";
-import type { boardRpcContract } from "@/server";
-import type { PipelinePullRequest } from "@/server";
-import type { ComponentType, PointerEvent as ReactPointerEvent } from "react";
+import type { assistantRpcContract } from "@/server";
+import type { PipelinePullRequest } from "inbox-core/server";
+import type { ComponentType } from "react";
 import type {
   PluginRealtimeConnectionState,
   PluginSidebarProject,
-  PluginSidebarSplitLayout,
   PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
-import type { BoardThread, ThreadOverride } from "@/lib/lanes";
+import type { BoardThread } from "inbox-core/lib/lanes";
 import { project } from "./fixtures";
 
 /**
@@ -21,20 +20,12 @@ import { project } from "./fixtures";
  * thing that satisfies the hooks this plugin actually calls.
  */
 export interface FakeSdkConfig {
-  assistantSeeds: Record<string, z.infer<typeof boardRpcContract.assistantSeeds.output>>;
-  assistantDestinations: Record<string, z.infer<typeof boardRpcContract.assistantDestination.output>>;
+  assistantSeeds: Record<string, z.infer<typeof assistantRpcContract.assistantSeeds.output>>;
+  assistantDestinations: Record<string, z.infer<typeof assistantRpcContract.assistantDestination.output>>;
   composerRequest: NewThreadRequest | null;
-  threadStatus: "loading" | "ready" | "error";
   threads: BoardThread[];
   projects: PluginSidebarProject[];
-  /** Reported by Pipeline; a missing key reports null. */
-  pullRequests: Record<string, PipelinePullRequest | null>;
-  overrides: Array<{ threadId: string } & ThreadOverride>;
-  /** What `useSidebarSplitLayout` reports; null means no split. */
-  splitLayout: PluginSidebarSplitLayout | null;
   failRpc: boolean;
-  /** What `pinnedOrder` returns; `setFakePinnedOrder` changes it mid-test. */
-  pinnedOrder: string[];
   /** What `assistantOrder` returns; `setAssistantOrder` echoes its input. */
   assistantOrder: string[];
   /** What `assistantIdentities` resolves; unmapped environments fall back to their id. */
@@ -43,58 +34,26 @@ export interface FakeSdkConfig {
   subtitles: Array<{ identity: string; subtitle: string }>;
   /** What `assistantMemory` returns; keyed by assistant identity. */
   memoryWarnings: Array<{ identity: string; warning: string | null }>;
-  /** Makes `movePinned` reject, so the refetch path can be exercised. */
-  failMovePinned: boolean;
-  /** Makes `pinnedOrder` reject, leaving the order unknown. */
-  failPinnedOrder: boolean;
   /**
    * RPC methods to hold open. Calls land in `pendingRpc` for the test to
    * settle by hand — the only way to make two responses race on purpose.
    */
   deferRpc: string[];
-  projectHosts: Array<{ id: string; name: string }>;
-  primaryHostId: string | null;
-  createdProjectId: string;
   /** What `useRealtimeConnectionState` reports; flip mid-test to simulate a reconnect. */
   connectionState: PluginRealtimeConnectionState;
-  projectDirectories: Record<
-    string,
-    {
-      directory: string;
-      parent: string | null;
-      entries: Array<{ name: string; path: string }>;
-    }
-  >;
 }
 
 const DEFAULTS: FakeSdkConfig = {
   assistantSeeds: {}, assistantDestinations: {}, composerRequest: null,
-  threadStatus: "ready",
   threads: [],
   projects: [project("project-1", "bb")],
-  pullRequests: {},
-  overrides: [],
-  splitLayout: null,
   failRpc: false,
-  pinnedOrder: [],
   assistantOrder: [],
   assistantIdentities: {},
   subtitles: [],
   memoryWarnings: [],
-  failMovePinned: false,
-  failPinnedOrder: false,
   deferRpc: [],
-  projectHosts: [{ id: "host-1", name: "Workstation" }],
-  primaryHostId: "host-1",
-  createdProjectId: "project-new",
   connectionState: "connected",
-  projectDirectories: {
-    "host-1:<home>": {
-      directory: "/home/me",
-      parent: "/home",
-      entries: [],
-    },
-  },
 };
 
 let config: FakeSdkConfig = DEFAULTS;
@@ -106,13 +65,7 @@ export interface SidebarActionCall {
 }
 
 export const sidebarActionCalls: SidebarActionCall[] = [];
-export const pullRequestLookupCalls: string[] = [];
 export const rpcCalls: Array<{ method: string; input: unknown }> = [];
-export const splitPointerDownCalls: Array<{
-  threadId: string;
-  targetTitle: string | null;
-  currentThreadId: string | null;
-}> = [];
 
 export interface PendingRpc {
   method: string;
@@ -157,9 +110,7 @@ export function rejectPendingRpc(
 export function configureFakeSdk(next: Partial<FakeSdkConfig> = {}): void {
   config = { ...DEFAULTS, ...next };
   sidebarActionCalls.length = 0;
-  pullRequestLookupCalls.length = 0;
   rpcCalls.length = 0;
-  splitPointerDownCalls.length = 0;
   pendingRpc.length = 0;
   lastComposerProps = null;
   composerSubmitErrors.length = 0;
@@ -167,19 +118,9 @@ export function configureFakeSdk(next: Partial<FakeSdkConfig> = {}): void {
   navigateCalls.length = 0;
 }
 
-/** Change what a later `pinnedOrder` read returns, mid-test. */
-export function setFakePinnedOrder(ids: string[]): void {
-  config.pinnedOrder = ids;
-}
-
 /** Change the live thread list mid-test; re-render to pick it up. */
 export function setFakeThreads(threads: BoardThread[]): void {
   config.threads = threads;
-}
-
-/** Change the live project list mid-test; re-render to pick it up. */
-export function setFakeProjects(projects: PluginSidebarProject[]): void {
-  config.projects = projects;
 }
 
 interface ThreadListRegistration {
@@ -258,9 +199,6 @@ const actions = {
 const rpc = {
   call: async (method: string, input: unknown) => {
     rpcCalls.push({ method, input });
-    if (method === "threadPullRequests") {
-      pullRequestLookupCalls.push(...(input as { threadIds: string[] }).threadIds);
-    }
     if (config.failRpc) throw new Error("rpc failed");
     if (config.deferRpc.includes(method)) {
       return new Promise((resolve, reject) => {
@@ -270,18 +208,18 @@ const rpc = {
     if (method === "assistantSeeds") return config.assistantSeeds[(input as { threadId: string }).threadId];
     if (method === "assistantDestination") return config.assistantDestinations[(input as { hostId: string }).hostId];
     if (method === "createReplacementThread") return { newThreadId: "new-conversation" };
+    // Fixed answers for the inbox RPCs core's board calls on render. The
+    // board owns their behavior; the plugin's tests only need them to answer.
     if (method === "threadPullRequests") {
       const { threadIds } = input as { threadIds: string[] };
-      return { rows: threadIds.map((threadId) => ({ threadId, pullRequest: config.pullRequests[threadId] ?? null })) };
+      return { rows: threadIds.map((threadId) => ({ threadId, pullRequest: null })) };
     }
     if (method === "pinnedOrder") {
-      if (config.failPinnedOrder) throw new Error("pinnedOrder failed");
-      return { ids: config.pinnedOrder };
+      return { ids: [] };
     }
     if (method === "movePinned") {
-      if (config.failMovePinned) throw new Error("movePinned failed");
-      // bb's answer is the canonical list; the fake just echoes what it has.
-      return { ids: config.pinnedOrder };
+      // bb's answer is the canonical list; the fake has none to echo.
+      return { ids: [] };
     }
     if (method === "assistantOrder") {
       return { ids: config.assistantOrder };
@@ -309,75 +247,32 @@ const rpc = {
     if (method === "listAssistantAvatars") {
       return { rows: [] };
     }
-    // Stamped with the clock at call time, like the server: the client must
-    // not need a minute tick to see it.
-    if (method === "wake") {
-      const { threadId } = input as { threadId: string };
-      config.overrides = config.overrides.map((row) =>
-        row.threadId === threadId && row.override === "snoozed" && row.until > Date.now()
-          ? { ...row, until: Date.now() }
-          : row,
-      );
-      return { ok: true };
-    }
     if (method === "listOverrides") {
-      return { rows: config.overrides.map((row) => ({ ...row })) };
+      return { rows: [] };
     }
     if (method === "projectCreationContext") {
       return {
-        hosts: config.projectHosts,
-        primaryHostId: config.primaryHostId,
+        hosts: [{ id: "host-1", name: "Workstation" }],
+        primaryHostId: "host-1",
       };
-    }
-    if (method === "projectDirectory") {
-      const { hostId, path } = input as {
-        hostId: string;
-        path: string | null;
-      };
-      const listing =
-        config.projectDirectories[`${hostId}:${path ?? "<home>"}`];
-      if (!listing) throw new Error("folder not found");
-      return listing;
-    }
-    if (method === "createProjectFolder") {
-      const { parentPath, name } = input as {
-        parentPath: string;
-        name: string;
-      };
-      return { path: `${parentPath.replace(/\/+$/, "")}/${name}` };
-    }
-    if (method === "addProject") {
-      return { projectId: config.createdProjectId };
     }
     return { ok: true };
   },
 };
 
 export const experimental_useSidebarThreads = () => ({
-  status: config.threadStatus,
+  status: "ready" as const,
   threads: config.threads,
   projects: config.projects,
 });
 
 export const experimental_useSidebarThreadActions = () => actions;
 
-export const experimental_useSidebarThreadSplit = (threadId: string) => ({
-  splitProps: {
-    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
-      const target = event.target instanceof HTMLElement ? event.target : null;
-      splitPointerDownCalls.push({
-        threadId,
-        targetTitle: target?.closest<HTMLElement>("[title]")?.title ?? null,
-        currentThreadId:
-          event.currentTarget
-            .querySelector<HTMLElement>("[data-sidebar-thread-id]")
-            ?.getAttribute("data-sidebar-thread-id") ?? null,
-      });
-    },
-  },
+export const experimental_useSidebarThreadSplit = () => ({
+  splitProps: {},
 });
 
-export const useSidebarSplitLayout = () => config.splitLayout;
+export const useSidebarSplitLayout = () => null;
 
 export const useRpc = () => rpc;
 
