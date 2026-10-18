@@ -1,5 +1,5 @@
 {
-  "name": "bb-plugin-inbox-sidebar",
+  "name": "bb-plugin-assistants",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -12,8 +12,8 @@
     "bbPluginSdk": ">=0.6.16"
   },
   "bb": {
-    "name": "Inbox Sidebar",
-    "description": "An inbox for bb threads: pinned priorities on top, active work in a steady list, settled work out of the way.",
+    "name": "Assistants",
+    "description": "Your assistants in the sidebar: one Bots row per assistant above the inbox, conversations that move between machines, and endless memory.",
     "branding": {
       "icon": "ArrowReloadHorizontal"
     },

@@ -172,7 +172,7 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
         },
       },
   };
-  const { bb, harness } = createFakePluginHost({ pluginId: "inbox-sidebar", sdk });
+  const { bb, harness } = createFakePluginHost({ pluginId: "assistants", sdk });
 
   const services: MemoryService[] = [];
   /** A service over this world's memory dir, as one plugin load. */

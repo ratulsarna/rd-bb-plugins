@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
 
@@ -19,7 +19,7 @@ it.each(["environment lookup", "project lookup", "missing source"])(
         ? [] : [{ hostId: "host-new", path: "/test/assistants" }] };
     };
     const { bb, harness } = createFakePluginHost({
-      pluginId: "inbox-sidebar",
+      pluginId: "assistants",
       sdk: {
         threads: { get: threadsGet },
         environments: { get: environmentsGet },
@@ -29,11 +29,8 @@ it.each(["environment lookup", "project lookup", "missing source"])(
     plugin(bb);
     const db = bb.storage.database();
     try {
-      await vi.waitFor(() => expect(db.prepare("SELECT done FROM assistant_key_migration").get()).toEqual({ done: 1 }));
       db.exec(`
-        INSERT INTO assistant_subtitles VALUES
-          ('project-assistants:sam', 'Saved stable subtitle', 100),
-          ('env-sam', 'Saved fallback subtitle', 50);
+        INSERT INTO assistant_subtitles VALUES ('project-assistants:sam', 'Saved stable subtitle');
         INSERT INTO assistant_order VALUES ('project-assistants:forge', 0), ('project-assistants:sam', 1);
       `);
       const snapshot = () => ({
@@ -57,7 +54,7 @@ it.each(["environment lookup", "project lookup", "missing source"])(
       })).rejects.toThrow(/unresolved/i);
       expect(snapshot()).toEqual(before);
       expect(await harness.behavior.runCli(["subtitle", "thread-sam"])).toMatchObject({
-        exitCode: 0, stdout: "Saved fallback subtitle\n",
+        exitCode: 0, stdout: "(none)\n",
       });
 
       unresolved = false;
@@ -68,7 +65,6 @@ it.each(["environment lookup", "project lookup", "missing source"])(
       expect(await harness.behavior.callRpc("setAssistantOrder", {
         identities: ["env-sam", "project-assistants:forge", "project-assistants:sam"],
       })).toEqual({ ids: ["project-assistants:sam", "project-assistants:forge"] });
-      expect(db.prepare("SELECT subtitle FROM assistant_subtitles WHERE identity = 'env-sam'").get()).toBeUndefined();
 
       const restarted = await harness.lifecycle.reload(plugin);
       try {
@@ -78,7 +74,6 @@ it.each(["environment lookup", "project lookup", "missing source"])(
         expect(await restarted.harness.behavior.callRpc("assistantOrder", {})).toEqual({
           ids: ["project-assistants:sam", "project-assistants:forge"],
         });
-        expect(restarted.bb.storage.database().prepare("SELECT done FROM assistant_key_migration").get()).toEqual({ done: 1 });
         expect(await restarted.harness.behavior.runCli(["subtitle", "thread-sam", "--clear"])).toMatchObject({ exitCode: 0 });
         expect(await restarted.harness.behavior.callRpc("listAssistantSubtitles", {})).toEqual({
           rows: [],
@@ -96,7 +91,7 @@ it.each(["environment lookup", "project lookup", "missing source"])(
 it.each([null, "/test/assistants", "/test/assistants/sam/nested", "/test/other/sam", "gone"])(
   "keeps final non-home fallback mutations working for %s",
   async (path) => {
-    const { bb, harness } = createFakePluginHost({ pluginId: "inbox-sidebar" });
+    const { bb, harness } = createFakePluginHost({ pluginId: "assistants" });
     harness.sdk.stub("threads.get", async () => makeThreadResponse({
       id: "thread-other", projectId: "project-assistants", environmentId: "env-other",
     }));

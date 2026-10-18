@@ -1,9 +1,9 @@
-# Inbox Sidebar assistant conversations
+# Assistants
 
 ## Inbox
 
 The thread list (Pinned, Inbox, Snoozed, Settled) comes from `inbox-core`, a
-file dependency on a sibling `bb-sw-pipeline` checkout (on Ratul's Mac:
+file dependency on a sibling `bb-sw-pipeline` checkout (on the bb server:
 `~/Developer/bb/bb-sw-pipeline`). Setup: `npm ci` in that checkout's
 `inbox-core`, then `npm ci` here. This plugin composes the board with the
 Bots section and keeps the assistants project out of the inbox lanes.
@@ -159,8 +159,8 @@ in `memory status`.
 
 ## RPC handoff
 
-Plugin id: `inbox-sidebar`. SDK `useRpc.call` returns the result directly.
-HTTP calls use `POST /api/v1/plugins/inbox-sidebar/rpc/<method>` and BB's
+Plugin id: `assistants`. SDK `useRpc.call` returns the result directly.
+HTTP calls use `POST /api/v1/plugins/assistants/rpc/<method>` and BB's
 standard `{ ok: true, result }` envelope.
 
 `assistantSeeds({ threadId: string })` returns:
