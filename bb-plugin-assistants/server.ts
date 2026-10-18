@@ -1,12 +1,10 @@
-// The assistant half of the sidebar: identity keys, subtitles, the fleet
-// order, conversation moves and memory. The inbox itself (settles, snoozes,
-// pins, projects) lives in inbox-core and is registered on the same database
-// below. This plugin only adds the assistant RPCs and the `bb assistants`
-// CLI on top.
+// Assistants: identity keys, subtitles, the fleet order, conversation moves
+// and memory. The inbox board under Bots (settles, snoozes, pins, projects)
+// comes from inbox-core and shares this plugin's database below.
 import path from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { registerInbox } from "inbox-core/server";
+import { INBOX_MIGRATIONS, registerInbox } from "inbox-core/server";
 // Relative on purpose: a path install loads server.ts directly, where the
 // bundler's "@/" alias does not exist.
 import { createIdentityResolver } from "./lib/assistant-identity";
@@ -141,56 +139,17 @@ export { MEMORY_CHANNEL };
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, [
-    `CREATE TABLE IF NOT EXISTS thread_overrides (
-       thread_id TEXT PRIMARY KEY,
-       override  TEXT NOT NULL CHECK (override IN ('settled', 'active')),
-       at        INTEGER NOT NULL
+    INBOX_MIGRATIONS.createThreadOverrides,
+    `CREATE TABLE assistant_subtitles (
+       identity TEXT PRIMARY KEY,
+       subtitle TEXT NOT NULL
      )`,
-    // Applied SQL is hashed; preserve the historical column names here.
-    // The guarded rename below converts them to stable identity keys.
-    `CREATE TABLE IF NOT EXISTS assistant_subtitles (
-       environment_id TEXT PRIMARY KEY,
-       subtitle       TEXT NOT NULL,
-       at             INTEGER NOT NULL
+    `CREATE TABLE assistant_order (
+       identity TEXT PRIMARY KEY,
+       rank     INTEGER NOT NULL
      )`,
-    `CREATE TABLE IF NOT EXISTS assistant_order (
-       environment_id TEXT PRIMARY KEY,
-       rank           INTEGER NOT NULL
-     )`,
-    // One row once the legacy environment-id keys have been rewritten.
-    `CREATE TABLE IF NOT EXISTS assistant_key_migration (
-       done INTEGER NOT NULL
-     )`,
-    // Snoozes join settle marks in one row per thread, so a thread is never
-    // settled and snoozed at once. SQLite cannot widen a CHECK in place.
-    `CREATE TABLE thread_overrides_next (
-       thread_id TEXT PRIMARY KEY,
-       override  TEXT NOT NULL CHECK (override IN ('settled', 'active', 'snoozed')),
-       at        INTEGER NOT NULL,
-       until     INTEGER,
-       CHECK ((override = 'snoozed') = (until IS NOT NULL))
-     )`,
-    `INSERT INTO thread_overrides_next (thread_id, override, at)
-       SELECT thread_id, override, at FROM thread_overrides`,
-    `DROP TABLE thread_overrides`,
-    `ALTER TABLE thread_overrides_next RENAME TO thread_overrides`,
   ]);
-  // The inbox's tables and RPCs share this database and plugin id; its
-  // migration list is private, so the statements above carry the schema.
   registerInbox(bb, db);
-
-  // Tables that predate identity keys store environment ids in a column of
-  // the same role; rename the column first, then rewrite the values below.
-  for (const table of ["assistant_subtitles", "assistant_order"]) {
-    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
-      name: string;
-    }>;
-    if (columns.some((column) => column.name === "environment_id")) {
-      db.prepare(
-        `ALTER TABLE ${table} RENAME COLUMN environment_id TO identity`,
-      ).run();
-    }
-  }
 
   const identityOfEnvironment = createIdentityResolver(bb);
 
@@ -206,110 +165,6 @@ export default function plugin(bb: BbPluginApi) {
     }
     return resolved.identity ?? environmentId;
   };
-
-  // One-time rewrite of legacy environment-id keys. The pass resolves every
-  // legacy key first, then re-reads the tables and rewrites synchronously:
-  // a user edit landing mid-pass is re-read instead of clobbered, and one
-  // landing after the rewrite simply wins the database.
-  //
-  // A failed lookup is not an answer, and neither is an environment whose
-  // host has no registered source yet — both keep the pass unfinished, so
-  // the next start retries and rows move to their identities as soon as the
-  // sources exist. Environments that resolve to no home (mishomed, or gone
-  // for good) keep their environment id and do finish the pass.
-  const migrateIdentityKeys = async (): Promise<void> => {
-    if (db.prepare(`SELECT done FROM assistant_key_migration`).get()) return;
-    try {
-      const legacyKeys = (
-        db
-          .prepare(
-            `SELECT identity FROM assistant_subtitles UNION SELECT identity FROM assistant_order`,
-          )
-          .all() as Array<{ identity: string }>
-      )
-        .map((row) => row.identity)
-        // Already-migrated keys carry a project id and a colon; only
-        // environment ids ever need resolving, on this or a retry pass.
-        .filter((key) => !key.includes(":"));
-      const resolved = await Promise.all(
-        legacyKeys.map((key) => identityOfEnvironment(key)),
-      );
-      const translation = new Map<string, string>();
-      legacyKeys.forEach((key, index) => {
-        const entry = resolved[index];
-        if (entry.ok && entry.identity !== null) {
-          translation.set(key, entry.identity);
-        }
-      });
-      const pending = legacyKeys.filter(
-        (_, index) =>
-          !resolved[index].ok ||
-          (resolved[index].identity === null && resolved[index].awaitingSource),
-      );
-
-      // Past this point nothing awaits: re-read what actually is there now
-      // and replace it in one synchronous sweep.
-      db.transaction(() => {
-        const subtitles = db
-          .prepare(`SELECT identity, subtitle, at FROM assistant_subtitles ORDER BY at`)
-          .all() as Array<{ identity: string; subtitle: string; at: number }>;
-        const order = db
-          .prepare(`SELECT identity, rank FROM assistant_order ORDER BY rank`)
-          .all() as Array<{ identity: string; rank: number }>;
-        // Two old environments can map to one identity; the newest subtitle
-        // wins, matching how the display treats stale ids. Keys the resolver
-        // did not translate (written after the pass began, or final
-        // no-identity keys) pass through unchanged.
-        const kept = new Map<string, { subtitle: string; at: number }>();
-        subtitles.forEach((row) => {
-          kept.set(translation.get(row.identity) ?? row.identity, row);
-        });
-        db.prepare(`DELETE FROM assistant_subtitles`).run();
-        const insertSubtitle = db.prepare(
-          `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)`,
-        );
-        for (const [identity, row] of kept) {
-          // Keep clears until every alias is resolved, including across restarts.
-          if (row.subtitle !== "" || pending.length > 0) {
-            insertSubtitle.run(identity, row.subtitle, row.at);
-          }
-        }
-        const ranks = new Map<string, number>();
-        order.forEach((row) => {
-          ranks.set(translation.get(row.identity) ?? row.identity, row.rank);
-        });
-        db.prepare(`DELETE FROM assistant_order`).run();
-        const insertOrder = db.prepare(
-          `INSERT INTO assistant_order (identity, rank) VALUES (?, ?)`,
-        );
-        [...ranks.entries()]
-          .sort((a, b) => a[1] - b[1])
-          .forEach(([identity], rank) => insertOrder.run(identity, rank));
-
-        if (pending.length === 0) {
-          db.prepare(`INSERT INTO assistant_key_migration (done) VALUES (1)`).run();
-        }
-      })();
-      bb.realtime.publish(SUBTITLE_CHANNEL, {});
-      bb.realtime.publish(ASSISTANT_ORDER_CHANNEL, {});
-      if (pending.length > 0) {
-        bb.log.warn(
-          `assistant key migration deferred: ${pending.length} keys awaiting sources or lookups`,
-        );
-        return;
-      }
-    } catch (error) {
-      // No flag row: the next start retries.
-      bb.log.warn(
-        `assistant key migration deferred: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  };
-  // Off the synchronous startup path: the pass reads the tables only after
-  // plugin() has returned, and the flag row makes it idempotent.
-  void Promise.resolve().then(() => migrateIdentityKeys());
 
   const readAssistantOrder = (): string[] =>
     (
@@ -333,30 +188,19 @@ export default function plugin(bb: BbPluginApi) {
       );
     }
     const identity = await storageKeyOfEnvironment(thread.environmentId, true);
-    // Remove this environment's alias so it cannot outlive the mutation.
-    if (identity !== thread.environmentId) {
-      db.prepare(`DELETE FROM assistant_subtitles WHERE identity = ?`).run(thread.environmentId);
-    }
-    const migrationPending = !db.prepare(`SELECT done FROM assistant_key_migration`).get();
-    if (subtitle === "" && !migrationPending) {
+    if (subtitle === "") {
       db.prepare(
         `DELETE FROM assistant_subtitles WHERE identity = ?`,
       ).run(identity);
     } else {
-      // Empty subtitles persist clears while aliases await sources. Advance
-      // past stored timestamps so clock skew cannot let a legacy alias win.
-      const latest = db.prepare(`SELECT MAX(at) AS at FROM assistant_subtitles`).get() as { at: number | null };
       db.prepare(
-        `INSERT INTO assistant_subtitles (identity, subtitle, at) VALUES (?, ?, ?)
-         ON CONFLICT(identity) DO UPDATE SET
-           subtitle = excluded.subtitle,
-           at = excluded.at`,
-      ).run(identity, subtitle, Math.max(Date.now(), latest.at ?? 0) + 1);
+        `INSERT INTO assistant_subtitles (identity, subtitle) VALUES (?, ?)
+         ON CONFLICT(identity) DO UPDATE SET subtitle = excluded.subtitle`,
+      ).run(identity, subtitle);
     }
     bb.realtime.publish(SUBTITLE_CHANNEL, { identity });
     return identity;
   };
-
 
   // Memory state lives beside each assistant's tree, outside data.db: see memory/state.ts.
   const memory = new MemoryService(bb, path.join(path.dirname(db.name), "memory"));
@@ -617,7 +461,7 @@ export default function plugin(bb: BbPluginApi) {
     async listAssistantSubtitles() {
       const rows = (
         db
-          .prepare(`SELECT identity, subtitle FROM assistant_subtitles WHERE subtitle != ''`)
+          .prepare(`SELECT identity, subtitle FROM assistant_subtitles`)
           .all() as Array<{ identity: string; subtitle: string }>
       ).map((row) => ({
         identity: row.identity,

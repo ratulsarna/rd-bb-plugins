@@ -33,7 +33,7 @@ async function fixture() {
   const project = { id: "fleet", name: "assistants", sources: Object.entries(roots).map(([hostId, path]) => ({ hostId, path })) };
   const thread = makeThreadResponse({ id: "old", title: "Sam", projectId: "fleet", providerId: "retired-provider", environmentId: "env-old" });
   const env = { id: "env-old", projectId: "fleet", hostId: "source", path: `${roots.source}/sam` };
-  const { bb, harness } = createFakePluginHost({ pluginId: "inbox-sidebar" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "assistants" });
   disposals.push(() => harness.lifecycle.dispose());
   harness.sdk.stub("threads.get", async () => structuredClone(thread));
   const envs: Record<string, { id: string; projectId: string; hostId: string; path: string }> = { "env-old": env };
@@ -121,7 +121,7 @@ describe("assistant machine creation through the public SDK host", () => {
     expect(await f.create()).toEqual({ newThreadId: "new" });
     const [spawn] = f.calls("threads.spawn")[0] as [Record<string, unknown>];
     expect(spawn.environment).toEqual({ type: "host", hostId: "target", workspace: { type: "unmanaged", path: `${f.roots.target}/sam` } });
-    expect(spawn).toMatchObject({ providerId: "codex", model: "dest-model", permissionMode: "full", origin: "plugin", originPluginId: "inbox-sidebar" });
+    expect(spawn).toMatchObject({ providerId: "codex", model: "dest-model", permissionMode: "full", origin: "plugin", originPluginId: "assistants" });
     for (const key of ["parentThreadId", "sourceThreadId", "lifecycleOwnerThreadId"]) expect(spawn).not.toHaveProperty(key);
     expect(f.automationUpdates()).toEqual([
       { projectId: "ops", automationId: "heartbeat", agent: { target: { type: "target-thread", threadId: "new" } } },

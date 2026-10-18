@@ -39,7 +39,7 @@ export default defineConfig({
   // Core's files key collapse state on the bundling plugin's id, exactly as
   // bb's build does for this plugin; without it they fall back to "inbox:".
   define: {
-    __BB_PLUGIN_ID__: JSON.stringify("inbox-sidebar"),
+    __BB_PLUGIN_ID__: JSON.stringify("assistants"),
   },
   test: {
     include: ["**/*.test.{ts,tsx}"],

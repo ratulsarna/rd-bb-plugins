@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
 import { assistantDisplayOrder, projectAssistantReorder } from "../lib/assistant-order";
@@ -6,7 +6,7 @@ import { projectPinnedReorder } from "inbox-core/lib/pinned-order";
 
 it("moves shared assistant groups up and down, writes unique order and preserves it on a fresh host", async () => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "inbox-sidebar",
+    pluginId: "assistants",
     sdk: {
       environments: { get: async ({ environmentId }) => ({
         id: environmentId, projectId: "fleet", hostId: "synthetic", path: `/synthetic/assistants/${environmentId.startsWith("sam") ? "sam" : "forge"}`,
@@ -16,7 +16,6 @@ it("moves shared assistant groups up and down, writes unique order and preserves
   });
   plugin(bb);
   try {
-    await vi.waitFor(() => expect(bb.storage.database().prepare("SELECT done FROM assistant_key_migration").get()).toEqual({ done: 1 }));
     const environmentIds = ["sam-server", "forge-server", "sam-mac", "forge-mac"];
     const resolved = await harness.behavior.callRpc("assistantIdentities", { environmentIds }) as { rows: Array<{ environmentId: string; identity: string }> };
     const rows = resolved.rows.map((row, index) => ({ id: row.environmentId, identity: row.identity, updatedAt: 100 - index }));

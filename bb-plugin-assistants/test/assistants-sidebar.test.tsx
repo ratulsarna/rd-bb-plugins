@@ -60,7 +60,7 @@ describe("thread list registration", () => {
   it("registers one sidebar list the Appearance picker can name", () => {
     expect(registrations.threadLists).toHaveLength(1);
     expect(list.id).toBe("board");
-    expect(list.title).toBe("Inbox Sidebar");
+    expect(list.title).toBe("Assistants");
     expect(list.description).toBeTruthy();
   });
 });
@@ -499,8 +499,8 @@ it.each(["down", "up", "same then down"])("drags any retained conversation as on
 // so a user's collapsed sections survive the switch to the shared code.
 describe("collapse keys carry over", () => {
   it("renders Bots and an inbox section collapsed from the keys today's build wrote", async () => {
-    localStorage.setItem("inbox-sidebar:collapsed:bots", "1");
-    localStorage.setItem("inbox-sidebar:collapsed:inbox", "1");
+    localStorage.setItem("assistants:collapsed:bots", "1");
+    localStorage.setItem("assistants:collapsed:inbox", "1");
     configureFakeSdk({
       projects: [sidebarProject("project-1", "bb"), sidebarProject("assist-1", "assistants")],
       threads: [

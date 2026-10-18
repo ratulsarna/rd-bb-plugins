@@ -16,13 +16,6 @@ export interface ServerApiOptions {
   threads?: Record<string, Record<string, unknown>>;
   privateSyncStatus?: unknown;
   machineDirectory?: unknown;
-  /** Tables to create before the plugin migrates, e.g. the legacy schema. */
-  preMigrate?: string[];
-  /** Override the environment lookup entirely, to hold the migration's
-   * SDK reads open while a user mutation races them. */
-  environmentsGet?: (
-    environmentId: string,
-  ) => Promise<Record<string, unknown>>;
 }
 
 export interface ServerApiHarness {
@@ -31,7 +24,6 @@ export interface ServerApiHarness {
   handlers: Record<string, (input: never) => Promise<unknown>>;
   publishes: Array<{ channel: string; payload: unknown }>;
   warnings: string[];
-  flush(): Promise<void>;
   /** Change what the SDK answers, then load the plugin fresh — a bb restart
    * with new facts. Identity caches do not survive a restart. */
   restart(next?: Partial<ServerApiOptions>): void;
@@ -40,7 +32,8 @@ export interface ServerApiHarness {
 export function serverApi(initial: ServerApiOptions = {}): ServerApiHarness {
   // On disk like the host's: memory files live beside the database.
   const db = new Database(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "inbox-server-")), "data.db"));
-  for (const statement of initial.preMigrate ?? []) db.exec(statement);
+  // Like bb's ledger: a restart runs only the statements not applied yet.
+  let applied = 0;
 
   const publishes: Array<{ channel: string; payload: unknown }> = [];
   const warnings: string[] = [];
@@ -54,7 +47,8 @@ export function serverApi(initial: ServerApiOptions = {}): ServerApiHarness {
       storage: {
         database: () => db,
         migrate: (_db: unknown, statements: string[]) => {
-          for (const statement of statements) db.exec(statement);
+          for (const statement of statements.slice(applied)) db.exec(statement);
+          applied = statements.length;
         },
       },
       log: {
@@ -87,9 +81,6 @@ export function serverApi(initial: ServerApiOptions = {}): ServerApiHarness {
       sdk: {
         environments: {
           get: async ({ environmentId }: { environmentId: string }) => {
-            if (options.environmentsGet) {
-              return options.environmentsGet(environmentId);
-            }
             const env = options.environments?.[environmentId];
             if (!env) throw new Error(`environment ${environmentId} not found`);
             return env;
@@ -130,9 +121,6 @@ export function serverApi(initial: ServerApiOptions = {}): ServerApiHarness {
 
   build();
 
-  // The legacy-key migration runs in the background; let its promises land.
-  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-
   return {
     db,
     get handlers() {
@@ -141,7 +129,6 @@ export function serverApi(initial: ServerApiOptions = {}): ServerApiHarness {
     },
     publishes,
     warnings,
-    flush,
     restart(next) {
       Object.assign(options, next);
       build();

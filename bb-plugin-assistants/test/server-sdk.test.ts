@@ -20,7 +20,7 @@ const cases: { options: ExecutionOptions; unavailableProvider?: boolean }[] = [
 ];
 
 it.each(cases)("serializes restart seeds with execution options: $options, unavailable provider: $unavailableProvider", async ({ options, unavailableProvider }) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "inbox-sidebar" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "assistants" });
   harness.sdk.stub("threads.get", async () => makeThreadResponse({
     id: "thread-sam",
     projectId: "project-assistants",
