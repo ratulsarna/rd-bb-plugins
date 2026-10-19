@@ -9,7 +9,7 @@ import { createIdentityResolver, type ResolvedIdentity } from "../lib/assistant-
 import { Busy, handover } from "./handover";
 import { type EventRow, isBuiltinCompact, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
 import { dirName, identities, KEPT_WARNINGS, type MemoryState, readState, writeState } from "./state";
-import { Summarizer } from "./summarize";
+import { Summarizer, type SummaryRunner } from "./summarize";
 import { Chat, KINDS } from "./tree";
 
 /** Realtime channel the Bots section re-reads memory warnings on. */
@@ -18,7 +18,14 @@ export const MEMORY_CHANNEL = "assistant-memory";
 const VIEW_READY = 128_000;
 const PAGE = 100;
 
-export type MemorySettings = { rotateAtPercent: number; summaryModel: string; summaryPool: number; summaryTarget: number };
+export type MemorySettings = {
+  rotateAtPercent: number;
+  summaryRunner: string;
+  summaryModel: string;
+  summaryPool: number;
+  summaryTarget: number;
+  summariesPaused: boolean;
+};
 
 export const TIMING = {
   /** How long a rotation waits for summaries. */
@@ -48,7 +55,7 @@ export class MemoryService {
   readonly summarizer: Summarizer;
   /** Which assistant a thread's environment belongs to, as the rest of the plugin decides it. */
   readonly identityOf: (environmentId: string) => Promise<ResolvedIdentity>;
-  settings: MemorySettings = { rotateAtPercent: 55, summaryModel: "haiku", summaryPool: 8, summaryTarget: 512 };
+  settings: MemorySettings = { rotateAtPercent: 55, summaryRunner: "claude", summaryModel: "haiku", summaryPool: 8, summaryTarget: 512, summariesPaused: false };
   disposed = false;
   private readonly states = new Map<string, MemoryState>();
   private readonly chats = new Map<string, Chat>();
@@ -72,7 +79,14 @@ export class MemoryService {
     spawnProcess?: typeof spawn,
   ) {
     this.identityOf = createIdentityResolver(bb);
-    this.summarizer = new Summarizer({ scratch: path.join(root, ".scratch"), log: (m) => bb.log.warn(m), spawn: spawnProcess });
+    this.summarizer = new Summarizer({
+      scratch: path.join(root, ".scratch"),
+      log: (m) => bb.log.warn(m),
+      warn: (m) => {
+        for (const identity of this.chats.keys()) this.warn(identity, m);
+      },
+      spawn: spawnProcess,
+    });
   }
 
   dir(identity: string): string {
@@ -158,10 +172,14 @@ export class MemoryService {
 
   configure(settings: MemorySettings): void {
     this.settings = settings;
+    // bb's select setting stores only its options.
+    this.summarizer.runner = settings.summaryRunner as SummaryRunner;
     this.summarizer.model = settings.summaryModel;
     this.summarizer.pool = settings.summaryPool;
+    this.summarizer.paused = settings.summariesPaused;
     for (const chat of this.chats.values()) chat.tune({ pool: settings.summaryPool, target: settings.summaryTarget });
-    this.summarizer.pump();
+    // Unpaused, or a new runner or model: what failed before gets another try now.
+    this.summarizer.resume();
   }
 
   /** Threads whose events go into this identity's log while it is on: the main chat and earlier ones still live. */
@@ -312,6 +330,8 @@ export class MemoryService {
   }
 
   notReady(identity: string): string {
+    const blocked = this.summarizer.blocked();
+    if (blocked) return blocked;
     const failed = this.chat(identity).failures;
     return failed > 0 ? `Memory summaries keep failing (${failed} failed); try again later` : "Memory summaries are still running";
   }
@@ -448,12 +468,15 @@ export class MemoryService {
     const chat = this.existing(identity);
     const { view, lines } = chat.viewBytes();
     const used = this.usage.get(identity);
+    const blocked = this.summarizer.blocked();
     return [
       `memory: ${s.on ? "on" : "off"}`,
       `main: ${s.main ?? "-"}`,
       `messages: ${chat.T}`,
       `view: ${lines} lines, ${view} bytes`,
       `unsummarized: ${chat.unsummarized}, in flight: ${chat.inFlight}, failed: ${chat.failures}`,
+      `summaries: ${this.summarizer.runner} ${this.summarizer.model}, ${this.summarizer.pool} at once`,
+      ...(blocked ? [blocked] : []),
       `last usage: ${used === undefined ? "-" : `${Math.round(used * 100)}%`}`,
       ...(s.import ? [`import: ${s.import.done}/${s.import.sources.length} sources${s.import.error ? `, stopped: ${s.import.error}` : ""}`] : []),
       ...(s.previous.length ? [`kept live: ${s.previous.join(", ")} (rotation waits until archived)`] : []),

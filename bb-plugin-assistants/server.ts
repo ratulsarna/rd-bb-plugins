@@ -17,6 +17,7 @@ import {
 } from "./lib/assistant-conversation";
 import { handover, type Place } from "./memory/handover";
 import { MEMORY_CHANNEL, MemoryService } from "./memory/service";
+import { SUMMARY_RUNNERS } from "./memory/summarize";
 
 const threadIdInput = z.object({ threadId: z.string().trim().min(1) });
 
@@ -213,10 +214,17 @@ export default function plugin(bb: BbPluginApi) {
       default: 55,
       experimental_schema: z.number().int().min(1).max(95),
     },
+    summaryRunner: {
+      type: "select",
+      label: "Memory: summary runner",
+      description: "The CLI on the bb server that writes memory summaries: `claude` on its Claude login (never an API key), or `pi` with any model pi knows.",
+      options: SUMMARY_RUNNERS,
+      default: "claude",
+    },
     summaryModel: {
       type: "string",
       label: "Memory: summary model",
-      description: "The model `claude -p` writes memory summaries with, on the bb server's Claude login.",
+      description: "The model the runner writes summaries with: for claude, e.g. `haiku`; for pi, `provider/model`, e.g. `zai/glm-5.3-flash`.",
       default: "haiku",
       experimental_schema: z.string().trim().min(1),
     },
@@ -233,6 +241,12 @@ export default function plugin(bb: BbPluginApi) {
       description: "The line length a summary asks for; 512 bytes stays the limit.",
       default: 512,
       experimental_schema: z.number().int().positive(),
+    },
+    summariesPaused: {
+      type: "boolean",
+      label: "Memory: pause summaries",
+      description: "Start no new summary calls; those running finish. Logging and recall go on; a rotation waits for summaries to catch up.",
+      default: false,
     },
   });
   memorySettings.onChange((next) => memory.configure(next));

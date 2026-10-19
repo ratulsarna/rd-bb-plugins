@@ -8,21 +8,22 @@ import { Summarizer } from "./summarize";
 import { Chat } from "./tree";
 
 type Reply = { out?: string; code?: number };
-type Call = { prompt: string; args: string[]; env: NodeJS.ProcessEnv; killed: boolean };
+type Call = { cmd: string; prompt: string; args: string[]; env: NodeJS.ProcessEnv; killed: boolean };
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
-/** A `claude -p` stand-in: `script` answers each call by its prompt, and may never answer. */
-function harness(script: (prompt: string, call: number) => Reply | Promise<Reply>, timeoutMs?: number) {
+/** A summary CLI stand-in: `script` answers each call by its prompt, and may never answer. */
+function harness(script: (prompt: string, call: number) => Reply | Promise<Reply>, timeoutMs?: number, brakeMs?: number) {
   const calls: Call[] = [];
+  const warnings: string[] = [];
   let live = 0;
   let peak = 0;
-  const spawn = ((_cmd: string, args: string[], opts: { env: NodeJS.ProcessEnv }) => {
+  const spawn = ((cmd: string, args: string[], opts: { env: NodeJS.ProcessEnv }) => {
     const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() }) as any;
-    const call: Call = { prompt: "", args, env: opts.env, killed: false };
+    const call: Call = { cmd, prompt: "", args, env: opts.env, killed: false };
     calls.push(call);
     peak = Math.max(peak, ++live);
     let closed = false;
@@ -52,11 +53,13 @@ function harness(script: (prompt: string, call: number) => Reply | Promise<Reply
   const summarizer = new Summarizer({
     scratch: fs.mkdtempSync(path.join(os.tmpdir(), "summarize-scratch-")),
     log: () => {},
+    warn: (message) => warnings.push(message),
     spawn,
     timeoutMs,
+    brakeMs,
   });
   cleanups.push(() => summarizer.dispose());
-  return { summarizer, calls, peak: () => peak };
+  return { summarizer, calls, warnings, peak: () => peak };
 }
 
 function chat(): Chat {
@@ -232,4 +235,79 @@ it("puts a finished summary on disk without waiting for the next message", async
   expect(await h.summarizer.waitUntil(c, () => c.unsummarized === 0, 2000)).toBe(true);
   const tree = path.join(c.dir, "tree");
   await vi.waitFor(() => expect(fs.readdirSync(tree).map((f) => fs.readFileSync(path.join(tree, f), "utf8")).join("")).toContain("a line"));
+});
+
+it("runs pi with the chosen model, no tools, no session and nothing loaded from disk", async () => {
+  process.env.BB_THREAD_ID = "thr_x";
+  cleanups.push(() => delete process.env.BB_THREAD_ID);
+  const h = harness(() => ({ out: "a line" }));
+  h.summarizer.runner = "pi";
+  h.summarizer.model = "zai/glm-5.3-flash";
+  const c = chat();
+  h.summarizer.add("a", c);
+  c.append("echo", long("one"), "2026-09-01");
+  expect(await h.summarizer.waitUntil(c, () => c.unsummarized === 0, 2000)).toBe(true);
+  expect(h.calls[0].cmd).toBe("pi");
+  expect(h.calls[0].args).toEqual(expect.arrayContaining([
+    "-p", "--no-session", "--no-tools", "--no-extensions", "--no-mcp", "--no-skills", "--no-context-files", "--model", "zai/glm-5.3-flash",
+  ]));
+  expect(h.calls[0].env.BB_THREAD_ID).toBeUndefined();
+});
+
+it("starts no call while paused, and catches up once resumed", async () => {
+  const h = harness(() => ({ out: "a line" }));
+  h.summarizer.paused = true;
+  const c = chat();
+  h.summarizer.add("a", c);
+  c.append("echo", long("one"), "2026-09-01");
+  expect(await h.summarizer.waitUntil(c, () => c.unsummarized === 0, 100)).toBe(false);
+  expect(h.calls).toHaveLength(0);
+  expect(h.summarizer.blocked()).toBe("Memory summaries are paused");
+  h.summarizer.paused = false;
+  expect(await h.summarizer.waitUntil(c, () => c.unsummarized === 0, 2000)).toBe(true);
+  expect(h.summarizer.blocked()).toBeUndefined();
+});
+
+it("stops every call after 5 failures in a row, warns once, and starts again after the brake", async () => {
+  // A spent account: every call fails until it comes back.
+  let spent = true;
+  const h = harness(() => (spent ? { code: 1 } : { out: "a line" }), undefined, 80);
+  h.summarizer.pool = 2;
+  const c = chat();
+  h.summarizer.add("a", c);
+  for (const tag of ["one", "two", "three", "four", "five", "six", "seven", "eight"]) c.append("echo", long(tag), "2026-09-01");
+  h.summarizer.pump();
+  await settle();
+  // The fifth failure brakes; a call already running when it lands fails without a second brake.
+  expect(h.calls.length).toBeLessThanOrEqual(6);
+  const braked = h.calls.length;
+  expect(h.warnings).toHaveLength(1);
+  expect(h.warnings[0]).toMatch(/stopped for 1 min after 5 failed calls in a row\. Last error: claude exited 1/);
+  expect(h.summarizer.blocked()).toMatch(/stopped for 1 more min/);
+  h.summarizer.pump();
+  await settle();
+  expect(h.calls).toHaveLength(braked);
+
+  // No new message and no readiness wait: the brake's end alone runs what failed.
+  spent = false;
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(h.summarizer.blocked()).toBeUndefined();
+  expect([c.failures, c.unsummarized]).toEqual([0, 0]);
+  expect(h.warnings).toHaveLength(1);
+});
+
+it("starts no length retry once paused, and keeps the line it has", async () => {
+  const first = deferred();
+  const h = harness((_p, n) => (n === 1 ? first.promise : { out: "a line" }));
+  const c = chat();
+  h.summarizer.add("a", c);
+  c.append("echo", long("one"), "2026-09-01");
+  h.summarizer.pump();
+  await settle();
+  h.summarizer.paused = true;
+  first.resolve({ out: "y".repeat(600) });
+  await settle();
+  expect(h.calls).toHaveLength(1);
+  expect([c.failures, c.inFlight, c.unsummarized]).toEqual([0, 0, 0]);
+  expect(c.viewLines()[0]).toBe(`0+1|${"y".repeat(600)}`);
 });

@@ -79,8 +79,12 @@ keeps its head and tail.
 Where it lives: on the bb server, beside the plugin's database, in
 `memory/<project>__<home>/` (`main/` is the log, `tree/` the summaries,
 `view.json` the view, `memory.json` the state). It is outside `data.db`, so a
-plugin rollback leaves it alone. Summaries run `claude -p` on the server's
-Claude login, with no tools, in an empty folder.
+plugin rollback leaves it alone. Summaries run on the server through the
+`summaryRunner` CLI: `claude -p` on the server's Claude login (never an API
+key), or `pi -p` with any model pi knows. Either runs with no tools, no
+session and no context files, in an empty folder. After 5 failed calls in a
+row, as when an account runs out, every summary stops for 10 minutes and each
+memory-on assistant gets a warning.
 
 Rotation: when a turn ends normally, the thread is idle and its context use
 is at or over the threshold, the plugin starts a new conversation in the same
@@ -146,9 +150,13 @@ write stops an import; run it again to resume.
 `recall` and `date` use the calling thread's assistant; outside a thread pass
 `--assistant <thread-id>`.
 
-Settings: `rotateAtPercent` (55, 1-95), `summaryModel` (`haiku`),
-`summaryPool` (8 summary calls at once across all assistants) and
-`summaryTarget` (512 bytes asked per line; 512 stays the limit).
+Settings: `rotateAtPercent` (55, 1-95), `summaryRunner` (`claude` or `pi`),
+`summaryModel` (`haiku`; for pi `provider/model`, e.g. `zai/glm-5.3-flash`),
+`summaryPool` (8 summary calls at once across all assistants),
+`summaryTarget` (512 bytes asked per line; 512 stays the limit) and
+`summariesPaused` (starts no new summary call; logging and recall go on, and
+a rotation waits for summaries to catch up). `memory status` shows the
+runner, model and pool, and why summaries are not running.
 
 Warnings (a compaction before rotation, summaries not ready in time, an
 automation that could not move) show as a `!` on the assistant's Bots row and
