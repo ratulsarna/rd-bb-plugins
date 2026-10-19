@@ -84,6 +84,13 @@ export class Summarizer {
     return undefined;
   }
 
+  /** Start again, failed claims too: no new message may come to retry them. */
+  resume(): void {
+    for (const { chat } of this.chats) chat.retryFailed();
+    this.pump();
+    this.changed.emit("progress");
+  }
+
   /** Start jobs while the pool has room, taking from each chat in turn. */
   pump(): void {
     if (this.blocked()) return;
@@ -134,16 +141,17 @@ export class Summarizer {
     this.opts.warn(`Memory summaries stopped for ${Math.ceil(ms / 60_000)} min after ${BRAKE_AFTER} failed calls in a row. Last error: ${why.slice(0, 200)}`);
     this.brakeTimer = setTimeout(() => {
       this.brakeUntil = 0;
-      this.pump();
-      this.changed.emit("progress");
+      this.resume();
     }, ms);
   }
 
-  /** The first line that fits, else the shortest of `ATTEMPTS`; undefined for an empty reply. */
+  /** The first line that fits, else the shortest of `ATTEMPTS` (fewer once summaries stop); undefined for an empty reply. */
   private async summarize(input: string): Promise<string | undefined> {
     let best: string | undefined;
     let last: string | undefined;
     for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+      // Paused or braked since the last try: keep the shortest line rather than start another call.
+      if (attempt > 0 && this.blocked()) break;
       // Each call is fresh, so a retry carries the input again with the cut the last reply overran.
       last = cleanLine(await this.call(last === undefined ? input : `${input}\n\n${tooLong(last)}`));
       if (!last) return undefined;

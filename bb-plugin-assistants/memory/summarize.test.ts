@@ -288,10 +288,26 @@ it("stops every call after 5 failures in a row, warns once, and starts again aft
   await settle();
   expect(h.calls).toHaveLength(braked);
 
+  // No new message and no readiness wait: the brake's end alone runs what failed.
   spent = false;
-  c.append("user", "next", "2026-09-01");
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  await new Promise((resolve) => setTimeout(resolve, 300));
   expect(h.summarizer.blocked()).toBeUndefined();
-  expect(await h.summarizer.waitUntil(c, () => c.unsummarized === 0, 2000)).toBe(true);
+  expect([c.failures, c.unsummarized]).toEqual([0, 0]);
   expect(h.warnings).toHaveLength(1);
+});
+
+it("starts no length retry once paused, and keeps the line it has", async () => {
+  const first = deferred();
+  const h = harness((_p, n) => (n === 1 ? first.promise : { out: "a line" }));
+  const c = chat();
+  h.summarizer.add("a", c);
+  c.append("echo", long("one"), "2026-09-01");
+  h.summarizer.pump();
+  await settle();
+  h.summarizer.paused = true;
+  first.resolve({ out: "y".repeat(600) });
+  await settle();
+  expect(h.calls).toHaveLength(1);
+  expect([c.failures, c.inFlight, c.unsummarized]).toEqual([0, 0, 0]);
+  expect(c.viewLines()[0]).toBe(`0+1|${"y".repeat(600)}`);
 });

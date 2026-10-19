@@ -178,7 +178,8 @@ export class MemoryService {
     this.summarizer.pool = settings.summaryPool;
     this.summarizer.paused = settings.summariesPaused;
     for (const chat of this.chats.values()) chat.tune({ pool: settings.summaryPool, target: settings.summaryTarget });
-    this.summarizer.pump();
+    // Unpaused, or a new runner or model: what failed before gets another try now.
+    this.summarizer.resume();
   }
 
   /** Threads whose events go into this identity's log while it is on: the main chat and earlier ones still live. */
