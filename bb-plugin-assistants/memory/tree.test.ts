@@ -134,6 +134,49 @@ it("view stays in the sawtooth, covers the chat, and compactions only see built 
   await chat.close();
 }, 180_000);
 
+it.each([
+  ["", () => false],
+  [", even when one call in 40 fails in it", (n: number) => n < 1500 && n % 40 === 0],
+])("a backlog's calls get the compaction view a chat that kept up had: no bigger, no barer%s", async (_, failing) => {
+  const chat = Chat.open(tmp());
+  for (let i = 0; i < 500; i++) {
+    chat.append("unii", text(i), "2026-09-01T10:00:00+05:30");
+    drive(chat, () => {});
+  }
+  // Summaries stopped (paused, braked, the plugin off) while 1,500 messages came in.
+  for (let i = 500; i < 2000; i++) chat.append("unii", text(i), "2026-09-01T10:00:00+05:30");
+  const sizes: number[] = [];
+  let n = 0;
+  for (let job = chat.take(); job; job = chat.take()) {
+    sizes.push(bytes(job.prompt.split("</chat>")[0]));
+    if (failing(++n)) chat.fail(job.ref);
+    else chat.done(job.ref, fakeLine(job.prompt));
+  }
+  assert.ok(Math.max(...sizes) <= 32_000 + LINE + 20, `a call carried ${Math.max(...sizes)} bytes of view`);
+  const mean = sizes.reduce((a, b) => a + b, 0) / sizes.length;
+  assert.ok(mean >= 16_000, `calls averaged ${mean} bytes of view, below the 16 KB a caught-up chat keeps`);
+  // No message comes to retry a call that failed in the backlog: it must not stall the catch-up.
+  assert.ok(chat.idle(), `stalled with ${chat.failures} failed`);
+  await chat.close();
+}, 60_000);
+
+it("a backlog's batches are saved: after a restart the next call sees the same view", async () => {
+  const dir = tmp();
+  const chat = Chat.open(dir);
+  for (let i = 0; i < 1500; i++) chat.append("unii", text(i), "2026-09-01T10:00:00+05:30");
+  await chat.flush();
+  for (let n = 0; n < 700; n++) {
+    const job = chat.take()!;
+    chat.done(job.ref, fakeLine(job.prompt));
+    await chat.flush();
+  }
+  const job = chat.take()!;
+  await chat.close();
+  const again = Chat.open(dir);
+  assert.equal(again.take()!.prompt, job.prompt);
+  await again.close();
+});
+
 it("a restart mid-chat keeps the saved view and finishes the same tree", async () => {
   const steady = Chat.open(tmp());
   const restarted = await (async () => {
