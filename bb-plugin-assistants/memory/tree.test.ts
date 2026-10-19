@@ -134,6 +134,23 @@ it("view stays in the sawtooth, covers the chat, and compactions only see built 
   await chat.close();
 }, 180_000);
 
+it("a backlog's calls get the compaction view a chat that kept up had: no bigger, no barer", async () => {
+  const chat = Chat.open(tmp());
+  for (let i = 0; i < 500; i++) {
+    chat.append("unii", text(i), "2026-09-01T10:00:00+05:30");
+    drive(chat, () => {});
+  }
+  // Summaries stopped (paused, braked, the plugin off) while 1,500 messages came in.
+  for (let i = 500; i < 2000; i++) chat.append("unii", text(i), "2026-09-01T10:00:00+05:30");
+  const sizes: number[] = [];
+  drive(chat, (prompt) => sizes.push(bytes(prompt.split("</chat>")[0])));
+  assert.ok(chat.idle());
+  assert.ok(Math.max(...sizes) <= 32_000 + LINE + 20, `a call carried ${Math.max(...sizes)} bytes of view`);
+  const mean = sizes.reduce((a, b) => a + b, 0) / sizes.length;
+  assert.ok(mean >= 16_000, `calls averaged ${mean} bytes of view, below the 16 KB a caught-up chat keeps`);
+  await chat.close();
+}, 60_000);
+
 it("a restart mid-chat keeps the saved view and finishes the same tree", async () => {
   const steady = Chat.open(tmp());
   const restarted = await (async () => {
