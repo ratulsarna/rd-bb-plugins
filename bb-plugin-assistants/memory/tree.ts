@@ -148,6 +148,8 @@ export class Chat {
   private running = new Set<string>();
   /** Failed calls wait here until the next message. */
   private failed: Ref[] = [];
+  /** Failed in a backlog and tried again at once; a second failure waits for the next message. */
+  private retried = new Set<string>();
   /** Per source stream, its newest position in the log and how many records came from it. */
   private sources = new Map<string, { at: number; records: number }>();
   /**
@@ -382,8 +384,18 @@ export class Chat {
     const n = v.refs.findIndex((r) => end(r) > f);
     const seen = n < 0 ? v.refs : v.refs.slice(0, n);
     if (!v.shrinking && this.size(seen) <= hi) return;
-    v.shrinking = !this.shrink(seen, lo, f);
+    const lines = seen.length;
+    const shrinking = !this.shrink(seen, lo, f);
+    if (seen.length === lines && shrinking === v.shrinking) return;
+    v.shrinking = shrinking;
     if (n >= 0) v.refs.splice(0, n, ...seen);
+    // A batch `take` runs comes with no message to save it.
+    this.pending.view = true;
+  }
+
+  /** A backlog: summaries fell behind, and the compaction view is over its cap. */
+  private behind(): boolean {
+    return this.size(this.cview.refs) > CVIEW_HI;
   }
 
   /** Merge the most due pairs, measured at `T`, until `refs` fits `target`; false when built parents run out first. */
@@ -446,6 +458,7 @@ export class Chat {
 
   /** Failed calls are tried again at the next message. */
   retryFailed(): void {
+    this.retried.clear();
     for (const r of this.failed.splice(0)) {
       this.claimed.delete(key(r));
       if (r[0] > 0) this.queueMerge(r);
@@ -488,7 +501,7 @@ export class Chat {
   private next(): { ref: Ref; k: number } | undefined {
     if (this.damage) return undefined;
     const i = this.unbuilt.slice(0, this.pool).find((i) => !this.claimed.has(key([0, i])));
-    if (this.merges.length > 0 && this.size(this.cview.refs) > CVIEW_HI) {
+    if (this.merges.length > 0 && this.behind()) {
       let k = 0;
       for (let j = 1; j < this.merges.length; j++) if (end(this.merges[j]) < end(this.merges[k])) k = j;
       if (i === undefined || end(this.merges[k]) <= i) return { ref: this.merges[k], k };
@@ -526,6 +539,13 @@ export class Chat {
 
   fail(r: Ref): void {
     this.running.delete(key(r));
+    // In a backlog no message comes to retry it, and every batch behind it would wait.
+    if (this.behind() && !this.retried.has(key(r))) {
+      this.retried.add(key(r));
+      this.claimed.delete(key(r));
+      if (r[0] > 0) this.queueMerge(r);
+      return;
+    }
     this.failed.push(r);
   }
 
