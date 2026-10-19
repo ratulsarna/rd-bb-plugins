@@ -237,21 +237,29 @@ it("puts a finished summary on disk without waiting for the next message", async
   await vi.waitFor(() => expect(fs.readdirSync(tree).map((f) => fs.readFileSync(path.join(tree, f), "utf8")).join("")).toContain("a line"));
 });
 
-it("runs pi with the chosen model, no tools, no session and nothing loaded from disk", async () => {
+it.each([
+  ["a pi with MCP", "  --no-mcp   Disable built-in MCP support", true],
+  ["an older pi without MCP", "  --no-tools   Disable all tools", false],
+])("runs %s with the chosen model, no tools, no session, nothing from disk, and --no-mcp only if it knows it", async (_name, help, noMcp) => {
   process.env.BB_THREAD_ID = "thr_x";
   cleanups.push(() => delete process.env.BB_THREAD_ID);
-  const h = harness(() => ({ out: "a line" }));
+  const h = harness((prompt) => ({ out: prompt === "" ? help : "a line" }));
   h.summarizer.runner = "pi";
   h.summarizer.model = "zai/glm-5.3-flash";
   const c = chat();
   h.summarizer.add("a", c);
   c.append("echo", long("one"), "2026-09-01");
+  c.append("echo", long("two"), "2026-09-01");
   expect(await h.summarizer.waitUntil(c, () => c.unsummarized === 0, 2000)).toBe(true);
-  expect(h.calls[0].cmd).toBe("pi");
-  expect(h.calls[0].args).toEqual(expect.arrayContaining([
-    "-p", "--no-session", "--no-tools", "--no-extensions", "--no-mcp", "--no-skills", "--no-context-files", "--model", "zai/glm-5.3-flash",
+  // One --help per load, however many calls follow.
+  expect(h.calls.filter((call) => call.args.includes("--help"))).toHaveLength(1);
+  const summary = h.calls.find((call) => !call.args.includes("--help"))!;
+  expect(summary.cmd).toBe("pi");
+  expect(summary.args).toEqual(expect.arrayContaining([
+    "-p", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-context-files", "--model", "zai/glm-5.3-flash",
   ]));
-  expect(h.calls[0].env.BB_THREAD_ID).toBeUndefined();
+  expect(summary.args.includes("--no-mcp")).toBe(noMcp);
+  expect(summary.env.BB_THREAD_ID).toBeUndefined();
 });
 
 it("starts no call while paused, and catches up once resumed", async () => {

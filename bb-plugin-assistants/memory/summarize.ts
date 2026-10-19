@@ -18,19 +18,24 @@ const without = (env: NodeJS.ProcessEnv, drop: (key: string) => boolean): NodeJS
 
 /**
  * How each CLI is asked for one summary: one reply on stdout, no tools, no session, and nothing
- * loaded from disk. Neither gets bb thread context to act on.
+ * loaded from disk. Neither gets bb thread context to act on. `optional` flags go in only when the
+ * installed CLI's `--help` lists them.
  */
+type Runner = { args: (model: string) => string[]; optional: string[]; env: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
 const RUNNERS = {
   claude: {
-    args: (model: string) => ["-p", "--safe-mode", "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--model", model, "--system-prompt", SUMMARY_PROMPT, "--output-format", "text"],
+    args: (model) => ["-p", "--safe-mode", "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--model", model, "--system-prompt", SUMMARY_PROMPT, "--output-format", "text"],
+    optional: [],
     // The subscription login, never an API key.
-    env: (env: NodeJS.ProcessEnv) => without(env, (k) => k.startsWith("ANTHROPIC_") || k.startsWith("BB_") || k === "CLAUDE_CODE_OAUTH_TOKEN"),
+    env: (env) => without(env, (k) => k.startsWith("ANTHROPIC_") || k.startsWith("BB_") || k === "CLAUDE_CODE_OAUTH_TOKEN"),
   },
   pi: {
-    args: (model: string) => ["-p", "--no-session", "--no-tools", "--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--thinking", "off", "--model", model, "--system-prompt", SUMMARY_PROMPT],
-    env: (env: NodeJS.ProcessEnv) => without(env, (k) => k.startsWith("BB_")),
+    args: (model) => ["-p", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--thinking", "off", "--model", model, "--system-prompt", SUMMARY_PROMPT],
+    // A pi without MCP rejects the flag; one with it needs the flag to keep MCP servers and tools out.
+    optional: ["--no-mcp"],
+    env: (env) => without(env, (k) => k.startsWith("BB_")),
   },
-};
+} satisfies Record<string, Runner>;
 export type SummaryRunner = keyof typeof RUNNERS;
 export const SUMMARY_RUNNERS = Object.keys(RUNNERS) as SummaryRunner[];
 
@@ -44,6 +49,8 @@ export class Summarizer {
   private failedInRow = 0;
   private brakeUntil = 0;
   private brakeTimer: NodeJS.Timeout | undefined;
+  /** Each runner's `--help`, read once per load. */
+  private readonly helps = new Map<string, Promise<string>>();
   runner: SummaryRunner = "claude";
   model = "haiku";
   pool = 8;
@@ -161,13 +168,28 @@ export class Summarizer {
     return best;
   }
 
-  private call(prompt: string): Promise<string> {
+  private async call(prompt: string): Promise<string> {
+    const runner = this.runner;
+    const { args, optional }: Runner = RUNNERS[runner];
+    const help = optional.length > 0 ? await this.help(runner) : "";
+    return this.spawnText(runner, [...args(this.model), ...optional.filter((flag) => help.includes(flag))], prompt);
+  }
+
+  /** An unreadable `--help` adds no optional flag. */
+  private help(runner: SummaryRunner): Promise<string> {
+    let help = this.helps.get(runner);
+    if (!help) {
+      help = this.spawnText(runner, ["--help"], "").catch(() => "");
+      this.helps.set(runner, help);
+    }
+    return help;
+  }
+
+  private spawnText(runner: SummaryRunner, args: string[], input: string): Promise<string> {
     return new Promise((resolve, reject) => {
       if (this.disposed) return reject(new Error("memory service stopped"));
       fs.mkdirSync(this.opts.scratch, { recursive: true });
-      const runner = this.runner;
-      const { args, env } = RUNNERS[runner];
-      const child = (this.opts.spawn ?? nodeSpawn)(runner, args(this.model), { cwd: this.opts.scratch, env: env(process.env), stdio: ["pipe", "pipe", "pipe"] });
+      const child = (this.opts.spawn ?? nodeSpawn)(runner, args, { cwd: this.opts.scratch, env: RUNNERS[runner].env(process.env), stdio: ["pipe", "pipe", "pipe"] });
       this.procs.add(child);
       let out = "";
       let err = "";
@@ -190,7 +212,7 @@ export class Summarizer {
         settle(new Error(timedOut ? "timed out" : `${runner} exited ${code ?? signal}: ${err.trim().slice(0, 300)}`));
       });
       child.stdin?.on("error", () => {});
-      child.stdin?.end(prompt);
+      child.stdin?.end(input);
     });
   }
 
