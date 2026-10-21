@@ -24,6 +24,6 @@ npm run update-bb-types
 
 ## Screenshots
 
-<img width="270" height="896" alt="image" src="https://github.com/user-attachments/assets/86b21a30-ab24-49f1-838a-7c1cbe2a1c54" />
+<img width="270" height="844" alt="Assistants sidebar: Bots, Pinned and Inbox" src="./docs/sidebar.png" />
 
 <img width="528" height="764" alt="Screenshot 2026-08-09 at 7 54 24 PM" src="https://github.com/user-attachments/assets/c060a8c8-397a-4a3d-815f-a3208796c2ba" />
