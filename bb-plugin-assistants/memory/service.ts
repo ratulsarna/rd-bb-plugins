@@ -405,7 +405,10 @@ export class MemoryService {
       const requests = (await sdk.events.list({ threadId, types: ["client/turn/requested"], order: "asc", limit: "2" })) as unknown as EventRow[];
       if (requests.length < 2 && requests.every((r) => recordsOf(r).length === 0)) return;
       const { usage } = await sdk.context({ threadId });
-      const used = usage ? usage.usedTokens / usage.modelContextWindow : Number.NaN;
+      // As a turn ends, Claude Code reports the model's largest window; its own breakdown carries the window it compacts by.
+      const breakdowns = (await sdk.events.list({ threadId, types: ["thread/contextWindowUsage/updated"], order: "desc", limit: "200" })) as unknown as EventRow[];
+      const window = breakdowns.map((r) => r.data?.contextWindowUsage?.snapshot?.contextWindowTokens).find((n) => typeof n === "number");
+      const used = usage ? usage.usedTokens / (window ?? usage.modelContextWindow) : Number.NaN;
       if (!Number.isFinite(used)) return;
       this.usage.set(identity, used);
       if (used < this.settings.rotateAtPercent / 100) return;
