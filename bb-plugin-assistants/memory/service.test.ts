@@ -111,6 +111,24 @@ it("rotates once at the idle after a completed turn over the threshold, never on
   expect(svc.state(IDENTITY).main).toBe("thr_new2");
 });
 
+it("measures a Claude Code chat against the window it compacts by, not the larger one reported as a turn ends", async () => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  const usage = (contextWindowUsage: Record<string, unknown>) => w.emit("thr_main", "thread/contextWindowUsage/updated", { contextWindowUsage });
+  w.say("thr_main", "first");
+  w.turnEnd("thr_main");
+  usage({ usedTokens: 40_000, modelContextWindow: 100_000, estimated: true, snapshot: { usedTokens: 40_000, contextWindowTokens: 100_000, autoCompactAtTokens: 93_000 } });
+  // The next turn: a reset as it starts, then the model's 200k window as it ends, before the breakdown comes.
+  w.say("thr_main", "second");
+  usage({ usedTokens: null, modelContextWindow: null, estimated: true });
+  usage({ usedTokens: 60_000, modelContextWindow: 200_000, estimated: true });
+  w.turnEnd("thr_main");
+  w.usage.set("thr_main", { usedTokens: 60_000, modelContextWindow: 200_000 });
+  await svc.onIdle("thr_main");
+  expect(svc.state(IDENTITY).main).toBe("thr_new1");
+});
+
 it("stops waiting for summaries when the user starts another turn, and warns when they never come", async () => {
   const w = start();
   const svc = w.service({ readinessMs: 80, retryMs: 50 }, hanging);
