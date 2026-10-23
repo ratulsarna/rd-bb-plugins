@@ -102,6 +102,7 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
         events: {
           list: async ({ threadId, types, afterSeq, order, limit }) => {
             if (failures.events) throw failures.events;
+            if (Number(limit ?? 100) > 100) throw new Error("HTTP 400: Thread event limit cannot exceed 100");
             await taps.events?.(threadId);
             const rows = (events.get(threadId) ?? []).filter((r) => (!types || (types as readonly string[]).includes(r.type)) && r.seq > Number(afterSeq ?? 0));
             if (order === "desc") rows.reverse();
