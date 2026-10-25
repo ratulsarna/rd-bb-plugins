@@ -1,8 +1,7 @@
-import { mkdir, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { reconcileNode, type PassRequest } from "../lib/reconcile";
-import { MIGRATIONS } from "../lib/store";
 import { CHUNK_BYTES } from "../contract";
 import { cleanup, folderOf, hostClient, machine, openStore, put, read, startCoordinator, tempDir, type Machine } from "./helpers";
 
@@ -117,7 +116,8 @@ it.each(["present-stale", "absent"] as const)("migrates old-schema %s bases with
   const Database = (await import("better-sqlite3")).default;
   const db = new Database(join(base, "hub.db"));
   db.exec("ALTER TABLE nodes DROP COLUMN root_identity");
-  db.pragma(`user_version = ${MIGRATIONS.length - 1}`);
+  // The last schema before root identity existed.
+  db.pragma("user_version = 7");
   db.close();
   const upgraded = openStore(join(base, "hub.db"));
   expect(upgraded.rootIdentity(folder.id, b.id)).toBeNull();
@@ -126,4 +126,72 @@ it.each(["present-stale", "absent"] as const)("migrates old-schema %s bases with
   expect(await read(b, "item")).toBe(kind === "present-stale" ? null : "expected");
   expect(upgraded.head(folder.id)).toEqual(head);
   expect(upgraded.rootIdentity(folder.id, b.id)).not.toBeNull();
+});
+
+async function rewriteIdentity(node: Machine, change: (saved: Record<string, string>) => Record<string, string>) {
+  const Database = (await import("better-sqlite3")).default;
+  const db = new Database(join(base, "hub.db"));
+  const saved = JSON.parse(db.prepare("SELECT root_identity FROM nodes WHERE host = ?").pluck().get(node.id) as string);
+  db.prepare("UPDATE nodes SET root_identity = ? WHERE host = ?").run(JSON.stringify(change(saved)), node.id);
+  return db;
+}
+
+const other = (value: string) => String(BigInt(value) + 1n);
+
+it("resumes a node stuck on the device number its root had before a reboot, with its bases", async () => {
+  const { a, b, folder, request } = await setup();
+  await put(a, "extra", "synced");
+  await reconcileNode(request(a));
+  await reconcileNode(request(b));
+  await unlink(join(a.root, "item"));
+  await put(a, "keep", "hub edit");
+  await reconcileNode(request(a));
+  await unlink(join(b.root, "extra"));
+  // The identity saved before birth time was recorded, from the boot before the reboot.
+  const db = await rewriteIdentity(b, ({ canonical, dev, ino }) => ({ canonical, dev: other(dev!), ino: ino! }));
+  db.pragma("user_version = 8");
+  db.close();
+  const upgraded = openStore(join(base, "hub.db"));
+  expect((await reconcileNode({ ...request(b), store: upgraded })).acked).toBe(upgraded.seq(folder.id));
+  // Bases kept: b's own deletion reaches the hub, and the hub's edit and deletion arrive without conflicts.
+  expect(await readdir(b.root)).toEqual(["keep"]);
+  expect(await read(b, "keep")).toBe("hub edit");
+  expect([...upgraded.head(folder.id)].filter(([, entry]) => entry.content !== null).map(([path]) => path)).toEqual(["keep"]);
+  expect(upgraded.openConflicts(folder.id, 10).total).toBe(0);
+});
+
+it("accepts a new device number or birth time alone, and refuses both", async () => {
+  const { b, store, folder, request } = await setup();
+  const head = store.head(folder.id);
+  const pass = async (change: (saved: Record<string, string>) => Record<string, string>) => {
+    (await rewriteIdentity(b, change)).close();
+    return reconcileNode(request(b));
+  };
+  // A reboot, then an older mtime on the root, then another reboot.
+  expect((await pass((saved) => ({ ...saved, dev: other(saved.dev!) }))).acked).toBe(store.seq(folder.id));
+  expect((await pass((saved) => ({ ...saved, birth: other(saved.birth!) }))).acked).toBe(store.seq(folder.id));
+  expect((await pass((saved) => ({ ...saved, dev: other(saved.dev!) }))).acked).toBe(store.seq(folder.id));
+  await expect(pass((saved) => ({ ...saved, dev: other(saved.dev!), birth: other(saved.birth!) }))).rejects.toThrow(/root changed/);
+  expect(store.head(folder.id)).toEqual(head);
+});
+
+it.each(["current", "pre-birth-time"] as const)("refuses a directory replaced at the same path without deleting hub copies (%s identity)", async (saved) => {
+  const { b, store: bound, folder, request } = await setup();
+  let store = bound;
+  if (saved === "pre-birth-time") {
+    const db = await rewriteIdentity(b, ({ canonical, dev, ino }) => ({ canonical, dev: dev!, ino: ino! }));
+    db.pragma("user_version = 8");
+    db.close();
+    store = openStore(join(base, "hub.db"));
+  }
+  const head = store.head(folder.id);
+  const ack = store.node(folder.id, b.id);
+  await rename(b.root, `${b.root}-old`);
+  await mkdir(b.root);
+  // Applied to this directory, b's base would read the missing "item" as a deletion.
+  await writeFile(join(b.root, "keep"), "sentinel");
+  await expect(reconcileNode({ ...request(b), store })).rejects.toThrow(/root changed/);
+  expect(store.head(folder.id)).toEqual(head);
+  expect(store.node(folder.id, b.id)).toEqual(ack);
+  expect(await readdir(b.root)).toEqual(["keep"]);
 });
