@@ -191,7 +191,7 @@ async function directoryIdentity(path: string): Promise<RootIdentity | null> {
     const canonical = await realpath(path);
     const stats = await lstat(canonical, { bigint: true });
     return stats.isDirectory()
-      ? { canonical, dev: String(stats.dev), ino: String(stats.ino) }
+      ? { canonical, dev: String(stats.dev), ino: String(stats.ino), birth: String(stats.birthtimeNs) }
       : null;
   } catch (error) {
     if (["ENOENT", "ENOTDIR", "ELOOP"].includes(errorCode(error) ?? "")) return null;

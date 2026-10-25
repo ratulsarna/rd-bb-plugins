@@ -29,6 +29,7 @@ export const MIGRATIONS = [
   `CREATE INDEX history_archived ON history (archived_at)`,
   `CREATE TABLE conflicts (id INTEGER PRIMARY KEY, folder TEXT NOT NULL, path TEXT NOT NULL, conflict_path TEXT, host TEXT NOT NULL, kind TEXT NOT NULL, detected_at INTEGER NOT NULL, resolved_at INTEGER)`,
   `ALTER TABLE nodes ADD COLUMN root_identity TEXT`,
+  `UPDATE nodes SET root_identity = json_set(root_identity, '$.birth', '0') WHERE root_identity IS NOT NULL`,
 ];
 
 export interface HeadEntry {
@@ -222,6 +223,10 @@ export class Store {
       const saved = this.rootIdentity(folder, host);
       if (saved) {
         if (!sameRoot(saved, identity)) throw new Error("Folder root identity changed; restore the original directory or change the mapped path");
+        // Refreshed, so a reboot and a later birth time change are each judged alone.
+        this.db.prepare(
+          `UPDATE nodes SET root_identity = ? WHERE folder = ? AND host = ?`,
+        ).run(JSON.stringify(identity), folder, host);
         return;
       }
       // Initial adoption trusts present entries, but missing legacy paths cannot delete hub copies.

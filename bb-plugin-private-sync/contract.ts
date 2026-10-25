@@ -287,16 +287,25 @@ export const scanEntrySchema = z.union([
 ]);
 export type ScanEntry = z.infer<typeof scanEntrySchema>;
 
-/** Physical directory accepted by a scan; strings retain filesystem integer precision. */
+/**
+ * Physical directory accepted by a scan; strings retain filesystem integer precision.
+ * A birth of "0" is unknown: the filesystem keeps none, or the identity predates it.
+ */
 export const rootIdentitySchema = z.object({
   canonical: absolutePath,
   dev: z.string().regex(/^[0-9]+$/),
   ino: z.string().regex(/^[0-9]+$/),
+  birth: z.string().regex(/^[0-9]+$/),
 }).strict();
 export type RootIdentity = z.infer<typeof rootIdentitySchema>;
 
+/**
+ * macOS gives a volume a new device number on reboot, and an older mtime moves a
+ * directory's birth time back. Either may change alone; both is another directory.
+ */
 export function sameRoot(a: RootIdentity, b: RootIdentity): boolean {
-  return a.canonical === b.canonical && a.dev === b.dev && a.ino === b.ino;
+  return a.canonical === b.canonical && a.ino === b.ino &&
+    (a.dev === b.dev || a.birth === b.birth || a.birth === "0" || b.birth === "0");
 }
 
 const boundRootInput = { root: absolutePath, identity: rootIdentitySchema };

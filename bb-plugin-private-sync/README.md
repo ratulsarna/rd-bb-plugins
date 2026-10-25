@@ -55,8 +55,14 @@ conflict without a copy, deleting the restored original closes it.
 Before each pass, the host checks that all its mapped roots are physically
 separate, including symlink aliases. A root moved, replaced, or retargeted
 during or after a scan is refused. Each node persists the accepted canonical
-path/device/inode, and every file operation must match it. Retries and restarts
-keep that binding. Restore the original directory to resume, or explicitly change
+path, inode, device, and birth time, and every file operation must match the
+path, the inode, and the device or the birth time. A macOS reboot changes the
+device number, and setting an older modification time on the root moves its
+birth time; both between two passes reads as a replaced root. A block-level
+copy of the volume mounted at the same path still matches, as does the same
+path and inode on a filesystem without birth times, or on the first pass of a
+root bound before birth times were recorded. Retries and restarts keep that
+binding. Restore the original directory to resume, or explicitly change
 the mapped path to adopt a replacement as a fresh node. Directory edits do not
 invalidate root identity.
 
