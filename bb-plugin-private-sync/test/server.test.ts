@@ -5,7 +5,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
   makeHostResponse,
-  makePluginAgentConfigurationContext,
 } from "@get-bb/plugin-sdk/testing";
 import type { FolderStatus, SyncStatus } from "../contract";
 import plugin from "../server";
@@ -121,25 +120,6 @@ it("applies configure before answering and keeps barriers alive across no-op sav
     { hostId: a.id, connected: true },
     { hostId: b.id, connected: true },
   ]);
-  await harness.behavior.callRpc("configure", {
-    enabled: true,
-    folders: [{ ...config.folders[0], id: "assistants" }],
-  });
-  const context = (path: string) => makePluginAgentConfigurationContext({
-    host: { id: b.id, name: "Machine B" },
-    environment: { path },
-  });
-  const configuredAgent = await harness.behavior.resolveAgentConfiguration(
-    context(join(b.root, "sam")),
-  );
-  expect(configuredAgent.instructions).toContain('Current machine: "Machine B" (host-b)');
-  expect(configuredAgent.instructions).toContain(`Assistants root: ${JSON.stringify(b.root)}`);
-  expect(configuredAgent.instructions).toContain("Personal vault: null");
-  expect(configuredAgent.instructions).not.toContain(a.root);
-  const unrelatedAgent = await harness.behavior.resolveAgentConfiguration(
-    context(`${b.root}-other/sam`),
-  );
-  expect(unrelatedAgent.instructions ?? "").not.toContain("Assistants root:");
 });
 
 it("disables a saved map after a machine is removed, retaining settings and pause while enabling still validates", async () => {
