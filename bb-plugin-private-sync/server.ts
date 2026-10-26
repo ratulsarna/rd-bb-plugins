@@ -17,7 +17,6 @@ import {
   type FolderStatus,
   type SyncStatus,
 } from "./contract";
-import { isWithin } from "./lib/paths";
 import { Coordinator, type DesiredState } from "./lib/coordinator";
 import { MIGRATIONS, Store } from "./lib/store";
 
@@ -83,24 +82,6 @@ export default async function plugin(bb: BbPluginApi) {
       ),
     log: (message) => bb.log.warn(message),
     onStatusChange: () => bb.realtime.publish(STATUS_CHANGED, {}),
-  });
-
-  bb.agents.configure(({ host, environment }) => {
-    const assistants = coordinator
-      .getConfig()
-      .find((folder) => folder.id === "assistants");
-    const node = assistants?.nodes.find((node) => node.hostId === host.id);
-    if (!node || !environment.path || !isWithin(environment.path, node.path))
-      return { tools: [], skills: [] };
-    const vault = coordinator
-      .getConfig()
-      .find((folder) => folder.id === "vault")
-      ?.nodes.find((node) => node.hostId === host.id);
-    return {
-      tools: [],
-      skills: [],
-      instructions: `Current machine: ${JSON.stringify(host.name)} (${host.id}). Current working directory: ${JSON.stringify(environment.path)}. Assistants root: ${JSON.stringify(node.path)}. Personal vault: ${JSON.stringify(vault?.path ?? null)}. Use these current paths when earlier conversation messages refer to paths on another machine. Tools, credentials, terminals, and UI handles belong to the current machine; rediscover available tools on this machine.`,
-    };
   });
 
   async function desiredState(): Promise<DesiredState> {
