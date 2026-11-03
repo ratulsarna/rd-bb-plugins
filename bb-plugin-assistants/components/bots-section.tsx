@@ -1,6 +1,10 @@
 import { useCallback, useMemo, useState } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
+import {
+  ArrowRight01Icon,
+  ViewIcon,
+  ViewOffSlashIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   useBbNavigate,
@@ -17,6 +21,7 @@ import type { RowReorder } from "inbox-core/components/sidebar-row";
 import { assistantDisplayOrder, projectAssistantReorder } from "@/lib/assistant-order";
 import { selectedAssistantsProjectId } from "@/lib/assistant-identity";
 import { useAssistantAvatars } from "@/lib/use-assistant-avatars";
+import { useAssistantHidden } from "@/lib/use-assistant-hidden";
 import { useAssistantIdentities } from "@/lib/use-assistant-identities";
 import { useAssistantMemoryWarnings } from "@/lib/use-assistant-memory";
 import { useAssistantOrder } from "@/lib/use-assistant-order";
@@ -30,9 +35,6 @@ interface BotsSectionProps {
   onNavigate: () => void;
   searchQuery: string;
 }
-
-/** Rows shown until "Show more"; the rest stay a click away. */
-const PREVIEW_COUNT = 3;
 
 /**
  * The assistant fleet as the board's top section: one row per root conversation,
@@ -55,6 +57,7 @@ export function BotsSection({
   const { subtitles, set: setSubtitle } = useAssistantSubtitles();
   const memoryWarnings = useAssistantMemoryWarnings();
   const order = useAssistantOrder();
+  const hidden = useAssistantHidden();
   const [restartThreadId, setRestartThreadId] = useState<string | null>(null);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
@@ -165,9 +168,17 @@ export function BotsSection({
     [identitiesApi.ready, allRows, order],
   );
 
-  // A search may only match a bot the cap hides — matches always show.
-  const capped = !showAll && !isSearching && rows.length > PREVIEW_COUNT;
-  const visibleRows = capped ? rows.slice(0, PREVIEW_COUNT) : rows;
+  // A hidden bot still shows while it has a dot or is open, so it never
+  // vanishes under the reader. A search always shows every match.
+  const tucked = (row: (typeof rows)[number]) =>
+    !isSearching &&
+    row.identity !== null &&
+    hidden.ids.has(row.identity) &&
+    toneOf(row.thread) === "none" &&
+    row.thread.id !== activeThreadId;
+  const canTuck = rows.some(tucked);
+  const visibleRows =
+    showAll || !canTuck ? rows : rows.filter((row) => !tucked(row));
 
   if (!projectId || rows.length === 0) return null;
 
@@ -180,7 +191,7 @@ export function BotsSection({
         defaultExpanded
         forceExpanded={isSearching}
         headerAction={
-          !isSearching && rows.length > PREVIEW_COUNT ? (
+          canTuck ? (
             <button
               type="button"
               onClick={() => setShowAll((current) => !current)}
@@ -221,6 +232,10 @@ export function BotsSection({
                   : undefined) ?? null
               }
               isActive={row.thread.id === activeThreadId}
+              isHidden={
+                row.identity !== null && hidden.ids.has(row.identity)
+              }
+              onToggleHidden={(next) => hidden.set(row.thread.id, next)}
               isEditingSubtitle={row.thread.id === editingThreadId}
               reorder={reorder}
               onOpen={openThread}
@@ -251,8 +266,10 @@ function AssistantRow({
   subtitle,
   memoryWarning,
   isActive,
+  isHidden,
   isEditingSubtitle,
   reorder,
+  onToggleHidden,
   onOpen,
   onOpenPast,
   onRestart,
@@ -266,8 +283,11 @@ function AssistantRow({
   /** Shown as a mark; cleared with `bb assistants memory status <thread> --clear`. */
   memoryWarning: string | null;
   isActive: boolean;
+  /** Waits behind "Show more" unless it has a dot or is open. */
+  isHidden: boolean;
   isEditingSubtitle: boolean;
   reorder: RowReorder | undefined;
+  onToggleHidden: (hidden: boolean) => void;
   onOpen: (threadId: string) => void;
   onOpenPast: (threadId: string) => void;
   onRestart: (threadId: string) => void;
@@ -392,6 +412,12 @@ function AssistantRow({
             >
               Edit subtitle
             </ContextMenu.Item>
+            <ContextMenu.Item
+              onSelect={() => onToggleHidden(!isHidden)}
+              className="cursor-pointer rounded-md px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
+            >
+              {isHidden ? "Show when collapsed" : "Hide when collapsed"}
+            </ContextMenu.Item>
             <PastChats threadId={thread.id} onOpen={onOpenPast} />
           </ContextMenu.Content>
         </ContextMenu.Portal>
@@ -406,6 +432,23 @@ function AssistantRow({
           !
         </span>
       )}
+      <button
+        type="button"
+        title={isHidden ? "Show when collapsed" : "Hide when collapsed"}
+        aria-label={`Hide ${name}${thread.host ? ` on ${thread.host.name}` : ""} when collapsed`}
+        aria-pressed={isHidden}
+        onClick={() => onToggleHidden(!isHidden)}
+        className={`shrink-0 rounded-md px-1 py-2 hover:bg-sidebar-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+          isHidden
+            ? "text-muted-foreground/50"
+            : "text-muted-foreground/50 opacity-0 group-hover:opacity-100"
+        }`}
+      >
+        <HugeiconsIcon
+          icon={isHidden ? ViewOffSlashIcon : ViewIcon}
+          className="size-3.5"
+        />
+      </button>
       <button
         type="button"
         title="New thread"

@@ -57,6 +57,10 @@ The flow copies no files. Sam's journal pointers use the destination vault.
 Bots renders each unarchived root conversation with its SDK machine name.
 Right-click a row and open **Past chats** to list that assistant's archived
 conversations from every machine, newest first. Each one opens read-only.
+The eye on a row, or **Hide when collapsed** in its menu, puts that
+assistant behind **Show more**. All its machines' rows hide together. A
+hidden row still shows while it has a dot (working, waiting or unread), while
+it is open, and in search results.
 Assistant titles, identity-based subtitles and ordering stay shared across
 machines. Bots uses the first project whose lowercase name is `assistants`;
 a second project named `Assistants` is not hidden by capitalization.

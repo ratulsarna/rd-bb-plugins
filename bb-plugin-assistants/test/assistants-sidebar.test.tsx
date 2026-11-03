@@ -13,6 +13,7 @@ import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import {
   configureFakeSdk,
+  emitRealtime,
   registrations,
   resolvePendingRpc,
   rpcCalls,
@@ -342,24 +343,30 @@ describe("Bots section", () => {
   });
 });
 
-describe("Bots preview cap", () => {
-  const crowd = () =>
+describe("Bots hidden when collapsed", () => {
+  const crowd = (overrides: Record<string, Partial<BoardThread>> = {}) =>
     ["one", "two", "three", "four"].map((name) =>
       thread(`thr_${name}`, {
         title: name,
         projectId: "assist-1",
         environment: { id: `env-${name}` } as BoardThread["environment"],
+        ...overrides[name],
       }),
     );
 
-  function crowdedSidebar(props: Partial<PluginThreadListProps> = {}) {
+  function crowdedSidebar(
+    hiddenAssistants: string[],
+    props: Partial<PluginThreadListProps> = {},
+    threads = crowd(),
+  ) {
     configureFakeSdk({
-      threads: crowd(),
+      threads,
       projects: [
         sidebarProject("project-1", "bb"),
         sidebarProject("assist-1", "assistants"),
       ],
       assistantOrder: ["env-one", "env-two", "env-three", "env-four"],
+      hiddenAssistants,
     });
     return renderList(props);
   }
@@ -369,30 +376,101 @@ describe("Bots preview cap", () => {
       row.getAttribute("data-sidebar-thread-id"),
     );
 
-  it("shows three bots until Show more, and Show less re-caps", async () => {
-    crowdedSidebar();
+  it("shows every bot, with no Show more, until one is hidden", async () => {
+    crowdedSidebar([]);
     const bots = await screen.findByRole("region", { name: "Bots" });
-    expect(botIds(bots)).toEqual(["thr_one", "thr_two", "thr_three"]);
-
-    fireEvent.click(within(bots).getByRole("button", { name: "Show more" }));
-    expect(botIds(bots)).toEqual([
-      "thr_one",
-      "thr_two",
-      "thr_three",
-      "thr_four",
-    ]);
-
-    fireEvent.click(within(bots).getByRole("button", { name: "Show less" }));
-    expect(botIds(bots)).toEqual(["thr_one", "thr_two", "thr_three"]);
+    await waitFor(() =>
+      expect(botIds(bots)).toEqual(["thr_one", "thr_two", "thr_three", "thr_four"]),
+    );
+    expect(within(bots).queryByRole("button", { name: "Show more" })).toBeNull();
   });
 
-  it("lets a search reach a bot the cap hides", async () => {
-    crowdedSidebar({ searchQuery: "four" });
+  it("hides with the eye, keeps hidden bots behind Show more, and shows them again", async () => {
+    crowdedSidebar([]);
     const bots = await screen.findByRole("region", { name: "Bots" });
-    expect(botIds(bots)).toEqual(["thr_four"]);
-    expect(
-      within(bots).queryByRole("button", { name: "Show more" }),
-    ).toBeNull();
+    const eye = await within(bots).findByRole("button", { name: "Hide two when collapsed" });
+    expect(eye.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(eye);
+    await waitFor(() =>
+      expect(rpcCalls.some((call) => call.method === "setAssistantHidden")).toBe(true),
+    );
+    act(() => emitRealtime("assistant-hidden"));
+    await waitFor(() => expect(botIds(bots)).toEqual(["thr_one", "thr_three", "thr_four"]));
+
+    fireEvent.click(within(bots).getByRole("button", { name: "Show more" }));
+    expect(botIds(bots)).toEqual(["thr_one", "thr_two", "thr_three", "thr_four"]);
+    const hiddenEye = within(bots).getByRole("button", { name: "Hide two when collapsed" });
+    expect(hiddenEye.getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(within(bots).getByRole("button", { name: "Show less" }));
+    expect(botIds(bots)).toEqual(["thr_one", "thr_three", "thr_four"]);
+
+    fireEvent.click(within(bots).getByRole("button", { name: "Show more" }));
+    fireEvent.click(within(bots).getByRole("button", { name: "Hide two when collapsed" }));
+    act(() => emitRealtime("assistant-hidden"));
+    await waitFor(() =>
+      expect(within(bots).queryByRole("button", { name: /Show (more|less)/ })).toBeNull(),
+    );
+    expect(botIds(bots)).toEqual(["thr_one", "thr_two", "thr_three", "thr_four"]);
+  });
+
+  it("brings a hidden bot back while it is unread, waiting or working, and tucks it once quiet", async () => {
+    const view = crowdedSidebar(["env-two", "env-three", "env-four"], {}, crowd({
+      two: { isUnread: true },
+      three: { indicator: "waiting-for-input" },
+      four: { indicator: "runtime" },
+    }));
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    await waitFor(() =>
+      expect(botIds(bots)).toEqual(["thr_one", "thr_two", "thr_three", "thr_four"]),
+    );
+    expect(within(bots).queryByRole("button", { name: "Show more" })).toBeNull();
+
+    setFakeThreads(crowd({ three: { indicator: "waiting-for-input" } }));
+    view.rerender(listElement());
+    expect(botIds(bots)).toEqual(["thr_one", "thr_three"]);
+    expect(within(bots).getByRole("button", { name: "Show more" })).toBeDefined();
+  });
+
+  it("keeps the open bot in place after reading it", async () => {
+    crowdedSidebar(["env-two"], { activeThreadId: "thr_two" });
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    await waitFor(() =>
+      expect(within(bots).getByRole("button", { name: "Hide two when collapsed" }).getAttribute("aria-pressed")).toBe("true"),
+    );
+    expect(botIds(bots)).toEqual(["thr_one", "thr_two", "thr_three", "thr_four"]);
+  });
+
+  it("lets a search reach a hidden bot", async () => {
+    crowdedSidebar(["env-four"], { searchQuery: "four" });
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    await waitFor(() => expect(botIds(bots)).toEqual(["thr_four"]));
+    expect(within(bots).queryByRole("button", { name: "Show more" })).toBeNull();
+  });
+
+  it("hides every machine's row of one assistant together", async () => {
+    configureFakeSdk({
+      projects: [sidebarProject("assist-1", "assistants")],
+      threads: ["sam-server", "sam-mac", "forge-server"].map((id) =>
+        thread(id, {
+          title: id.startsWith("sam") ? "Sam" : "Forge",
+          projectId: "assist-1",
+          host: { id: id.endsWith("server") ? "srv" : "mac", name: id.endsWith("server") ? "Server" : "Mac" },
+          environment: { id } as BoardThread["environment"],
+        }),
+      ),
+      assistantIdentities: { "sam-server": "assist-1:sam", "sam-mac": "assist-1:sam", "forge-server": "assist-1:forge" },
+      assistantOrder: ["assist-1:sam", "assist-1:forge"],
+    });
+    renderList();
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    fireEvent.click(await within(bots).findByRole("button", { name: "Hide Sam on Mac when collapsed" }));
+    await waitFor(() =>
+      expect(rpcCalls.some((call) => call.method === "setAssistantHidden")).toBe(true),
+    );
+    act(() => emitRealtime("assistant-hidden"));
+    await waitFor(() => expect(botIds(bots)).toEqual(["forge-server"]));
   });
 });
 
@@ -458,11 +536,6 @@ it.each(["down", "up", "same then down"])("drags any retained conversation as on
   });
   renderList();
   const bots = await screen.findByRole("region", { name: "Bots" });
-  await waitFor(() => {
-    const more = within(bots).queryByRole("button", { name: "Show more" });
-    if (more) fireEvent.click(more);
-    expect(within(bots).getByRole("button", { name: "Show less" })).toBeDefined();
-  });
   await waitFor(() => expect(within(bots).getByLabelText("Sam — Mac").getAttribute("aria-roledescription")).toBe("sortable"));
   const ids = () => Array.from(bots.querySelectorAll("[data-sidebar-thread-id]")).map((row) => row.getAttribute("data-sidebar-thread-id"));
   await waitFor(() => expect(ids()).toHaveLength(4));

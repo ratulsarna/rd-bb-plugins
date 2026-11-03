@@ -1,4 +1,5 @@
-// Assistants: identity keys, subtitles, the fleet order, conversation moves
+// Assistants: identity keys, subtitles, the fleet order and who hides in it,
+// conversation moves
 // and memory. The inbox board under Bots (settles, snoozes, pins, projects)
 // comes from inbox-core and shares this plugin's database below.
 import path from "node:path";
@@ -87,6 +88,17 @@ export const assistantRpcContract = defineRpcContract({
     }),
     output: z.object({ ids: z.array(z.string()) }),
   },
+  hiddenAssistants: {
+    input: z.object({}),
+    output: z.object({ ids: z.array(z.string()) }),
+  },
+  setAssistantHidden: {
+    input: z.object({
+      threadId: z.string().trim().min(1),
+      hidden: z.boolean(),
+    }),
+    output: z.object({ ok: z.boolean() }),
+  },
   setAssistantSubtitle: {
     input: z.object({
       threadId: z.string().trim().min(1),
@@ -135,6 +147,9 @@ export const SUBTITLE_CHANNEL = "assistant-subtitles";
 /** Realtime channel the Bots section re-reads its row order on. */
 export const ASSISTANT_ORDER_CHANNEL = "assistant-order";
 
+/** Realtime channel the Bots section re-reads which bots hide on. */
+export const HIDDEN_CHANNEL = "assistant-hidden";
+
 export { MEMORY_CHANNEL };
 
 export default function plugin(bb: BbPluginApi) {
@@ -148,6 +163,9 @@ export default function plugin(bb: BbPluginApi) {
     `CREATE TABLE assistant_order (
        identity TEXT PRIMARY KEY,
        rank     INTEGER NOT NULL
+     )`,
+    `CREATE TABLE assistant_hidden (
+       identity TEXT PRIMARY KEY
      )`,
   ]);
   registerInbox(bb, db);
@@ -176,19 +194,22 @@ export default function plugin(bb: BbPluginApi) {
         .all() as Array<{ identity: string }>
     ).map((row) => row.identity);
 
-  // Shared by the rpc (sidebar editor) and the CLI (agents). Resolves the
-  // thread to its home's identity; empty subtitle clears.
-  const writeSubtitle = async (
-    threadId: string,
-    subtitle: string,
-  ): Promise<string> => {
+  const storageKeyOfThread = async (threadId: string): Promise<string> => {
     const thread = await bb.sdk.threads.get({ threadId });
     if (!thread.environmentId) {
       throw new Error(
         `thread ${threadId} has no environment — not an assistant home`,
       );
     }
-    const identity = await storageKeyOfEnvironment(thread.environmentId, true);
+    return storageKeyOfEnvironment(thread.environmentId, true);
+  };
+
+  // Shared by the rpc (sidebar editor) and the CLI (agents); empty subtitle clears.
+  const writeSubtitle = async (
+    threadId: string,
+    subtitle: string,
+  ): Promise<string> => {
+    const identity = await storageKeyOfThread(threadId);
     if (subtitle === "") {
       db.prepare(
         `DELETE FROM assistant_subtitles WHERE identity = ?`,
@@ -482,6 +503,22 @@ export default function plugin(bb: BbPluginApi) {
         subtitle: row.subtitle,
       }));
       return { rows };
+    },
+    async hiddenAssistants() {
+      const rows = db
+        .prepare(`SELECT identity FROM assistant_hidden`)
+        .all() as Array<{ identity: string }>;
+      return { ids: rows.map((row) => row.identity) };
+    },
+    async setAssistantHidden({ threadId, hidden }) {
+      const identity = await storageKeyOfThread(threadId);
+      db.prepare(
+        hidden
+          ? `INSERT OR IGNORE INTO assistant_hidden (identity) VALUES (?)`
+          : `DELETE FROM assistant_hidden WHERE identity = ?`,
+      ).run(identity);
+      bb.realtime.publish(HIDDEN_CHANNEL, { identity });
+      return { ok: true };
     },
     async setAssistantSubtitle({ threadId, subtitle }) {
       await writeSubtitle(threadId, subtitle);
