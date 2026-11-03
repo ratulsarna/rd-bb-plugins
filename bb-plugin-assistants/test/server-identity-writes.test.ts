@@ -36,6 +36,7 @@ it.each(["environment lookup", "project lookup", "missing source"])(
       const snapshot = () => ({
         subtitles: db.prepare("SELECT * FROM assistant_subtitles ORDER BY identity").all(),
         order: db.prepare("SELECT * FROM assistant_order ORDER BY rank").all(),
+        hidden: db.prepare("SELECT * FROM assistant_hidden").all(),
         migrations: db.prepare("SELECT * FROM _bb_migrations ORDER BY id").all(),
       });
       const before = snapshot();
@@ -52,6 +53,9 @@ it.each(["environment lookup", "project lookup", "missing source"])(
       await expect(harness.behavior.callRpc("assistantIdentities", {
         environmentIds: ["env-sam"],
       })).rejects.toThrow(/unresolved/i);
+      await expect(harness.behavior.callRpc("setAssistantHidden", {
+        threadId: "thread-sam", hidden: true,
+      })).rejects.toThrow(/unresolved/i);
       expect(snapshot()).toEqual(before);
       expect(await harness.behavior.runCli(["subtitle", "thread-sam"])).toMatchObject({
         exitCode: 0, stdout: "(none)\n",
@@ -65,6 +69,9 @@ it.each(["environment lookup", "project lookup", "missing source"])(
       expect(await harness.behavior.callRpc("setAssistantOrder", {
         identities: ["env-sam", "project-assistants:forge", "project-assistants:sam"],
       })).toEqual({ ids: ["project-assistants:sam", "project-assistants:forge"] });
+      for (let i = 0; i < 2; i++) {
+        await harness.behavior.callRpc("setAssistantHidden", { threadId: "thread-sam", hidden: true });
+      }
 
       const restarted = await harness.lifecycle.reload(plugin);
       try {
@@ -74,6 +81,11 @@ it.each(["environment lookup", "project lookup", "missing source"])(
         expect(await restarted.harness.behavior.callRpc("assistantOrder", {})).toEqual({
           ids: ["project-assistants:sam", "project-assistants:forge"],
         });
+        expect(await restarted.harness.behavior.callRpc("hiddenAssistants", {})).toEqual({
+          ids: ["project-assistants:sam"],
+        });
+        await restarted.harness.behavior.callRpc("setAssistantHidden", { threadId: "thread-sam", hidden: false });
+        expect(await restarted.harness.behavior.callRpc("hiddenAssistants", {})).toEqual({ ids: [] });
         expect(await restarted.harness.behavior.runCli(["subtitle", "thread-sam", "--clear"])).toMatchObject({ exitCode: 0 });
         expect(await restarted.harness.behavior.callRpc("listAssistantSubtitles", {})).toEqual({
           rows: [],

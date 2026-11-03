@@ -30,6 +30,8 @@ export interface FakeSdkConfig {
   assistantOrder: string[];
   /** What `assistantIdentities` resolves; unmapped environments fall back to their id. */
   assistantIdentities: Record<string, string>;
+  /** What `hiddenAssistants` returns; `setAssistantHidden` edits it. Assistant identities. */
+  hiddenAssistants: string[];
   /** What `listAssistantSubtitles` returns; keyed by assistant identity. */
   subtitles: Array<{ identity: string; subtitle: string }>;
   /** What `assistantMemory` returns; keyed by assistant identity. */
@@ -50,6 +52,7 @@ const DEFAULTS: FakeSdkConfig = {
   failRpc: false,
   assistantOrder: [],
   assistantIdentities: {},
+  hiddenAssistants: [],
   subtitles: [],
   memoryWarnings: [],
   deferRpc: [],
@@ -237,6 +240,19 @@ const rpc = {
           identity: config.assistantIdentities[environmentId] ?? environmentId,
         })),
       };
+    }
+    if (method === "hiddenAssistants") {
+      return { ids: config.hiddenAssistants };
+    }
+    if (method === "setAssistantHidden") {
+      const { threadId, hidden } = input as { threadId: string; hidden: boolean };
+      const environmentId = config.threads.find((t) => t.id === threadId)?.environment?.id ?? threadId;
+      const identity = config.assistantIdentities[environmentId] ?? environmentId;
+      config.hiddenAssistants = [
+        ...config.hiddenAssistants.filter((id) => id !== identity),
+        ...(hidden ? [identity] : []),
+      ];
+      return { ok: true };
     }
     if (method === "listAssistantSubtitles") {
       return { rows: config.subtitles };
