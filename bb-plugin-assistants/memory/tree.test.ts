@@ -408,3 +408,105 @@ it("a target of 256 shapes new tasks' ruler and word hint; 512 stays the limit",
   assert.throws(() => chat.tune({ pool: 2.5 }));
   assert.throws(() => chat.tune({ target: Number.NaN }));
 });
+
+/** A second compactor whose lines tell themselves apart from `fakeLine`'s. */
+const redone = (prompt: string) => fakeLine(prompt).replace("summary of", "redone of");
+const redrive = (chat: Chat, check: (prompt: string, ref: Ref) => void = () => {}) => {
+  for (let job = chat.take(); job; job = chat.take()) {
+    check(job.prompt, job.ref);
+    chat.done(job.ref, redone(job.prompt));
+  }
+};
+/** Every built line, by its label. */
+function lines(chat: Chat): Map<string, string> {
+  const out = new Map<string, string>();
+  for (let l = 0; 2 ** l <= chat.T; l++) {
+    for (let i = 0; (i + 1) * 2 ** l <= chat.T; i++) if (chat.built([l, i])) out.set(`${i * 2 ** l}+${2 ** l}`, chat.line([l, i]));
+  }
+  return out;
+}
+
+it("a rebuild redoes every line from its message on, shows the old lines until then, and merges only new halves", async () => {
+  const chat = Chat.open(tmp());
+  for (let i = 0; i < 300; i++) chat.append("unii", text(i), "2026-09-01T10:00:00+05:30");
+  drive(chat, () => {});
+  const before = lines(chat);
+  const view = chat.viewLines();
+  const queued = await chat.rebuild(150);
+  assert.ok(queued > 0);
+  assert.deepEqual(chat.viewLines(), view, "the view changed before any new line landed");
+  assert.equal(chat.unsummarized, 0, "a rotation would wait on the rebuild");
+  assert.equal(chat.idle(), false);
+  redrive(chat, (prompt, [l]) => {
+    if (l === 0) return;
+    for (const m of prompt.split("<input>\n")[1].matchAll(/^(\d+)\+(\d+)\|(.*)$/gm)) {
+      if (Number(m[1]) + Number(m[2]) > 150) assert.ok(!m[3].includes("summary of"), `merged an old half ${m[1]}+${m[2]}`);
+    }
+  });
+  assert.ok(chat.idle());
+  for (const [label, line] of lines(chat)) {
+    const [id, n] = label.split("+").map(Number);
+    if (id + n <= 150) assert.equal(line, before.get(label), `line ${label} before the rebuild changed`);
+    else assert.ok(!line.includes("summary of"), `line ${label} kept its old summary`);
+  }
+  assert.equal(lines(chat).size, before.size);
+  await chat.close();
+});
+
+it("a restart mid-rebuild finishes the same tree as one without it", async () => {
+  const build = async (dir: string) => {
+    const chat = Chat.open(dir);
+    for (let i = 0; i < 400; i++) chat.append("echo", text(i), "2026-09-02T10:00:00+05:30");
+    drive(chat, () => {});
+    await chat.rebuild(100);
+    return chat;
+  };
+  const steady = await build(tmp());
+  redrive(steady);
+  const dir = tmp();
+  let chat = await build(dir);
+  for (let n = 0; n < 60; n++) {
+    const job = chat.take()!;
+    chat.done(job.ref, redone(job.prompt));
+  }
+  chat.take(); // in flight when the process dies
+  await chat.close();
+  chat = Chat.open(dir);
+  assert.ok(chat.redoing > 0, "the rebuild was lost in the restart");
+  redrive(chat);
+  assert.deepEqual(lines(chat), lines(steady));
+  assert.ok(chat.idle());
+});
+
+it("a rebuild logs a script's messages as work, on disk too, and leaves the user's attachment theirs", async () => {
+  const dir = tmp();
+  let chat = Chat.open(dir);
+  chat.append("user", `[heartbeat]\n${"h".repeat(600)}`, "2026-09-03T10:00:00+05:30");
+  chat.append("user", "[release watcher] ok", "2026-09-03T10:01:00+05:30");
+  chat.append("user", "[image: shot.png]\nwhat is this?", "2026-09-03T10:02:00+05:30");
+  chat.append("user", "na good", "2026-09-03T10:03:00+05:30");
+  drive(chat, () => {});
+  await chat.rebuild(0);
+  redrive(chat, (prompt, [l, i]) => {
+    if (l === 0 && i === 0) assert.match(prompt, /<input>\nwork: \[heartbeat\]/);
+  });
+  await chat.close();
+  chat = Chat.open(dir);
+  assert.deepEqual(chat.msgs.map((m) => m.kind), ["work", "work", "user", "user"]);
+  assert.equal(chat.line([0, 1]), "1+1|work: [release watcher] ok");
+  assert.ok(chat.idle());
+  await chat.close();
+});
+
+it("a rebuild will not start while a summary runs, and asks for a message the chat has", async () => {
+  const chat = Chat.open(tmp());
+  for (let i = 1; i < 4; i++) chat.append("echo", text(i), "2026-09-04T10:00:00+05:30");
+  drive(chat, () => {});
+  chat.append("echo", text(9), "2026-09-04T10:00:00+05:30");
+  const job = chat.take()!;
+  await assert.rejects(chat.rebuild(0), /1 summaries are running/);
+  chat.done(job.ref, fakeLine(job.prompt));
+  await assert.rejects(chat.rebuild(4), /no message 4/);
+  assert.equal(chat.redoing, 0);
+  await chat.close();
+});

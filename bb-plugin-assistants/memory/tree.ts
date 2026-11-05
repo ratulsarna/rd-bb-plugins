@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { zonedDate } from "./history";
+import { isScriptMessage, zonedDate } from "./history";
 
 /** A summary line's hard limit in bytes: the retry trigger, and the most a target may ask for. */
 export const LINE = 512;
@@ -139,6 +139,10 @@ export class Chat {
   private failed: Ref[] = [];
   /** Failed in a backlog and tried again at once; a second failure waits for the next message. */
   private retried = new Set<string>();
+  /** Built lines a rebuild summarizes again; each old line stays in the view until its new one lands. */
+  private redo = new Set<string>();
+  /** The messages among `redo`, oldest first. */
+  private redoLeaves: number[] = [];
   /** Per source stream, its newest position in the log and how many records came from it. */
   private sources = new Map<string, { at: number; records: number }>();
   /**
@@ -184,8 +188,13 @@ export class Chat {
       if (m.src) this.track(m.src);
     }
     for (const n of readLines<Node>(path.join(this.dir, "tree"))) this.nodes.set(key([n.l, n.i]), n);
-    const saved = path.join(this.dir, "view.json");
-    if (fs.existsSync(saved)) Object.assign(this, JSON.parse(fs.readFileSync(saved, "utf8")));
+    const file = path.join(this.dir, "view.json");
+    if (fs.existsSync(file)) {
+      const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+      [this.view, this.cview] = [saved.view, saved.cview];
+      this.redo = new Set(saved.redo ?? []);
+      this.redoLeaves = [...this.redo].filter((k) => k.startsWith("0:")).map((k) => Number(k.slice(2))).sort((a, b) => a - b);
+    }
     // A crash between a log write and the view save leaves lines to append, never to rebuild.
     for (let i = end(this.view.refs.at(-1) ?? [0, -1]); i < this.msgs.length; i++) {
       this.view.refs.push([0, i]);
@@ -268,7 +277,7 @@ export class Chat {
     const { main, tree, view } = this.pending;
     this.pending = emptyBatch();
     // Taken with the batch, so the saved view shows nothing this batch does not write.
-    const saved = view ? JSON.stringify({ view: this.view, cview: this.cview }) : undefined;
+    const saved = view ? JSON.stringify({ view: this.view, cview: this.cview, redo: [...this.redo] }) : undefined;
     try {
       for (const { file, lines } of [...main, ...tree]) {
         await fs.promises.mkdir(path.dirname(file), { recursive: true });
@@ -425,9 +434,9 @@ export class Chat {
     return { view: this.size(refs), cview: this.size(this.cview.refs), lines: refs.length, shrinking };
   }
 
-  /** Every message summarized and nothing queued, running or failed. */
+  /** Every message summarized and nothing queued, running, failed or being rebuilt. */
   idle(): boolean {
-    return this.unbuilt.length === 0 && this.merges.length === 0 && this.running.size === 0 && this.failed.length === 0;
+    return this.unbuilt.length === 0 && this.merges.length === 0 && this.running.size === 0 && this.failed.length === 0 && this.redo.size === 0;
   }
 
   /** Nodes waiting for a call, running ones included, for backpressure while importing. */
@@ -438,6 +447,11 @@ export class Chat {
   /** Long messages not summarized yet. */
   get unsummarized(): number {
     return this.unbuilt.length;
+  }
+
+  /** Lines a rebuild has yet to summarize again. */
+  get redoing(): number {
+    return this.redo.size;
   }
 
   get inFlight(): number {
@@ -465,15 +479,20 @@ export class Chat {
       const k = this.unbuilt.indexOf(r[1]);
       if (k >= 0) this.unbuilt.splice(k, 1);
     }
+    if (this.redo.delete(key(r))) {
+      if (r[0] === 0) this.redoLeaves.splice(this.redoLeaves.indexOf(r[1]), 1);
+      this.pending.view = true;
+    }
     this.climb(r);
   }
 
-  /** Once both halves exist, build the parent: joined when it fits, else as a merge call. */
+  /** Once both halves exist, and neither waits to be rebuilt, build the parent: joined when it fits, else as a merge call. */
   private climb([l, i]: Ref): void {
     const a: Ref = [l, i - (i % 2)];
     const b: Ref = [l, a[1] + 1];
     const parent: Ref = [l + 1, a[1] / 2];
-    if (!this.built(a) || !this.built(b) || this.built(parent)) return;
+    if (!this.built(a) || !this.built(b) || this.redo.has(key(a)) || this.redo.has(key(b))) return;
+    if (this.built(parent) && !this.redo.has(key(parent))) return;
     const joined = `${this.nodes.get(key(a))!.text}\n${this.nodes.get(key(b))!.text}`;
     if (bytes(joined) <= LINE) this.addNode(parent, joined);
     else this.queueMerge(parent);
@@ -499,7 +518,9 @@ export class Chat {
       if (i === undefined || end(this.merges[k]) <= i) return { ref: this.merges[k], k };
     }
     if (i !== undefined) return { ref: [0, i], k: -1 };
-    return this.merges.length > 0 ? { ref: this.merges[0], k: 0 } : undefined;
+    if (this.merges.length > 0) return { ref: this.merges[0], k: 0 };
+    const j = this.redoLeaves.slice(0, this.pool).find((i) => !this.claimed.has(key([0, i])));
+    return j === undefined ? undefined : { ref: [0, j], k: -1 };
   }
 
   /** Work `take` could start once a slot is free; a failed claim is not such work until `retryFailed`. */
@@ -524,7 +545,7 @@ export class Chat {
   /** On a damaged chat the line is dropped: the fresh chat summarizes its own messages again. */
   done(r: Ref, text: string): void {
     if (this.damage) return;
-    if (!this.built(r)) this.addNode(r, text);
+    if (!this.built(r) || this.redo.has(key(r))) this.addNode(r, text);
     this.running.delete(key(r));
     this.claimed.delete(key(r));
   }
@@ -541,13 +562,76 @@ export class Chat {
     this.failed.push(r);
   }
 
-  /** [compaction view] [task]: the view ends at the node and stops at the first unbuilt line. */
+  /**
+   * Summarize again every line that covers message `from` or later, as new lines are. A message logged as
+   * the user's that a script sent becomes work first. The old lines serve the view and the compaction view
+   * until their new ones land, so nothing waits on the rebuild. Returns the lines to summarize again.
+   */
+  async rebuild(from: number): Promise<number> {
+    this.writable();
+    if (!Number.isInteger(from) || from < 0 || from >= this.T) throw new Error(`no message ${from}: the chat has ${this.T}`);
+    // A call running now was asked with a half it would no longer match.
+    if (this.running.size > 0) throw new Error(`${this.running.size} summaries are running; pause summaries and try again`);
+    const relabeled = this.msgs.filter((m) => m.kind === "user" && isScriptMessage(m.text));
+    for (const m of relabeled) m.kind = "work";
+    if (relabeled.length > 0) await this.rewriteLog();
+    if (this.running.size > 0) throw new Error(`${this.running.size} summaries started meanwhile; pause summaries and try again`);
+    for (const r of this.merges.filter((r) => end(r) > from)) {
+      this.merges.splice(this.merges.indexOf(r), 1);
+      this.claimed.delete(key(r));
+    }
+    const affected = [...this.nodes.values()].filter((n) => end([n.l, n.i]) > from).sort((x, y) => x.l - y.l);
+    const verbatim: Msg[] = [];
+    for (const n of affected) {
+      const m = this.msgs[n.i];
+      if (n.l === 0 && bytes(`${m.kind}: ${m.text}`) <= LINE) verbatim.push(m);
+      else this.redo.add(key([n.l, n.i]));
+    }
+    this.redoLeaves = [...this.redo].filter((k) => k.startsWith("0:")).map((k) => Number(k.slice(2))).sort((a, b) => a - b);
+    // A message that is its own line is rewritten as is, which builds its parent once its sibling is new too.
+    for (const m of verbatim) {
+      const own = `${m.kind}: ${m.text}`;
+      if (this.nodes.get(key([0, m.i]))!.text === own) this.climb([0, m.i]);
+      else this.addNode([0, m.i], own);
+    }
+    this.pending.view = true;
+    await this.flush();
+    return this.redo.size;
+  }
+
+  /** Rewrite the log files whose records' kinds changed, after what is queued; nothing commits meanwhile. */
+  private rewriteLog(): Promise<void> {
+    const step = this.committing.then(async () => {
+      await this.commit();
+      const dir = path.join(this.dir, "main");
+      for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
+        const file = path.join(dir, f);
+        let changed = false;
+        const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => {
+          const m: Msg = JSON.parse(line);
+          if (m.kind === this.msgs[m.i].kind) return line;
+          changed = true;
+          return JSON.stringify({ ...m, kind: this.msgs[m.i].kind });
+        });
+        if (!changed) continue;
+        await fs.promises.writeFile(`${file}.tmp`, lines.map((x) => x + "\n").join(""), { flush: true });
+        await fs.promises.rename(`${file}.tmp`, file);
+      }
+    });
+    this.committing = step.catch(() => {});
+    return step;
+  }
+
+  /**
+   * [compaction view] [task]: the view ends at the node and stops at the first unbuilt line, or at an old line
+   * of the node's own messages that a rebuild is replacing.
+   */
   compactionPrompt(r: Ref): string {
     const [s, e] = [start(r), end(r)];
     const limit = r[0] === 0 ? s : e;
     const lines: string[] = [];
     for (const v of this.cview.refs) {
-      if (end(v) > limit || !this.built(v)) break;
+      if (end(v) > limit || !this.built(v) || (start(v) >= s && this.redo.has(key(v)))) break;
       lines.push(this.line(v));
     }
     // The word hint scales as 512 bytes read "about 70 words", to the nearest 10.
