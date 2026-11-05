@@ -308,7 +308,7 @@ export default function plugin(bb: BbPluginApi) {
 
   const USAGE = {
     subtitle: "usage: bb assistants subtitle <thread-id> [text… | --clear]",
-    memory: "usage: bb assistants memory on|off|status <thread-id> [--clear]",
+    memory: "usage: bb assistants memory on|off|status <thread-id> [--clear] | rebuild <thread-id> <from-message-id>",
     recall: "usage: bb assistants recall <id> [n] [--assistant <thread-id>]",
     date: "usage: bb assistants date <id> [--assistant <thread-id>]",
     rotate: "usage: bb assistants rotate <thread-id>",
@@ -358,6 +358,7 @@ export default function plugin(bb: BbPluginApi) {
       if (flag === "--clear") memory.clearWarnings(identity);
       return memory.status(identity);
     }
+    if (action === "rebuild" && flag !== undefined) return memory.rebuild(identity, Number(flag));
     throw new Error(USAGE.memory);
   };
 

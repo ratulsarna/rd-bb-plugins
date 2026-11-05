@@ -107,6 +107,7 @@ export function isBuiltinCompact(data: any): boolean {
  * is ours, not a tag.
  */
 const SCRIPT_TAG = /^\[(?!(?:image|file): )/;
+export const isScriptMessage = (text: string) => SCRIPT_TAG.test(text);
 
 function turnRecords(data: any): Array<[Kind, string]> {
   // An instruction to the harness, not part of the chat.
@@ -120,7 +121,7 @@ function turnRecords(data: any): Array<[Kind, string]> {
     const body = inputText(group);
     if (!body) return [];
     if (reported) return [["work", body.startsWith("[") ? body : tag + body] as [Kind, string]];
-    return [[SCRIPT_TAG.test(body) ? "work" : "user", body] as [Kind, string]];
+    return [[isScriptMessage(body) ? "work" : "user", body] as [Kind, string]];
   });
 }
 

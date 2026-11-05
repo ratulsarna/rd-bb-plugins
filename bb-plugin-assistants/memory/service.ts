@@ -479,6 +479,7 @@ export class MemoryService {
       `messages: ${chat.T}`,
       `view: ${lines} lines, ${view} bytes`,
       `unsummarized: ${chat.unsummarized}, in flight: ${chat.inFlight}, failed: ${chat.failures}`,
+      ...(chat.redoing ? [`rebuilding: ${chat.redoing} lines left`] : []),
       `summaries: ${this.summarizer.runner} ${this.summarizer.model}, ${this.summarizer.pool} at once`,
       ...(blocked ? [blocked] : []),
       `last usage: ${used === undefined ? "-" : `${Math.round(used * 100)}%`}`,
@@ -486,6 +487,14 @@ export class MemoryService {
       ...(s.previous.length ? [`kept live: ${s.previous.join(", ")} (rotation waits until archived)`] : []),
       ...(s.warnings.length ? ["warnings:", ...s.warnings.map((w) => `  ${new Date(w.at).toISOString()} ${w.text}`)] : []),
     ].join("\n");
+  }
+
+  /** Summarize again every line from message `from` on; summaries must be paused while it starts. */
+  async rebuild(identity: string, from: number): Promise<string> {
+    const chat = await this.writer(identity);
+    const lines = await chat.rebuild(from);
+    this.summarizer.pump();
+    return `Rebuilding ${lines} lines from message ${from}; old lines stay until their new ones land. Progress: bb assistants memory status`;
   }
 
   /** Latest warning per memory identity, for the Bots rows. */
