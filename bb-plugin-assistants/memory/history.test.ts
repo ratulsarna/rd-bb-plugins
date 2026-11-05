@@ -36,6 +36,22 @@ it("logs a side thread's report as work, and grouped sends one message each, in 
   ]);
 });
 
+it("logs a script's tagged message as work, but the user's message that opens with an attachment stays theirs", () => {
+  expect(records([
+    turn({ input: [{ type: "text", text: "[heartbeat]\n/home/x/day.md\nwork since 23:20:" }] }),
+    turn({ input: [{ type: "text", text: "[bb automation due:auto_x]\n\nRead heartbeat.md" }] }),
+    turn({ input: [{ type: "image", name: "shot.png" }, { type: "text", text: "what is this?" }] }),
+    turn({ input: [{ type: "localFile", path: "/tmp/a.txt", name: "a.txt" }] }),
+    turn({ input: [{ type: "text", text: "na good" }] }),
+  ])).toEqual([
+    ["work", "[heartbeat]\n/home/x/day.md\nwork since 23:20:"],
+    ["work", "[bb automation due:auto_x]\n\nRead heartbeat.md"],
+    ["user", "[image: shot.png]\nwhat is this?"],
+    ["user", "[file: a.txt]"],
+    ["user", "na good"],
+  ]);
+});
+
 it("drops reasoning and a subagent's own transcript but keeps the call that started it", () => {
   expect(records([
     item({ type: "reasoning", summary: ["thinking"], content: [] }),

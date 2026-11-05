@@ -24,6 +24,7 @@ export type MemorySettings = {
   summaryModel: string;
   summaryPool: number;
   summaryTarget: number;
+  timeZone: string;
   summariesPaused: boolean;
 };
 
@@ -55,7 +56,7 @@ export class MemoryService {
   readonly summarizer: Summarizer;
   /** Which assistant a thread's environment belongs to, as the rest of the plugin decides it. */
   readonly identityOf: (environmentId: string) => Promise<ResolvedIdentity>;
-  settings: MemorySettings = { rotateAtPercent: 55, summaryRunner: "claude", summaryModel: "haiku", summaryPool: 8, summaryTarget: 512, summariesPaused: false };
+  settings: MemorySettings = { rotateAtPercent: 55, summaryRunner: "claude", summaryModel: "haiku", summaryPool: 8, summaryTarget: 512, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, summariesPaused: false };
   disposed = false;
   private readonly states = new Map<string, MemoryState>();
   private readonly chats = new Map<string, Chat>();
@@ -137,7 +138,7 @@ export class MemoryService {
     let chat = this.chats.get(identity);
     if (!chat) {
       chat = Chat.open(this.dir(identity));
-      chat.tune({ pool: this.settings.summaryPool, target: this.settings.summaryTarget });
+      chat.tune({ pool: this.settings.summaryPool, target: this.settings.summaryTarget, zone: this.settings.timeZone });
       this.chats.set(identity, chat);
       this.summarizer.add(identity, chat);
       // One warning per failed write.
@@ -177,7 +178,7 @@ export class MemoryService {
     this.summarizer.model = settings.summaryModel;
     this.summarizer.pool = settings.summaryPool;
     this.summarizer.paused = settings.summariesPaused;
-    for (const chat of this.chats.values()) chat.tune({ pool: settings.summaryPool, target: settings.summaryTarget });
+    for (const chat of this.chats.values()) chat.tune({ pool: settings.summaryPool, target: settings.summaryTarget, zone: settings.timeZone });
     // Unpaused, or a new runner or model: what failed before gets another try now.
     this.summarizer.resume();
   }
