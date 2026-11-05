@@ -157,7 +157,9 @@ write stops an import; run it again to resume.
 Settings: `rotateAtPercent` (55, 1-95), `summaryRunner` (`claude` or `pi`),
 `summaryModel` (`haiku`; for pi `provider/model`, e.g. `zai/glm-5.3-flash`),
 `summaryPool` (8 summary calls at once across all assistants),
-`summaryTarget` (512 bytes asked per line; 512 stays the limit) and
+`summaryTarget` (512 bytes asked per line; 512 stays the limit),
+`timeZone` (the IANA zone a summary call is told each message's send time
+in; the bb server's by default) and
 `summariesPaused` (starts no new summary call; logging and recall go on, and
 a rotation waits for summaries to catch up). `memory status` shows the
 runner, model and pool, and why summaries are not running.

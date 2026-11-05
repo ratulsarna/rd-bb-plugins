@@ -17,6 +17,7 @@ import {
   targetingAutomationsOf,
 } from "./lib/assistant-conversation";
 import { handover, type Place } from "./memory/handover";
+import { isTimeZone } from "./memory/history";
 import { MEMORY_CHANNEL, MemoryService } from "./memory/service";
 import { SUMMARY_RUNNERS } from "./memory/summarize";
 
@@ -262,6 +263,13 @@ export default function plugin(bb: BbPluginApi) {
       description: "The line length a summary asks for; 512 bytes stays the limit.",
       default: 512,
       experimental_schema: z.number().int().positive(),
+    },
+    timeZone: {
+      type: "string",
+      label: "Memory: your time zone",
+      description: "The IANA zone, like `Asia/Kolkata`, that summaries date messages in. Defaults to the bb server's.",
+      default: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      experimental_schema: z.string().trim().refine(isTimeZone, "not an IANA time zone, like Asia/Kolkata"),
     },
     summariesPaused: {
       type: "boolean",

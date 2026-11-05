@@ -224,12 +224,23 @@ it("a failed compaction is tried again at the next message, and the chat is not 
   }
 });
 
-it("the too-long retry cuts at 512 bytes without splitting a character", () => {
-  const reply = "é".repeat(400); // 800 bytes
-  const cut = tooLong(reply).split("\n").at(-1)!.replace("| ← LIMIT", "");
-  assert.ok(!cut.includes("�"));
-  assert.equal(bytes(cut), 512);
-  assert.match(tooLong(reply), /your line is 800 bytes/);
+it("the too-long retry never shows the line again, which the model would hand back cut", () => {
+  const reply = "keep this ".repeat(80); // 800 bytes
+  assert.ok(!tooLong(reply).includes("keep this"));
+  assert.match(tooLong(reply), /your line is 800 bytes, over the 512-byte limit.*\n.*about 328 bytes shorter/);
+});
+
+it("a task dates its messages on the user's clock, also across midnight and for an undated import", () => {
+  const chat = Chat.open(tmp());
+  chat.tune({ zone: "Asia/Kolkata" });
+  chat.append("echo", "x".repeat(600), "2026-11-04T07:31:05+00:00");
+  assert.match(chat.take()!.prompt, /compress message 0, sent 2026-11-04 13:01 Asia\/Kolkata,/);
+  chat.append("user", "ok", "2026-11-04T18:00:00Z");
+  chat.append("unii", "y".repeat(300), "2026-11-04T18:29:00Z");
+  chat.append("unii", "z".repeat(300), "2026-11-04T18:31:00Z");
+  assert.match(chat.take()!.prompt, /merge lines 2\+1 and 3\+1, adjacent, of messages sent\n2026-11-04 23:59 Asia\/Kolkata to 2026-11-05 00:01 Asia\/Kolkata,/);
+  chat.append("note", "n".repeat(600), "summer 2025");
+  assert.match(chat.take()!.prompt, /compress message 4, sent summer 2025,/);
 });
 
 it("after a failed write the chat takes nothing more, and a fresh one from the disk logs the record", async () => {
@@ -386,8 +397,8 @@ it("a target of 256 shapes new tasks' ruler and word hint; 512 stays the limit",
   chat.tune({ target: 256 });
   chat.append("echo", text(2), "2026-09-09");
   const after = chat.take()!.prompt;
-  assert.match(before, /at most 512 bytes\n\(about 70 words\), the length of this ruler:\n-{512}\n/);
-  assert.match(after, /at most 256 bytes\n\(about 40 words\), the length of this ruler:\n-{256}\n/);
+  assert.match(before, /at\s+most 512 bytes\s+\(about 70 words\), the length of this ruler:\n-{512}\n/);
+  assert.match(after, /at\s+most 256 bytes\s+\(about 40 words\), the length of this ruler:\n-{256}\n/);
   // A message under 512 bytes is still its own line, word for word.
   chat.append("user", "u".repeat(400), "2026-09-09");
   assert.ok(chat.viewLines().at(-1)!.endsWith(`user: ${"u".repeat(400)}`));

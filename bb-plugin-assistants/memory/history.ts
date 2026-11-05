@@ -51,6 +51,28 @@ export function spokenDate(stored: string): string {
   return `${day} ${time} ${zone} (${stored})`;
 }
 
+export function isTimeZone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A stored date as the user's clock reads it, like `2026-11-04 13:01 Asia/Kolkata`; one it cannot read, as stored. */
+export function zonedDate(stored: string, zone: string): string {
+  // Date.parse guesses at loose text like "summer 2025"; only a stored ISO time is read.
+  if (!STORED.test(stored)) return stored;
+  const ms = Date.parse(stored);
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+      .formatToParts(ms)
+      .map((p) => [p.type, p.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} ${zone}`;
+}
+
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value));
 
 function inputText(blocks: any[]): string {
@@ -79,18 +101,26 @@ export function isBuiltinCompact(data: any): boolean {
   );
 }
 
+/**
+ * A script's `bb thread tell` reaches bb exactly as the user's own message does, so its leading tag, like
+ * `[heartbeat]` or `[bb automation due:…]`, is the only sign. An attachment the user's message starts with
+ * is ours, not a tag.
+ */
+const SCRIPT_TAG = /^\[(?!(?:image|file): )/;
+
 function turnRecords(data: any): Array<[Kind, string]> {
   // An instruction to the harness, not part of the chat.
   if (isBuiltinCompact(data)) return [];
   const sender: string | null = data.senderThreadId ?? null;
   // A side thread's or bb's own report reaches the chat as a message; the user typed the rest.
-  const kind: Kind = sender || data.initiator === "system" ? "work" : "user";
+  const reported = Boolean(sender) || data.initiator === "system";
   const tag = sender ? `[thread:${sender}] ` : "[system] ";
   const groups: any[][] = data.inputGroups ?? [data.input ?? []];
   return groups.flatMap((group) => {
     const body = inputText(group);
     if (!body) return [];
-    return [[kind, kind === "work" && !body.startsWith("[") ? tag + body : body] as [Kind, string]];
+    if (reported) return [["work", body.startsWith("[") ? body : tag + body] as [Kind, string]];
+    return [[SCRIPT_TAG.test(body) ? "work" : "user", body] as [Kind, string]];
   });
 }
 

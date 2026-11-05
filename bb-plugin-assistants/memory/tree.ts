@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { zonedDate } from "./history";
 
 /** A summary line's hard limit in bytes: the retry trigger, and the most a target may ask for. */
 export const LINE = 512;
@@ -55,23 +56,11 @@ export function mergeAt(view: Ref[], k: number): void {
   view.splice(k, 2, [l + 1, i / 2]);
 }
 
-/** The first `max` bytes of `s`, never splitting a character. */
-function head(s: string, max: number): string {
-  let out = "";
-  let used = 0;
-  for (const ch of s) {
-    used += bytes(ch);
-    if (used > max) break;
-    out += ch;
-  }
-  return out;
-}
-
+/** The reply is not shown again: a model shown its own line cut at the limit hands the cut back, marker and all. */
 export function tooLong(reply: string): string {
-  return `Too long: your line is ${bytes(reply)} bytes, over the 512-byte limit. Write
-the whole line again for the same <input>, cutting just enough of the
-least valuable items to fit before this cut:
-${head(reply, LINE)}| ← LIMIT`;
+  return `Too long: your line is ${bytes(reply)} bytes, over the ${LINE}-byte limit. Write
+the whole line again for the same <input>, about ${bytes(reply) - LINE + 40} bytes shorter, cutting the
+least valuable items.`;
 }
 
 /** The reply as a node line: trimmed, without an id+n| head the model may add anyway. */
@@ -168,6 +157,8 @@ export class Chat {
   pool = DEFAULT_POOL;
   /** The line length a new task asks for; `LINE` stays the limit that sends a line back. */
   target = LINE;
+  /** The user's time zone, which a task gives its messages' send times in. */
+  zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   private constructor(dir: string) {
     this.dir = dir;
@@ -205,13 +196,14 @@ export class Chat {
     for (const n of [...this.nodes.values()].sort((a, b) => a.l - b.l)) this.climb([n.l, n.i]);
   }
 
-  /** Apply the plugin's settings; each is a positive integer, and a target over `LINE` asks for `LINE`. */
-  tune({ pool, target }: { pool?: number; target?: number }): void {
+  /** Apply the plugin's settings: pool and target are positive integers, a target over `LINE` asks for `LINE`, and the settings check the zone. */
+  tune({ pool, target, zone }: { pool?: number; target?: number; zone?: string }): void {
     for (const [name, v] of Object.entries({ pool, target })) {
       if (v !== undefined && !(Number.isInteger(v) && v > 0)) throw new Error(`${name} must be a positive whole number, not ${v}`);
     }
     if (pool !== undefined) this.pool = pool;
     if (target !== undefined) this.target = Math.min(target, LINE);
+    if (zone !== undefined) this.zone = zone;
   }
 
   private lock(): void {
@@ -564,8 +556,8 @@ export class Chat {
     let task: string;
     if (r[0] === 0) {
       const m = this.msgs[s];
-      task = `Compaction: compress message ${s} into one line of at most ${this.target} bytes
-(about ${words} words), the length of this ruler:
+      task = `Compaction: compress message ${s}, sent ${zonedDate(m.date, this.zone)}, into one line of at
+most ${this.target} bytes (about ${words} words), the length of this ruler:
 ${ruler}
 <input>
 ${m.kind}: ${m.text}
@@ -573,8 +565,9 @@ ${m.kind}: ${m.text}
     } else {
       const a: Ref = [r[0] - 1, r[1] * 2];
       const b: Ref = [r[0] - 1, r[1] * 2 + 1];
-      task = `Compaction: merge lines ${label(a)} and ${label(b)}, adjacent, into one line of at most
-${this.target} bytes (about ${words} words), the length of this ruler:
+      task = `Compaction: merge lines ${label(a)} and ${label(b)}, adjacent, of messages sent
+${zonedDate(this.msgs[s].date, this.zone)} to ${zonedDate(this.msgs[e - 1].date, this.zone)}, into one line of at
+most ${this.target} bytes (about ${words} words), the length of this ruler:
 ${ruler}
 <chat> may hold their messages, ${s} to ${e - 1}, in more detail: take details
 of them from there too.
