@@ -467,8 +467,10 @@ describe("card order", () => {
     stackCards([547, 131, 131]);
     await dragDown("Claude Code", 0);
     expect(cardOrderCalls.filter((call) => call.method === "setCardOrder")).toHaveLength(0);
-    await dragDown("Claude Code");
-    await waitFor(() => expect(cardNames()).toEqual(["Codex", "Claude Code", "Z.ai"]));
+    await dragDown("Claude Code", 2);
+    await waitFor(() => expect(cardNames()).toEqual(["Codex", "Z.ai", "Claude Code"]));
+    await dragDown("Codex", 5);
+    await waitFor(() => expect(cardNames()).toEqual(["Z.ai", "Claude Code", "Codex"]));
   });
 
   it("goes back to the saved order when a save fails", async () => {

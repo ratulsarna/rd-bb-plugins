@@ -1,5 +1,4 @@
 import {
-  closestCenter,
   DndContext,
   KeyboardSensor,
   MouseSensor,
@@ -9,10 +8,10 @@ import {
   useSensors,
   type CollisionDetection,
   type DragEndEvent,
+  type KeyboardCoordinateGetter,
 } from "@dnd-kit/core";
 import {
   SortableContext,
-  sortableKeyboardCoordinates,
   useSortable,
   type SortingStrategy,
 } from "@dnd-kit/sortable";
@@ -317,17 +316,34 @@ function GripIcon() {
 // room: only the dragged card moves, and the card under it shows the drop.
 const noShift: SortingStrategy = () => null;
 
-// The dragged card's own slot never moves, so the nearest centre would often
-// be that slot. A pointer drops on the card under it; a keyboard step drops on
-// the nearest other card, and no step drops where it started.
+const STEPS: Record<string, number> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
+
+/**
+ * A keyboard step moves one place in the order, onto that card's slot. Cards
+ * differ in height, so stepping by geometry would stall behind a tall card.
+ */
+function stepThroughOrder(order: { current: readonly string[] }): KeyboardCoordinateGetter {
+  return (event, { context: { active, over, droppableRects } }) => {
+    const step = STEPS[event.code];
+    if (step === undefined || !active) return undefined;
+    event.preventDefault();
+    const from = order.current.indexOf(String(over?.id ?? active.id));
+    const target = order.current[from + step];
+    const rect = target === undefined ? undefined : droppableRects.get(target);
+    return rect ? { x: rect.left, y: rect.top } : undefined;
+  };
+}
+
+// A pointer drops on the card under it. A keyboard step lands exactly on a
+// card's slot, so it drops on that card; back on its own slot it drops nowhere.
 const dropTarget: CollisionDetection = (args) => {
   if (args.pointerCoordinates) return pointerWithin(args);
-  const start = args.droppableRects.get(args.active.id);
-  if (start && start.top === args.collisionRect.top && start.left === args.collisionRect.left) return [];
-  return closestCenter({
-    ...args,
-    droppableContainers: args.droppableContainers.filter((container) => container.id !== args.active.id),
+  const landed = args.droppableContainers.find((container) => {
+    const rect = args.droppableRects.get(container.id);
+    return container.id !== args.active.id && rect !== undefined &&
+      Math.abs(rect.top - args.collisionRect.top) < 1 && Math.abs(rect.left - args.collisionRect.left) < 1;
   });
+  return landed ? [{ id: landed.id }] : [];
 };
 
 function SortableCard({ provider, now }: { provider: ProviderUsage; now: number }) {
@@ -389,10 +405,12 @@ export function UsagePanel() {
   const [now, setNow] = useState(() => Date.now());
   const container = useRef<HTMLDivElement>(null);
   const twoColumns = useTwoColumns(container);
+  const shownOrder = useRef<readonly string[]>([]);
+  const [coordinateGetter] = useState(() => stepThroughOrder(shownOrder));
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 6 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+    useSensor(KeyboardSensor, { coordinateGetter }),
   );
 
   useEffect(() => {
@@ -412,6 +430,7 @@ export function UsagePanel() {
         )
       : [];
   const keys = cards.map(cardKey);
+  shownOrder.current = keys;
   // In two columns the order reads left to right, then down.
   const columns = twoColumns
     ? [cards.filter((_, index) => index % 2 === 0), cards.filter((_, index) => index % 2 === 1)]
