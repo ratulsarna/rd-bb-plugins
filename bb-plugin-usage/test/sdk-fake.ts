@@ -15,14 +15,25 @@ export const registrations = {
   navPanels: [] as NavPanelRegistration[],
 };
 
+/** getUsage calls; card-order calls go to `cardOrderCalls`. */
 export const rpcCalls: Array<{ method: string; input: unknown }> = [];
+export const cardOrderCalls: Array<{ method: string; input: unknown }> = [];
 
 let rpcHandler: RpcHandler = () => {
   throw new Error("No getUsage handler configured");
 };
+/** The server's saved order; set it to simulate another device's save. */
+export const savedCardOrder = { order: [] as string[], failSave: false };
 
 const rpc = {
   call(method: string, input: unknown) {
+    if (method === "getCardOrder" || method === "setCardOrder") {
+      cardOrderCalls.push({ method, input });
+      if (method === "getCardOrder") return Promise.resolve({ order: [...savedCardOrder.order] });
+      if (savedCardOrder.failSave) return Promise.reject(new Error("save failed"));
+      savedCardOrder.order = [...(input as { order: string[] }).order];
+      return Promise.resolve({ order: [...savedCardOrder.order] });
+    }
     rpcCalls.push({ method, input });
     return Promise.resolve(rpcHandler(input));
   },
@@ -44,6 +55,9 @@ export function configureFakeSdk({
   rpcHandler = getUsage;
   connectionState = connection;
   rpcCalls.length = 0;
+  cardOrderCalls.length = 0;
+  savedCardOrder.order = [];
+  savedCardOrder.failSave = false;
   realtimeHandlers.clear();
 }
 

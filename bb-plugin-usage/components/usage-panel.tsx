@@ -1,5 +1,33 @@
-import { useEffect, useId, useState } from "react";
+import {
+  DndContext,
+  KeyboardSensor,
+  MouseSensor,
+  pointerWithin,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  type CollisionDetection,
+  type DragEndEvent,
+  type KeyboardCoordinateGetter,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  type SortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import { cardKey, moveCard, orderCards } from "../lib/card-order";
 import { PROVIDER_ACCENT, ProviderMark } from "./provider-mark";
+import { useCardOrder } from "./use-card-order";
 import type { ProviderUsage, UsageWindow } from "./use-usage";
 import { useUsage } from "./use-usage";
 
@@ -158,9 +186,11 @@ const STATUS_COPY: Record<
 function ProviderCard({
   provider,
   now,
+  handle,
 }: {
   provider: ProviderUsage;
   now: number;
+  handle?: ReactNode;
 }) {
   const accent = PROVIDER_ACCENT[provider.id];
   const headingId = useId();
@@ -206,6 +236,7 @@ function ProviderCard({
             {provider.planLabel}
           </span>
         )}
+        {handle}
       </header>
 
       {provider.status === "ok" ? (
@@ -270,17 +301,150 @@ function UsageSkeleton() {
   );
 }
 
+function GripIcon() {
+  return (
+    <svg viewBox="0 0 10 16" aria-hidden="true" className="h-4 w-2.5 fill-current">
+      {[3, 8, 13].flatMap((y) => [
+        <circle key={`l${y}`} cx="2.5" cy={y} r="1.3" />,
+        <circle key={`r${y}`} cx="7.5" cy={y} r="1.3" />,
+      ])}
+    </svg>
+  );
+}
+
+// Cards sit in two independent columns, so neighbours never shift to make
+// room: only the dragged card moves, and the card under it shows the drop.
+const noShift: SortingStrategy = () => null;
+
+const STEPS: Record<string, number> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
+
+/**
+ * Where a drag drops. A pointer drops on the card under it. A keyboard step
+ * moves one place in the shown order: cards differ in height and the panel
+ * scrolls while dragging, so the target is kept here, not read from geometry.
+ */
+function createDropTargeting(shownOrder: { current: readonly string[] }) {
+  let keyboardTarget: string | null = null;
+
+  const coordinateGetter: KeyboardCoordinateGetter = (event, { context: { active, droppableRects } }) => {
+    const step = STEPS[event.code];
+    if (step === undefined || !active) return undefined;
+    event.preventDefault();
+    const order = shownOrder.current;
+    const target = order[order.indexOf(keyboardTarget ?? String(active.id)) + step];
+    const rect = target === undefined ? undefined : droppableRects.get(target);
+    if (target === undefined || !rect) return undefined;
+    keyboardTarget = target === active.id ? null : target;
+    return { x: rect.left, y: rect.top };
+  };
+
+  const collisionDetection: CollisionDetection = (args) => {
+    if (args.pointerCoordinates) return pointerWithin(args);
+    return keyboardTarget === null ? [] : [{ id: keyboardTarget }];
+  };
+
+  return { coordinateGetter, collisionDetection, reset: () => { keyboardTarget = null; } };
+}
+
+function SortableCard({ provider, now }: { provider: ProviderUsage; now: number }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    isDragging,
+    isOver,
+  } = useSortable({ id: cardKey(provider) });
+
+  return (
+    <div
+      ref={setNodeRef}
+      data-usage-card=""
+      style={{ transform: CSS.Translate.toString(transform) }}
+      className={`rounded-xl ${isDragging ? "relative z-10 opacity-80 shadow-lg" : ""} ${isOver && !isDragging ? "ring-2 ring-ring" : ""}`}
+    >
+      <ProviderCard
+        provider={provider}
+        now={now}
+        handle={
+          <button
+            ref={setActivatorNodeRef}
+            type="button"
+            aria-label={`Move ${provider.name}${provider.accountEmail ? ` (${provider.accountEmail})` : ""}`}
+            className="-mr-1.5 grid h-8 w-6 shrink-0 cursor-grab touch-none place-items-center rounded-md text-muted-foreground/60 hover:bg-foreground/[0.06] hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+            {...attributes}
+            {...listeners}
+          >
+            <GripIcon />
+          </button>
+        }
+      />
+    </div>
+  );
+}
+
+/** Matches the skeleton's `@min-[640px]` container breakpoint, which CSS alone can't apply to an order split across columns. */
+function useTwoColumns(ref: RefObject<HTMLElement | null>): boolean {
+  const [twoColumns, setTwoColumns] = useState(false);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) =>
+      setTwoColumns((entry?.contentRect.width ?? 0) >= 640),
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref]);
+  return twoColumns;
+}
+
 export function UsagePanel() {
   const { state } = useUsage({ realtime: true });
+  const { order, save } = useCardOrder();
   const [now, setNow] = useState(() => Date.now());
+  const container = useRef<HTMLDivElement>(null);
+  const twoColumns = useTwoColumns(container);
+  const shownOrder = useRef<readonly string[]>([]);
+  const [targeting] = useState(() => createDropTargeting(shownOrder));
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: targeting.coordinateGetter }),
+  );
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
 
+  const cards =
+    state.phase === "ready"
+      ? orderCards<ProviderUsage>(
+          [
+            state.data.providers.codex,
+            state.data.providers.zai,
+            ...state.data.providers.claudeCode,
+          ],
+          order,
+        )
+      : [];
+  const keys = cards.map(cardKey);
+  shownOrder.current = keys;
+  // In two columns the order reads left to right, then down.
+  const columns = twoColumns
+    ? [cards.filter((_, index) => index % 2 === 0), cards.filter((_, index) => index % 2 === 1)]
+    : [cards];
+
+  const onDragEnd = ({ active, over }: DragEndEvent) => {
+    targeting.reset();
+    if (over && active.id !== over.id) {
+      void save(moveCard(keys, String(active.id), String(over.id)));
+    }
+  };
+
   return (
-    <div className="@container h-full overflow-y-auto px-4 py-6">
+    <div ref={container} className="@container h-full overflow-y-auto px-4 py-6">
       <div className="mx-auto w-full max-w-4xl">
         {state.phase === "loading" && <UsageSkeleton />}
         {state.phase === "error" && (
@@ -297,28 +461,32 @@ export function UsagePanel() {
           </div>
         )}
         {state.phase === "ready" && (
-          // Explicit columns, not one grid: a grid row grows to its tallest
-          // card and leaves a hole under the short ones.
-          <div className="grid items-start gap-4 @min-[640px]:grid-cols-2">
-            <div className="grid min-w-0 gap-4">
-              <ProviderCard provider={state.data.providers.codex} now={now} />
-              <ProviderCard provider={state.data.providers.zai} now={now} />
-            </div>
-            <div className="grid min-w-0 gap-4">
-              {state.data.providers.claudeCode.map((account) => (
-                <ProviderCard
-                  key={account.accountId}
-                  provider={account}
-                  now={now}
-                />
-              ))}
-              {!state.data.providers.claudeCode.length && (
-                <p className="text-sm text-muted-foreground">
-                  No Claude Code accounts found on your BB machines.
-                </p>
-              )}
-            </div>
-          </div>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={targeting.collisionDetection}
+            onDragStart={targeting.reset}
+            onDragEnd={onDragEnd}
+            onDragCancel={targeting.reset}
+          >
+            <SortableContext items={keys} strategy={noShift}>
+              {/* Explicit columns, not one grid: a grid row grows to its tallest
+                  card and leaves a hole under the short ones. */}
+              <div className={`grid items-start gap-4 ${twoColumns ? "grid-cols-2" : ""}`}>
+                {columns.map((column, index) => (
+                  <div key={index} className="grid min-w-0 gap-4">
+                    {column.map((provider) => (
+                      <SortableCard key={cardKey(provider)} provider={provider} now={now} />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </SortableContext>
+            {!state.data.providers.claudeCode.length && (
+              <p className="mt-4 text-sm text-muted-foreground">
+                No Claude Code accounts found on your BB machines.
+              </p>
+            )}
+          </DndContext>
         )}
       </div>
     </div>

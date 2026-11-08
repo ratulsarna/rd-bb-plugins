@@ -26,6 +26,7 @@
     "app.tsx",
     "components",
     "lib",
+    "types",
     "test",
     "vitest.config.ts"
   ]
