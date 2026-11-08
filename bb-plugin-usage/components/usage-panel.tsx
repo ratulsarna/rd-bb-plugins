@@ -319,32 +319,32 @@ const noShift: SortingStrategy = () => null;
 const STEPS: Record<string, number> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
 
 /**
- * A keyboard step moves one place in the order, onto that card's slot. Cards
- * differ in height, so stepping by geometry would stall behind a tall card.
+ * Where a drag drops. A pointer drops on the card under it. A keyboard step
+ * moves one place in the shown order: cards differ in height and the panel
+ * scrolls while dragging, so the target is kept here, not read from geometry.
  */
-function stepThroughOrder(order: { current: readonly string[] }): KeyboardCoordinateGetter {
-  return (event, { context: { active, over, droppableRects } }) => {
+function createDropTargeting(shownOrder: { current: readonly string[] }) {
+  let keyboardTarget: string | null = null;
+
+  const coordinateGetter: KeyboardCoordinateGetter = (event, { context: { active, droppableRects } }) => {
     const step = STEPS[event.code];
     if (step === undefined || !active) return undefined;
     event.preventDefault();
-    const from = order.current.indexOf(String(over?.id ?? active.id));
-    const target = order.current[from + step];
+    const order = shownOrder.current;
+    const target = order[order.indexOf(keyboardTarget ?? String(active.id)) + step];
     const rect = target === undefined ? undefined : droppableRects.get(target);
-    return rect ? { x: rect.left, y: rect.top } : undefined;
+    if (target === undefined || !rect) return undefined;
+    keyboardTarget = target === active.id ? null : target;
+    return { x: rect.left, y: rect.top };
   };
-}
 
-// A pointer drops on the card under it. A keyboard step lands exactly on a
-// card's slot, so it drops on that card; back on its own slot it drops nowhere.
-const dropTarget: CollisionDetection = (args) => {
-  if (args.pointerCoordinates) return pointerWithin(args);
-  const landed = args.droppableContainers.find((container) => {
-    const rect = args.droppableRects.get(container.id);
-    return container.id !== args.active.id && rect !== undefined &&
-      Math.abs(rect.top - args.collisionRect.top) < 1 && Math.abs(rect.left - args.collisionRect.left) < 1;
-  });
-  return landed ? [{ id: landed.id }] : [];
-};
+  const collisionDetection: CollisionDetection = (args) => {
+    if (args.pointerCoordinates) return pointerWithin(args);
+    return keyboardTarget === null ? [] : [{ id: keyboardTarget }];
+  };
+
+  return { coordinateGetter, collisionDetection, reset: () => { keyboardTarget = null; } };
+}
 
 function SortableCard({ provider, now }: { provider: ProviderUsage; now: number }) {
   const {
@@ -406,11 +406,11 @@ export function UsagePanel() {
   const container = useRef<HTMLDivElement>(null);
   const twoColumns = useTwoColumns(container);
   const shownOrder = useRef<readonly string[]>([]);
-  const [coordinateGetter] = useState(() => stepThroughOrder(shownOrder));
+  const [targeting] = useState(() => createDropTargeting(shownOrder));
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 6 } }),
-    useSensor(KeyboardSensor, { coordinateGetter }),
+    useSensor(KeyboardSensor, { coordinateGetter: targeting.coordinateGetter }),
   );
 
   useEffect(() => {
@@ -437,6 +437,7 @@ export function UsagePanel() {
     : [cards];
 
   const onDragEnd = ({ active, over }: DragEndEvent) => {
+    targeting.reset();
     if (over && active.id !== over.id) {
       void save(moveCard(keys, String(active.id), String(over.id)));
     }
@@ -460,7 +461,13 @@ export function UsagePanel() {
           </div>
         )}
         {state.phase === "ready" && (
-          <DndContext sensors={sensors} collisionDetection={dropTarget} onDragEnd={onDragEnd}>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={targeting.collisionDetection}
+            onDragStart={targeting.reset}
+            onDragEnd={onDragEnd}
+            onDragCancel={targeting.reset}
+          >
             <SortableContext items={keys} strategy={noShift}>
               {/* Explicit columns, not one grid: a grid row grows to its tallest
                   card and leaves a hole under the short ones. */}
