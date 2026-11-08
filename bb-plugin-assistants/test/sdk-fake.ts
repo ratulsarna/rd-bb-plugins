@@ -213,6 +213,9 @@ const rpc = {
     if (method === "createReplacementThread") return { newThreadId: "new-conversation" };
     // Fixed answers for the inbox RPCs core's board calls on render. The
     // board owns their behavior; the plugin's tests only need them to answer.
+    if (method === "pipelineDoneThreadIds") {
+      return { threadIds: [] };
+    }
     if (method === "threadPullRequests") {
       const { threadIds } = input as { threadIds: string[] };
       return { rows: threadIds.map((threadId) => ({ threadId, pullRequest: null })) };
