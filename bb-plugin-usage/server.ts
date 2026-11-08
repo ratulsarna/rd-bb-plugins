@@ -1,5 +1,6 @@
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { CARD_ORDER_CHANNEL, MAX_CARD_ORDER } from "./lib/card-order";
 import { createClaudeCredentialRecovery } from "./lib/claude-recovery";
 import { createUsageService } from "./lib/usage";
 import { fetchFleetUsage } from "./lib/fleet-usage";
@@ -78,11 +79,19 @@ const usageOutputSchema = z
   })
   .strict();
 
+const cardOrderSchema = z
+  .object({ order: z.array(z.string().min(1)).max(MAX_CARD_ORDER) })
+  .strict();
+
+const CARD_ORDER_KEY = "card-order";
+
 export const rpcContract = defineRpcContract({
   getUsage: {
     input: z.object({ refresh: z.boolean().optional() }).strict(),
     output: usageOutputSchema,
   },
+  getCardOrder: { input: z.object({}).strict(), output: cardOrderSchema },
+  setCardOrder: { input: cardOrderSchema, output: cardOrderSchema },
 });
 
 export default function plugin(bb: BbPluginApi) {
@@ -120,5 +129,13 @@ export default function plugin(bb: BbPluginApi) {
 
   bb.rpc.register(rpcContract, {
     getUsage: (input) => usage.getUsage(input),
+    async getCardOrder() {
+      return { order: (await bb.storage.kv.get<string[]>(CARD_ORDER_KEY)) ?? [] };
+    },
+    async setCardOrder({ order }) {
+      await bb.storage.kv.set(CARD_ORDER_KEY, order);
+      bb.realtime.publish(CARD_ORDER_CHANNEL, {});
+      return { order };
+    },
   });
 }

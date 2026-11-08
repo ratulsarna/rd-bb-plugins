@@ -11,10 +11,12 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "../app";
 import {
+  cardOrderCalls,
   configureFakeSdk,
   emitRealtime,
   registrations,
   rpcCalls,
+  savedCardOrder,
   setRealtimeConnectionState,
 } from "./sdk-fake";
 
@@ -401,5 +403,75 @@ describe("usage panel", () => {
     await act(async () => vi.advanceTimersByTimeAsync(180_000));
     expect(screen.queryByText(/Update failed/)).toBeNull();
     expect(screen.getByText("Updated just now")).toBeTruthy();
+  });
+});
+
+describe("card order", () => {
+  const cardNames = () =>
+    screen.getAllByRole("article").map((card) => within(card).getByRole("heading", { level: 2 }).textContent);
+
+  /** jsdom lays nothing out; stack the cards 200px apart so the keyboard can move between them. */
+  function stackCards() {
+    const original = Element.prototype.getBoundingClientRect;
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      const index = Array.from(document.querySelectorAll("[data-usage-card]")).indexOf(this);
+      if (index < 0) return original.call(this);
+      return { x: 0, y: index * 200, top: index * 200, left: 0, width: 300, height: 180, bottom: index * 200 + 180, right: 300, toJSON() {} } as DOMRect;
+    });
+  }
+
+  async function dragDown(name: string) {
+    const handle = screen.getByRole("button", { name: new RegExp(`^Move ${name}`) });
+    // dnd-kit measures the cards a frame after the drag starts.
+    const frame = () => act(() => new Promise((done) => setTimeout(done, 50)));
+    handle.focus();
+    fireEvent.keyDown(handle, { code: "Space" });
+    await frame();
+    fireEvent.keyDown(handle, { code: "ArrowDown" });
+    await frame();
+    fireEvent.keyDown(handle, { code: "Space" });
+    await frame();
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("shows the saved order, with a new account after the saved cards", async () => {
+    const data = usage();
+    data.providers.claudeCode.push({ ...data.providers.claudeCode[0]!, accountId: "new", accountEmail: "new@example.com" });
+    configureFakeSdk({ getUsage: () => data });
+    savedCardOrder.order = ["claudeCode:claude", "zai", "codex"];
+    renderPanel();
+    await waitFor(() => expect(cardNames()).toEqual(["Claude Code", "Z.ai", "Codex", "Claude Code"]));
+    expect(within(screen.getAllByRole("article")[3]!).getByText("new@example.com")).toBeTruthy();
+  });
+
+  it("saves a dragged card's new place for every device", async () => {
+    configureFakeSdk({ getUsage: () => usage() });
+    renderPanel();
+    await waitFor(() => expect(cardNames()).toEqual(["Codex", "Z.ai", "Claude Code"]));
+    stackCards();
+    await dragDown("Codex");
+    await waitFor(() => expect(cardNames()).toEqual(["Z.ai", "Codex", "Claude Code"]));
+    expect(savedCardOrder.order).toEqual(["zai", "codex", "claudeCode:claude"]);
+  });
+
+  it("goes back to the saved order when a save fails", async () => {
+    configureFakeSdk({ getUsage: () => usage() });
+    savedCardOrder.failSave = true;
+    renderPanel();
+    await waitFor(() => expect(cardNames()).toEqual(["Codex", "Z.ai", "Claude Code"]));
+    stackCards();
+    await dragDown("Codex");
+    await waitFor(() => expect(cardOrderCalls.filter((call) => call.method === "getCardOrder")).toHaveLength(2));
+    expect(cardNames()).toEqual(["Codex", "Z.ai", "Claude Code"]);
+  });
+
+  it("follows an order saved on another device", async () => {
+    configureFakeSdk({ getUsage: () => usage() });
+    renderPanel();
+    await waitFor(() => expect(cardNames()).toEqual(["Codex", "Z.ai", "Claude Code"]));
+    savedCardOrder.order = ["zai", "claudeCode:claude", "codex"];
+    await act(async () => emitRealtime("card-order"));
+    await waitFor(() => expect(cardNames()).toEqual(["Z.ai", "Claude Code", "Codex"]));
   });
 });

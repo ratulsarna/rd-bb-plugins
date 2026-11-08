@@ -10,6 +10,8 @@ It shows:
 - percentage left and reset time
 - deficit or reserve against the current pace
 
+Drag a card by the handle in its header to move it. The order is saved on the BB server, so every device shows the same order. In a wide panel the cards fill two columns in that order, left then right.
+
 It does not show cost, credits, account controls, dashboards, or service status.
 
 ## Install
