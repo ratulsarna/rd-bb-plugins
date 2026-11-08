@@ -3,9 +3,11 @@ import {
   DndContext,
   KeyboardSensor,
   MouseSensor,
+  pointerWithin,
   TouchSensor,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
 } from "@dnd-kit/core";
 import {
@@ -315,6 +317,19 @@ function GripIcon() {
 // room: only the dragged card moves, and the card under it shows the drop.
 const noShift: SortingStrategy = () => null;
 
+// The dragged card's own slot never moves, so the nearest centre would often
+// be that slot. A pointer drops on the card under it; a keyboard step drops on
+// the nearest other card, and no step drops where it started.
+const dropTarget: CollisionDetection = (args) => {
+  if (args.pointerCoordinates) return pointerWithin(args);
+  const start = args.droppableRects.get(args.active.id);
+  if (start && start.top === args.collisionRect.top && start.left === args.collisionRect.left) return [];
+  return closestCenter({
+    ...args,
+    droppableContainers: args.droppableContainers.filter((container) => container.id !== args.active.id),
+  });
+};
+
 function SortableCard({ provider, now }: { provider: ProviderUsage; now: number }) {
   const {
     attributes,
@@ -426,7 +441,7 @@ export function UsagePanel() {
           </div>
         )}
         {state.phase === "ready" && (
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+          <DndContext sensors={sensors} collisionDetection={dropTarget} onDragEnd={onDragEnd}>
             <SortableContext items={keys} strategy={noShift}>
               {/* Explicit columns, not one grid: a grid row grows to its tallest
                   card and leaves a hole under the short ones. */}

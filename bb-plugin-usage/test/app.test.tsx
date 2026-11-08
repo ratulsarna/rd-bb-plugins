@@ -410,25 +410,29 @@ describe("card order", () => {
   const cardNames = () =>
     screen.getAllByRole("article").map((card) => within(card).getByRole("heading", { level: 2 }).textContent);
 
-  /** jsdom lays nothing out; stack the cards 200px apart so the keyboard can move between them. */
-  function stackCards() {
+  /** jsdom lays nothing out; stack the cards with these heights and 16px gaps so the keyboard can move between them. */
+  function stackCards(heights = [180, 180, 180]) {
     const original = Element.prototype.getBoundingClientRect;
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
       const index = Array.from(document.querySelectorAll("[data-usage-card]")).indexOf(this);
       if (index < 0) return original.call(this);
-      return { x: 0, y: index * 200, top: index * 200, left: 0, width: 300, height: 180, bottom: index * 200 + 180, right: 300, toJSON() {} } as DOMRect;
+      const top = heights.slice(0, index).reduce((sum, height) => sum + height + 16, 0);
+      const height = heights[index]!;
+      return { x: 0, y: top, top, left: 0, width: 300, height, bottom: top + height, right: 300, toJSON() {} } as DOMRect;
     });
   }
 
-  async function dragDown(name: string) {
+  async function dragDown(name: string, steps = 1) {
     const handle = screen.getByRole("button", { name: new RegExp(`^Move ${name}`) });
     // dnd-kit measures the cards a frame after the drag starts.
     const frame = () => act(() => new Promise((done) => setTimeout(done, 50)));
     handle.focus();
     fireEvent.keyDown(handle, { code: "Space" });
     await frame();
-    fireEvent.keyDown(handle, { code: "ArrowDown" });
-    await frame();
+    for (let step = 0; step < steps; step += 1) {
+      fireEvent.keyDown(handle, { code: "ArrowDown" });
+      await frame();
+    }
     fireEvent.keyDown(handle, { code: "Space" });
     await frame();
   }
@@ -453,6 +457,18 @@ describe("card order", () => {
     await dragDown("Codex");
     await waitFor(() => expect(cardNames()).toEqual(["Z.ai", "Codex", "Claude Code"]));
     expect(savedCardOrder.order).toEqual(["zai", "codex", "claudeCode:claude"]);
+  });
+
+  it("moves a tall card down past a short one with the keyboard, and a drop without a step saves nothing", async () => {
+    configureFakeSdk({ getUsage: () => usage() });
+    savedCardOrder.order = ["claudeCode:claude", "codex", "zai"];
+    renderPanel();
+    await waitFor(() => expect(cardNames()).toEqual(["Claude Code", "Codex", "Z.ai"]));
+    stackCards([547, 131, 131]);
+    await dragDown("Claude Code", 0);
+    expect(cardOrderCalls.filter((call) => call.method === "setCardOrder")).toHaveLength(0);
+    await dragDown("Claude Code");
+    await waitFor(() => expect(cardNames()).toEqual(["Codex", "Claude Code", "Z.ai"]));
   });
 
   it("goes back to the saved order when a save fails", async () => {
