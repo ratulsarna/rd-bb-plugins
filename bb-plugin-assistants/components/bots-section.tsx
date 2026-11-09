@@ -21,7 +21,6 @@ import type { RowReorder } from "inbox-core/components/sidebar-row";
 import { assistantDisplayOrder, projectAssistantReorder } from "@/lib/assistant-order";
 import { useAssistantAvatars } from "@/lib/use-assistant-avatars";
 import { useAssistantMemoryWarnings } from "@/lib/use-assistant-memory";
-import { useAssistantSubtitles } from "@/lib/use-assistant-subtitles";
 import type { BotsData } from "@/lib/use-bots-data";
 import { usePortalScopeProps } from "inbox-core/lib/portal-scope";
 import type { assistantRpcContract } from "@/server";
@@ -53,13 +52,19 @@ export function BotsSection({
   const { threads } = useSidebarThreads();
   const actions = useSidebarThreadActions();
   const navigate = useBbNavigate();
-  const { subtitles, set: setSubtitle } = useAssistantSubtitles();
   const memoryWarnings = useAssistantMemoryWarnings();
   const [restartThreadId, setRestartThreadId] = useState<string | null>(null);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
 
-  const { projectId, environmentIds, order, hidden, identities: identitiesApi } = bots;
+  const {
+    projectId,
+    environmentIds,
+    order,
+    hidden,
+    identities: identitiesApi,
+    subtitles: { subtitles, set: setSubtitle },
+  } = bots;
 
   const isSearching = searchQuery.trim().length > 0;
 

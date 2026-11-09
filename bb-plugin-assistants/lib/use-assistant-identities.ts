@@ -18,7 +18,7 @@ export interface AssistantIdentitiesApi {
    * failed read keeps it false rather than guessing.
    */
   ready: boolean;
-  /** True once a read has answered or failed, or there is nothing to read. */
+  /** True once the read for the current rows has answered or failed, or there is nothing to read. */
   loaded: boolean;
 }
 
@@ -37,7 +37,7 @@ export function useAssistantIdentities(
     () => new Map(),
   );
   const [answered, setAnswered] = useState<string | null>(null);
-  const [settledOnce, setSettledOnce] = useState(false);
+  const [settled, setSettled] = useState<string | null>(null);
   // A failed read must not strand the section until a remount: a reconnect
   // bumps the attempt, re-running the read over the same environments.
   const [attempt, setAttempt] = useState(0);
@@ -83,12 +83,12 @@ export function useAssistantIdentities(
           ),
         );
         setAnswered(`${key}#${attempt}`);
-        setSettledOnce(true);
+        setSettled(`${key}#${attempt}`);
       })
       .catch(() => {
         // Best-effort for display; readiness stays false so no move can
         // rewrite the stored order under environment-id keys.
-        if (live) setSettledOnce(true);
+        if (live) setSettled(`${key}#${attempt}`);
       });
     return () => {
       live = false;
@@ -101,7 +101,7 @@ export function useAssistantIdentities(
       (answered === read && key.split(",").every((id) => identities.has(id))),
     [answered, identities, key, read],
   );
-  const loaded = key === "" || settledOnce;
+  const loaded = key === "" || settled === read;
 
   return useMemo(
     () => ({ identities, ready, loaded }),

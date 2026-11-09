@@ -396,7 +396,7 @@ describe("Bots hidden when collapsed", () => {
       row.getAttribute("data-sidebar-thread-id"),
     );
 
-  it("shows nothing, Inbox included, until the order, the hidden bots and the identities have all landed", async () => {
+  it("shows nothing, Inbox included, until the order, the hidden bots, the subtitles and the identities have all landed", async () => {
     configureFakeSdk({
       threads: [...crowd(), thread("thr_work", { title: "Plain work" })],
       projects: [
@@ -405,7 +405,7 @@ describe("Bots hidden when collapsed", () => {
       ],
       assistantOrder: ["env-four", "env-three", "env-two", "env-one"],
       hiddenAssistants: ["env-two"],
-      deferRpc: ["assistantOrder", "hiddenAssistants", "assistantIdentities"],
+      deferRpc: ["assistantOrder", "hiddenAssistants", "listAssistantSubtitles", "assistantIdentities"],
     });
     renderList();
     await act(async () => {
@@ -420,14 +420,94 @@ describe("Bots hidden when collapsed", () => {
       expect(screen.queryByText("Plain work")).toBeNull();
       await act(async () => resolvePendingRpc(method, "oldest", answer));
     }
-    expect(screen.queryByRole("region", { name: "Bots" })).toBeNull();
     await act(async () =>
       rejectPendingRpc("assistantIdentities", "oldest", new Error("unresolved")),
+    );
+    expect(screen.queryByRole("region", { name: "Bots" })).toBeNull();
+    expect(screen.queryByText("Plain work")).toBeNull();
+    await act(async () =>
+      resolvePendingRpc("listAssistantSubtitles", "oldest", {
+        rows: [{ identity: "env-one", subtitle: "Builds plugins" }],
+      }),
     );
 
     const bots = await screen.findByRole("region", { name: "Bots" });
     expect(botIds(bots)).toEqual(["thr_four", "thr_three", "thr_one"]);
+    expect(within(bots).getByText("Builds plugins")).toBeDefined();
     expect(screen.getByText("Plain work")).toBeDefined();
+  });
+
+  it("waits for the identities of rows that arrive while the board still loads", async () => {
+    configureFakeSdk({
+      threads: [...crowd(), thread("thr_work", { title: "Plain work" })],
+      projects: [
+        sidebarProject("project-1", "bb"),
+        sidebarProject("assist-1", "assistants"),
+      ],
+      assistantOrder: ["env-one", "env-two", "env-three", "env-four"],
+      deferRpc: ["hiddenAssistants", "assistantIdentities"],
+    });
+    const view = renderList();
+    await waitFor(() =>
+      resolvePendingRpc("assistantIdentities", "oldest", {
+        rows: ["one", "two", "three", "four"].map((name) => ({
+          environmentId: `env-${name}`,
+          identity: `env-${name}`,
+        })),
+      }),
+    );
+
+    // A hidden bot reattaches in a new environment before the board shows.
+    setFakeThreads([
+      ...crowd(),
+      thread("thr_five", {
+        title: "five",
+        projectId: "assist-1",
+        environment: { id: "env-five-new" } as BoardThread["environment"],
+      }),
+      thread("thr_work", { title: "Plain work" }),
+    ]);
+    view.rerender(listElement());
+    await act(async () => resolvePendingRpc("hiddenAssistants", "oldest", { ids: ["proj_x:five"] }));
+    expect(screen.queryByText("Plain work")).toBeNull();
+
+    await waitFor(() =>
+      resolvePendingRpc("assistantIdentities", "newest", {
+        rows: [
+          ...["one", "two", "three", "four"].map((name) => ({
+            environmentId: `env-${name}`,
+            identity: `env-${name}`,
+          })),
+          { environmentId: "env-five-new", identity: "proj_x:five" },
+        ],
+      }),
+    );
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    expect(botIds(bots)).toEqual(["thr_one", "thr_two", "thr_three", "thr_four"]);
+  });
+
+  it("keeps the board up when the first bot arrives", async () => {
+    configureFakeSdk({
+      threads: [thread("thr_work", { title: "Plain work" })],
+      projects: [
+        sidebarProject("project-1", "bb"),
+        sidebarProject("assist-1", "assistants"),
+      ],
+      deferRpc: ["assistantIdentities"],
+    });
+    const view = renderList();
+    expect(await screen.findByText("Plain work")).toBeDefined();
+
+    setFakeThreads([...crowd().slice(0, 1), thread("thr_work", { title: "Plain work" })]);
+    view.rerender(listElement());
+    expect(screen.getByText("Plain work")).toBeDefined();
+    await waitFor(() =>
+      resolvePendingRpc("assistantIdentities", "oldest", {
+        rows: [{ environmentId: "env-one", identity: "env-one" }],
+      }),
+    );
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    expect(botIds(bots)).toEqual(["thr_one"]);
   });
 
   it("shows every bot, with no Show more, until one is hidden", async () => {
