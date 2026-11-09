@@ -8,15 +8,17 @@ import { shouldRefreshOnReconnect } from "inbox-core/lib/reconnect";
 /**
  * A value read from the plugin: on mount, on every signal on `channel`, and
  * after a reconnect. Reads are best-effort: a failed one keeps the last value.
- * Returns the value and a way to read it again.
+ * Returns the value, a way to read it again, and whether the first read has
+ * settled, answered or failed.
  */
 export function useLiveRead<T>(
   channel: string,
   read: () => Promise<T>,
   initial: T,
-): [T, () => void] {
+): [T, () => void, boolean] {
   const connectionState = useRealtimeConnectionState();
   const [value, setValue] = useState(initial);
+  const [loaded, setLoaded] = useState(false);
   const latestRead = useRef(read);
   latestRead.current = read;
 
@@ -27,9 +29,13 @@ export function useLiveRead<T>(
     const seq = ++requestSeq.current;
     latestRead.current().then(
       (next) => {
-        if (seq === requestSeq.current) setValue(next);
+        if (seq !== requestSeq.current) return;
+        setValue(next);
+        setLoaded(true);
       },
-      () => {},
+      () => {
+        if (seq === requestSeq.current) setLoaded(true);
+      },
     );
   }, []);
 
@@ -44,5 +50,5 @@ export function useLiveRead<T>(
     if (shouldRefreshOnReconnect(previous, connectionState)) refresh();
   }, [connectionState, refresh]);
 
-  return [value, refresh];
+  return [value, refresh, loaded];
 }

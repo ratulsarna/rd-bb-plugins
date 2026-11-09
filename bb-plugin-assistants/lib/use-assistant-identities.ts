@@ -18,6 +18,8 @@ export interface AssistantIdentitiesApi {
    * failed read keeps it false rather than guessing.
    */
   ready: boolean;
+  /** True once a read has answered or failed, or there is nothing to read. */
+  loaded: boolean;
 }
 
 /**
@@ -29,9 +31,13 @@ export function useAssistantIdentities(
   environmentIds: readonly string[],
 ): AssistantIdentitiesApi {
   const rpc = useRpc<typeof assistantRpcContract>();
+  // Kept across re-reads: an identity doesn't change, so the rows keep their
+  // order and hidden state while a new row's identity is read.
   const [identities, setIdentities] = useState<ReadonlyMap<string, string>>(
     () => new Map(),
   );
+  const [answered, setAnswered] = useState<string | null>(null);
+  const [settledOnce, setSettledOnce] = useState(false);
   // A failed read must not strand the section until a remount: a reconnect
   // bumps the attempt, re-running the read over the same environments.
   const [attempt, setAttempt] = useState(0);
@@ -50,8 +56,9 @@ export function useAssistantIdentities(
     [environmentIds],
   );
 
+  const read = `${key}#${attempt}`;
+
   useEffect(() => {
-    setIdentities(new Map());
     if (key === "") {
       return;
     }
@@ -75,10 +82,13 @@ export function useAssistantIdentities(
               .map((row) => [row.environmentId, row.identity]),
           ),
         );
+        setAnswered(`${key}#${attempt}`);
+        setSettledOnce(true);
       })
       .catch(() => {
         // Best-effort for display; readiness stays false so no move can
         // rewrite the stored order under environment-id keys.
+        if (live) setSettledOnce(true);
       });
     return () => {
       live = false;
@@ -86,12 +96,15 @@ export function useAssistantIdentities(
   }, [key, attempt, rpc]);
 
   const ready = useMemo(
-    () => key === "" || key.split(",").every((id) => identities.has(id)),
-    [identities, key],
+    () =>
+      key === "" ||
+      (answered === read && key.split(",").every((id) => identities.has(id))),
+    [answered, identities, key, read],
   );
+  const loaded = key === "" || settledOnce;
 
   return useMemo(
-    () => ({ identities, ready }),
-    [identities, ready],
+    () => ({ identities, ready, loaded }),
+    [identities, loaded, ready],
   );
 }

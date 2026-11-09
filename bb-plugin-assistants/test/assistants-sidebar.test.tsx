@@ -15,6 +15,7 @@ import {
   configureFakeSdk,
   emitRealtime,
   registrations,
+  rejectPendingRpc,
   resolvePendingRpc,
   rpcCalls,
   setFakeThreads,
@@ -233,37 +234,56 @@ describe("Bots section", () => {
     });
   });
 
-  it("keeps rows undraggable until identities resolve", async () => {
+  it("keeps the rows in place but undraggable while a new bot's identity is read", async () => {
     configureFakeSdk({
       threads: fleet(),
       projects: [
         sidebarProject("project-1", "bb"),
         sidebarProject("assist-1", "assistants"),
       ],
+      assistantOrder: ["proj_x:hands", "proj_x:sam"],
       deferRpc: ["assistantIdentities"],
     });
-    renderList();
-
+    const view = renderList();
+    const identities = (...rows: [string, string][]) => ({
+      rows: rows.map(([environmentId, identity]) => ({ environmentId, identity })),
+    });
+    const ids = (bots: HTMLElement) =>
+      Array.from(bots.querySelectorAll("[data-sidebar-thread-id]")).map((row) =>
+        row.getAttribute("data-sidebar-thread-id"),
+      );
+    await waitFor(() =>
+      resolvePendingRpc("assistantIdentities", "oldest",
+        identities(["env-sam", "proj_x:sam"], ["env-hands", "proj_x:hands"])),
+    );
     const bots = await screen.findByRole("region", { name: "Bots" });
-    // No identity map yet: a drag now would store environment ids over the
-    // saved order, so the rows carry no sort affordances at all.
-    expect(
-      bots.querySelector('[aria-roledescription="sortable"]'),
-    ).toBeNull();
+    await waitFor(() =>
+      expect(bots.querySelector('[aria-roledescription="sortable"]')).not.toBeNull(),
+    );
 
-    await act(async () =>
-      resolvePendingRpc("assistantIdentities", "oldest", {
-        rows: [
-          { environmentId: "env-sam", identity: "proj_x:sam" },
-          { environmentId: "env-hands", identity: "proj_x:hands" },
-        ],
+    // A drag before the new row's identity lands would store its environment
+    // id over the saved order, so no row is sortable until it does.
+    setFakeThreads([
+      ...fleet(),
+      thread("thr_new", {
+        title: "New",
+        projectId: "assist-1",
+        environment: { id: "env-new" } as BoardThread["environment"],
       }),
+    ]);
+    view.rerender(listElement());
+    await waitFor(() => expect(ids(bots)).toEqual(["thr_hands", "thr_sam", "thr_new"]));
+    expect(bots.querySelector('[aria-roledescription="sortable"]')).toBeNull();
+
+    await waitFor(() =>
+      resolvePendingRpc("assistantIdentities", "oldest", identities(
+        ["env-sam", "proj_x:sam"], ["env-hands", "proj_x:hands"], ["env-new", "proj_x:new"],
+      )),
     );
     await waitFor(() =>
-      expect(
-        bots.querySelector('[aria-roledescription="sortable"]'),
-      ).not.toBeNull(),
+      expect(bots.querySelector('[aria-roledescription="sortable"]')).not.toBeNull(),
     );
+    expect(ids(bots)).toEqual(["thr_hands", "thr_sam", "thr_new"]);
   });
 
   // The machine switch in real life: the thread reattaches to the same home
@@ -375,6 +395,40 @@ describe("Bots hidden when collapsed", () => {
     Array.from(bots.querySelectorAll("[data-sidebar-thread-id]")).map((row) =>
       row.getAttribute("data-sidebar-thread-id"),
     );
+
+  it("shows nothing, Inbox included, until the order, the hidden bots and the identities have all landed", async () => {
+    configureFakeSdk({
+      threads: [...crowd(), thread("thr_work", { title: "Plain work" })],
+      projects: [
+        sidebarProject("project-1", "bb"),
+        sidebarProject("assist-1", "assistants"),
+      ],
+      assistantOrder: ["env-four", "env-three", "env-two", "env-one"],
+      hiddenAssistants: ["env-two"],
+      deferRpc: ["assistantOrder", "hiddenAssistants", "assistantIdentities"],
+    });
+    renderList();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const answers: [string, unknown][] = [
+      ["assistantOrder", { ids: ["env-four", "env-three", "env-two", "env-one"] }],
+      ["hiddenAssistants", { ids: ["env-two"] }],
+    ];
+    for (const [method, answer] of answers) {
+      expect(screen.queryByRole("region", { name: "Bots" })).toBeNull();
+      expect(screen.queryByText("Plain work")).toBeNull();
+      await act(async () => resolvePendingRpc(method, "oldest", answer));
+    }
+    expect(screen.queryByRole("region", { name: "Bots" })).toBeNull();
+    await act(async () =>
+      rejectPendingRpc("assistantIdentities", "oldest", new Error("unresolved")),
+    );
+
+    const bots = await screen.findByRole("region", { name: "Bots" });
+    expect(botIds(bots)).toEqual(["thr_four", "thr_three", "thr_one"]);
+    expect(screen.getByText("Plain work")).toBeDefined();
+  });
 
   it("shows every bot, with no Show more, until one is hidden", async () => {
     crowdedSidebar([]);

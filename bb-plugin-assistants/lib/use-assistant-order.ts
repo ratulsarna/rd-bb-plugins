@@ -12,6 +12,8 @@ export interface AssistantOrderApi {
   ids: readonly string[];
   /** False until the first read lands. Reordering stays disabled until it. */
   ready: boolean;
+  /** True once the first read has answered or failed. */
+  loaded: boolean;
   /** True until the server answers the current write. */
   moving: boolean;
   /** Store a full new order; the response is canonical. */
@@ -30,6 +32,7 @@ export function useAssistantOrder(): AssistantOrderApi {
   const connectionState = useRealtimeConnectionState();
   const [ids, setIds] = useState<readonly string[]>(() => []);
   const [ready, setReady] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [moving, setMoving] = useState(false);
   const movingRef = useRef(false);
 
@@ -43,9 +46,11 @@ export function useAssistantOrder(): AssistantOrderApi {
       if (seq !== requestSeq.current) return;
       setIds(result.ids);
       setReady(true);
+      setLoaded(true);
     } catch {
       // Leave `ready` alone: an unknown order disables reordering, and the
       // section still renders in its activity fallback order.
+      if (seq === requestSeq.current) setLoaded(true);
     }
   }, [rpc]);
 
@@ -88,7 +93,7 @@ export function useAssistantOrder(): AssistantOrderApi {
   );
 
   return useMemo(
-    () => ({ ids, ready, moving, set }),
-    [ids, moving, ready, set],
+    () => ({ ids, ready, loaded, moving, set }),
+    [ids, loaded, moving, ready, set],
   );
 }
