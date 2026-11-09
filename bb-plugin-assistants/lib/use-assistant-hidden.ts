@@ -7,13 +7,15 @@ import { useLiveRead } from "@/lib/use-live-read";
 export interface AssistantHiddenApi {
   /** Identities of the bots that wait behind "Show more". */
   ids: ReadonlySet<string>;
+  /** True once the first read has answered or failed. */
+  loaded: boolean;
   /** A failed write toasts and re-reads. */
   set(threadId: string, hidden: boolean): void;
 }
 
 export function useAssistantHidden(): AssistantHiddenApi {
   const rpc = useRpc<typeof assistantRpcContract>();
-  const [ids, refresh] = useLiveRead<ReadonlySet<string>>(
+  const [ids, refresh, loaded] = useLiveRead<ReadonlySet<string>>(
     "assistant-hidden",
     async () => new Set((await rpc.call("hiddenAssistants", {})).ids),
     new Set(),
@@ -22,6 +24,7 @@ export function useAssistantHidden(): AssistantHiddenApi {
   return useMemo<AssistantHiddenApi>(
     () => ({
       ids,
+      loaded,
       set: (threadId, hidden) =>
         void rpc
           .call("setAssistantHidden", { threadId, hidden })
@@ -30,6 +33,6 @@ export function useAssistantHidden(): AssistantHiddenApi {
             refresh();
           }),
     }),
-    [ids, refresh, rpc],
+    [ids, loaded, refresh, rpc],
   );
 }

@@ -7,6 +7,8 @@ import { useLiveRead } from "@/lib/use-live-read";
 export interface AssistantSubtitlesApi {
   /** identity → subtitle, from the plugin's own store. */
   subtitles: ReadonlyMap<string, string>;
+  /** True once the first read has answered or failed. */
+  loaded: boolean;
   /** Empty string clears the subtitle. A failed write toasts and re-reads. */
   set(threadId: string, subtitle: string): void;
 }
@@ -14,7 +16,7 @@ export interface AssistantSubtitlesApi {
 export function useAssistantSubtitles(): AssistantSubtitlesApi {
   const rpc = useRpc<typeof assistantRpcContract>();
   // Every mutation publishes on the channel, so one subscription refreshes all clients.
-  const [subtitles, refresh] = useLiveRead<ReadonlyMap<string, string>>(
+  const [subtitles, refresh, loaded] = useLiveRead<ReadonlyMap<string, string>>(
     "assistant-subtitles",
     async () =>
       new Map(
@@ -29,6 +31,7 @@ export function useAssistantSubtitles(): AssistantSubtitlesApi {
   return useMemo<AssistantSubtitlesApi>(
     () => ({
       subtitles,
+      loaded,
       set: (threadId, subtitle) =>
         void rpc
           .call("setAssistantSubtitle", { threadId, subtitle })
@@ -37,6 +40,6 @@ export function useAssistantSubtitles(): AssistantSubtitlesApi {
             refresh();
           }),
     }),
-    [refresh, rpc, subtitles],
+    [loaded, refresh, rpc, subtitles],
   );
 }

@@ -1,18 +1,20 @@
-import { definePluginApp, experimental_useSidebarThreads as useSidebarThreads, type PluginThreadListProps } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, type PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import { BoardSidebar } from "inbox-core/components/sidebar-list";
 import { BotsSection } from "@/components/bots-section";
-import { selectedAssistantsProjectId } from "@/lib/assistant-identity";
+import { useBotsData } from "@/lib/use-bots-data";
 
 // The board is inbox-core's; this plugin contributes the Bots section on top
 // and keeps the assistants project out of the inbox lanes and the picker.
 function AssistantsSidebar(props: PluginThreadListProps) {
-  const { projects } = useSidebarThreads();
+  const bots = useBotsData();
   return (
     <BoardSidebar
       {...props}
-      excludedProjectId={selectedAssistantsProjectId(projects)}
+      excludedProjectId={bots.projectId}
+      topSectionLoading={!bots.loaded}
       topSection={
         <BotsSection
+          bots={bots}
           activeThreadId={props.activeThreadId}
           isCompactViewport={props.isCompactViewport}
           onNavigate={props.onNavigate}

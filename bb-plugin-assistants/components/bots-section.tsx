@@ -19,17 +19,14 @@ import { CollapsibleSection } from "inbox-core/components/section";
 import { SortableRows } from "inbox-core/components/sortable-rows";
 import type { RowReorder } from "inbox-core/components/sidebar-row";
 import { assistantDisplayOrder, projectAssistantReorder } from "@/lib/assistant-order";
-import { selectedAssistantsProjectId } from "@/lib/assistant-identity";
 import { useAssistantAvatars } from "@/lib/use-assistant-avatars";
-import { useAssistantHidden } from "@/lib/use-assistant-hidden";
-import { useAssistantIdentities } from "@/lib/use-assistant-identities";
 import { useAssistantMemoryWarnings } from "@/lib/use-assistant-memory";
-import { useAssistantOrder } from "@/lib/use-assistant-order";
-import { useAssistantSubtitles } from "@/lib/use-assistant-subtitles";
+import type { BotsData } from "@/lib/use-bots-data";
 import { usePortalScopeProps } from "inbox-core/lib/portal-scope";
 import type { assistantRpcContract } from "@/server";
 
 interface BotsSectionProps {
+  bots: BotsData;
   activeThreadId: string | null;
   isCompactViewport: boolean;
   onNavigate: () => void;
@@ -46,44 +43,31 @@ interface BotsSectionProps {
  * threads get rows.
  */
 export function BotsSection({
+  bots,
   activeThreadId,
   isCompactViewport,
   onNavigate,
   searchQuery,
 }: BotsSectionProps) {
-  const { threads, projects } = useSidebarThreads();
+  const { threads } = useSidebarThreads();
   const actions = useSidebarThreadActions();
   const navigate = useBbNavigate();
-  const { subtitles, set: setSubtitle } = useAssistantSubtitles();
   const memoryWarnings = useAssistantMemoryWarnings();
-  const order = useAssistantOrder();
-  const hidden = useAssistantHidden();
   const [restartThreadId, setRestartThreadId] = useState<string | null>(null);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
 
-  const projectId = selectedAssistantsProjectId(projects);
+  const {
+    projectId,
+    environmentIds,
+    order,
+    hidden,
+    identities: identitiesApi,
+    subtitles: { subtitles, set: setSubtitle },
+  } = bots;
 
   const isSearching = searchQuery.trim().length > 0;
 
-  // Environments behind the fleet's rows; identities are derived for all of
-  // them in one round-trip.
-  const environmentIds = useMemo(
-    () =>
-      projectId
-        ? threads.flatMap(
-            (thread) =>
-              thread.projectId === projectId &&
-              thread.parentThreadId === null &&
-              !thread.isArchived &&
-              thread.environment?.id
-                ? [thread.environment.id]
-                : [],
-          )
-        : [],
-    [projectId, threads],
-  );
-  const identitiesApi = useAssistantIdentities(environmentIds);
   const identities = identitiesApi.identities;
 
   const allRows = useMemo(() => {
