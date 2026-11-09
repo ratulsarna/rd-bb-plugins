@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useMemo } from "react";
 import { experimental_useSidebarThreads as useSidebarThreads } from "@get-bb/plugin-sdk/app";
 import { selectedAssistantsProjectId } from "@/lib/assistant-identity";
 import { useAssistantHidden, type AssistantHiddenApi } from "@/lib/use-assistant-hidden";
@@ -14,11 +14,7 @@ export interface BotsData {
   hidden: AssistantHiddenApi;
   identities: AssistantIdentitiesApi;
   subtitles: AssistantSubtitlesApi;
-  /**
-   * False until the threads, the order, the hidden bots, the subtitles and the
-   * current rows' identities have landed; then true for good, so a later
-   * read never blanks the board under the reader.
-   */
+  /** True once the threads, the order, the hidden bots, the subtitles and the current rows' identities have landed. */
   loaded: boolean;
 }
 
@@ -50,17 +46,12 @@ export function useBotsData(): BotsData {
   const hidden = useAssistantHidden();
   const identities = useAssistantIdentities(environmentIds);
   const subtitles = useAssistantSubtitles();
-  const shown = useRef(false);
-  if (
+  const loaded =
     status !== "loading" &&
     order.loaded &&
     hidden.loaded &&
     subtitles.loaded &&
-    identities.loaded
-  ) {
-    shown.current = true;
-  }
-  const loaded = shown.current;
+    identities.loaded;
   return useMemo(
     () => ({ projectId, environmentIds, order, hidden, identities, subtitles, loaded }),
     [environmentIds, hidden, identities, loaded, order, projectId, subtitles],
