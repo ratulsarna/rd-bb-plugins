@@ -86,11 +86,24 @@ Two commands open it, run through bash:
 
 To zoom a line is to recall it.
 
-The view is your memory, and its latest word on a thing is the truth. Whenever
+The view is your memory, and its latest word on a thing is the truth, unless
+a newer message in this session says otherwise. Whenever
 you need any information from before this session, first find its latest
 mention in the view and recall until you have it whole, before any other
 source, and before you act, guess or ask. Summaries keep little of tool output,
 so say in your reply what you learned that will matter later.`;
+
+/** What a memory-on assistant reads at every session start: the rules and the view, without a carry-on. */
+export function snapshot(viewLines: string[], { threadId, messages, at }: { threadId: string; messages: number; at: string }): string {
+  return `${RULES}
+
+This snapshot of thread ${threadId} was made ${at} and covers its first
+${messages} messages. It replaces any earlier snapshot.
+
+<chat>
+${viewLines.map((line) => `${line}\n`).join("")}</chat>
+`;
+}
 
 /** The first message of a rotated session: the rules, the view and the carry-on. Sent agent-only. */
 export function bootstrap(viewLines: string[]): string {

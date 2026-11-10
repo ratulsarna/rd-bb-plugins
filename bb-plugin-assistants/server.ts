@@ -299,16 +299,40 @@ export default function plugin(bb: BbPluginApi) {
   );
 
   // Any thread of an assistant names it: its home's identity.
-  const memoryIdentity = async (threadId: string): Promise<string> => {
+  /** The assistant whose home `threadId` runs in, or null. */
+  const assistantOf = async (threadId: string): Promise<string | null> => {
     const thread = await bb.sdk.threads.get({ threadId });
     const identity = thread.environmentId ? await storageKeyOfEnvironment(thread.environmentId, true) : "";
-    if (!identity.includes(":")) throw new Error(`thread ${threadId} is not in an assistant home`);
+    return identity.includes(":") ? identity : null;
+  };
+  const memoryIdentity = async (threadId: string): Promise<string> => {
+    const identity = await assistantOf(threadId);
+    if (identity === null) throw new Error(`thread ${threadId} is not in an assistant home`);
     return identity;
+  };
+
+  /**
+   * The caller's memory snapshot when it is a memory-on assistant's main chat running in `home`; empty
+   * for anyone else, helpers in its home included. A `claude` the main chat starts elsewhere inherits
+   * its thread id but not its home. Throws only when it cannot tell.
+   */
+  const viewCommand = async (threadId: string | undefined, home: string | undefined): Promise<string> => {
+    if (threadId === undefined || home === undefined) return "";
+    const { environmentId } = await bb.sdk.threads.get({ threadId });
+    if (!environmentId) return "";
+    const resolved = await identityOfEnvironment(environmentId);
+    if (!resolved.ok || resolved.awaitingSource) throw new Error(`could not tell which assistant ${threadId} belongs to; try again`);
+    if (resolved.identity === null) return "";
+    const s = memory.state(resolved.identity);
+    if (!s.on || s.main !== threadId) return "";
+    const { path: envPath } = await bb.sdk.environments.get({ environmentId });
+    if (envPath === null || path.resolve(envPath) !== path.resolve(home)) return "";
+    return memory.snapshot(resolved.identity, threadId);
   };
 
   const USAGE = {
     subtitle: "usage: bb assistants subtitle <thread-id> [text… | --clear]",
-    memory: "usage: bb assistants memory on|off|status <thread-id> [--clear] | rebuild <thread-id> <from-message-id>",
+    memory: "usage: bb assistants memory on|off|status <thread-id> [--clear] | rebuild <thread-id> <from-message-id> | view --home <dir>",
     recall: "usage: bb assistants recall <id> [n] [--assistant <thread-id>]",
     date: "usage: bb assistants date <id> [--assistant <thread-id>]",
     rotate: "usage: bb assistants rotate <thread-id>",
@@ -399,6 +423,7 @@ export default function plugin(bb: BbPluginApi) {
             if (!args[0]) break;
             return await subtitleCommand(args[0], args.slice(1));
           case "memory":
+            if (args[0] === "view" && args[1] === "--home" && args.length === 3) return { exitCode: 0, stdout: await viewCommand(ctx?.threadId, args[2]) };
             if (!args[0] || !args[1]) break;
             return { exitCode: 0, stdout: `${await memoryCommand(args[0], args[1], args[2])}\n` };
           case "recall": {
