@@ -320,14 +320,14 @@ describe("Bots section", () => {
       projects: [sidebarProject("project-1", "bb"), sidebarProject("assist-1", "assistants")],
       assistantIdentities: { "env-sam-mac": "proj_x:sam", "env-hands": "proj_x:hands" },
       memoryWarnings: [
-        { identity: "proj_x:sam", warning: "rotation skipped: summaries not ready" },
+        { identity: "proj_x:sam", warning: "Memory summaries keep failing" },
         { identity: "proj_x:hands", warning: null },
       ],
     });
     renderList();
 
     const bots = await screen.findByRole("region", { name: "Bots" });
-    const mark = await within(bots).findByRole("img", { name: "Memory warning: rotation skipped: summaries not ready" });
+    const mark = await within(bots).findByRole("img", { name: "Memory warning: Memory summaries keep failing" });
     expect(mark.closest("li")!.querySelector("[data-sidebar-thread-id]")!.getAttribute("data-sidebar-thread-id")).toBe("thr_sam");
     expect(within(bots).getAllByRole("img", { name: /^Memory warning/ })).toHaveLength(1);
   });

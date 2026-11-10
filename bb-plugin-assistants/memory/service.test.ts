@@ -3,7 +3,6 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { handover } from "./handover";
 import { IDENTITY, settle, world } from "./world";
 
 const worlds: Array<ReturnType<typeof world>> = [];
@@ -16,14 +15,6 @@ const start = (...args: Parameters<typeof world>) => {
   worlds.push(w);
   return w;
 };
-
-/** `claude -p` that never answers, until killed. */
-const hanging = (() => {
-  const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() }) as any;
-  child.stdin = Object.assign(new EventEmitter(), { end: () => {} });
-  child.kill = () => setImmediate(() => child.emit("close", null, "SIGKILL"));
-  return child;
-}) as unknown as typeof spawn;
 
 /** `claude -p` that answers only when the test says so, one call at a time. */
 function onCue() {
@@ -75,120 +66,6 @@ it("logs a command's call and output from one event, and after a crash between t
   expect(svc.chat(IDENTITY).msgs.map((m) => [m.kind, m.text, m.src])).toEqual(logged);
 });
 
-it("rotates once at the idle after a completed turn over the threshold, never on an interrupted one, under it, or after the bootstrap alone", async () => {
-  const w = start();
-  const svc = w.service();
-  await svc.on("thr_main");
-  // A fresh session whose only request is its hidden bootstrap: with a low threshold it must not rotate on and on.
-  w.emit("thr_main", "client/turn/requested", { initiator: "user", senderThreadId: null, input: [{ type: "text", text: "<chat>…</chat>", visibility: "agent-only" }] });
-  w.reply("thr_main", "ready");
-  w.turnEnd("thr_main");
-  w.usage.set("thr_main", { usedTokens: 90_000, modelContextWindow: 100_000 });
-  await svc.onIdle("thr_main");
-  w.say("thr_main", "and now?");
-  w.turnEnd("thr_main", "interrupted");
-  await svc.onIdle("thr_main");
-  w.turnEnd("thr_main");
-  w.usage.set("thr_main", { usedTokens: 50_000, modelContextWindow: 100_000 });
-  await svc.onIdle("thr_main");
-  expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
-
-  w.usage.set("thr_main", { usedTokens: 56_000, modelContextWindow: 100_000 });
-  // Two wake-ups for one idle, as the event stream and the idle event can both bring.
-  await Promise.all([svc.onIdle("thr_main"), svc.onIdle("thr_main")]);
-  await svc.onIdle("thr_main");
-  expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
-  expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new1", previous: [] });
-  expect(w.threads.get("thr_main")!.archivedAt).not.toBeNull();
-  expect(w.automations[0].automation.execution.targetThreadId).toBe("thr_new1");
-  expect(svc.state(IDENTITY).warnings).toEqual([]);
-
-  // One turn the user typed is enough: memory turned on in a thread with a single long turn still rotates.
-  w.say("thr_new1", "one long request");
-  w.turnEnd("thr_new1");
-  w.usage.set("thr_new1", { usedTokens: 90_000, modelContextWindow: 100_000 });
-  await svc.onIdle("thr_new1");
-  expect(svc.state(IDENTITY).main).toBe("thr_new2");
-});
-
-it("measures a Claude Code chat against the window it compacts by, not the larger one reported as a turn ends", async () => {
-  const w = start();
-  const svc = w.service();
-  await svc.on("thr_main");
-  const usage = (contextWindowUsage: Record<string, unknown>) => w.emit("thr_main", "thread/contextWindowUsage/updated", { contextWindowUsage });
-  w.say("thr_main", "first");
-  w.turnEnd("thr_main");
-  usage({ usedTokens: 40_000, modelContextWindow: 100_000, estimated: true, snapshot: { usedTokens: 40_000, contextWindowTokens: 100_000, autoCompactAtTokens: 93_000 } });
-  // The next turn: a reset as it starts, then the model's 200k window as it ends, before the breakdown comes.
-  w.say("thr_main", "second");
-  usage({ usedTokens: null, modelContextWindow: null, estimated: true });
-  usage({ usedTokens: 60_000, modelContextWindow: 200_000, estimated: true });
-  w.turnEnd("thr_main");
-  w.usage.set("thr_main", { usedTokens: 60_000, modelContextWindow: 200_000 });
-  await svc.onIdle("thr_main");
-  expect(svc.state(IDENTITY).main).toBe("thr_new1");
-});
-
-it("stops waiting for summaries when the user starts another turn, and warns when they never come", async () => {
-  const w = start();
-  const svc = w.service({ readinessMs: 80, retryMs: 50 }, hanging);
-  await svc.on("thr_main");
-  w.say("thr_main", "x".repeat(900));
-  w.say("thr_main", "y");
-  w.turnEnd("thr_main");
-  w.usage.set("thr_main", { usedTokens: 90, modelContextWindow: 100 });
-
-  const waiting = svc.onIdle("thr_main");
-  // The context read comes right before the wait for summaries.
-  await vi.waitFor(() => expect(w.harness.inspection.sdk.callsTo("threads.context")).toHaveLength(1));
-  await settle(10);
-  svc.onActive("thr_main");
-  await waiting;
-  expect(svc.state(IDENTITY).warnings).toEqual([]);
-
-  await svc.onIdle("thr_main");
-  expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual(["rotation skipped: summaries not ready"]);
-  expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
-  // And tries again on its timer while the chat sits idle, with one warning for the lot.
-  const reads = w.harness.inspection.sdk.callsTo("threads.context").length;
-  await settle(400);
-  expect(w.harness.inspection.sdk.callsTo("threads.context").length).toBeGreaterThan(reads);
-  expect(svc.state(IDENTITY).warnings).toHaveLength(1);
-});
-
-it("cancels the attempt when a turn starts while the context use is being read", async () => {
-  const w = start();
-  const svc = w.service();
-  await svc.on("thr_main");
-  w.say("thr_main", "one");
-  w.say("thr_main", "two");
-  w.turnEnd("thr_main");
-  let answer!: (value: unknown) => void;
-  w.harness.sdk.stub("threads.context", () => new Promise((resolve) => (answer = resolve)));
-  const idle = svc.onIdle("thr_main");
-  await vi.waitFor(() => expect(answer).toBeDefined());
-  svc.onActive("thr_main");
-  answer({ usage: { usedTokens: 90, modelContextWindow: 100 } });
-  await idle;
-  expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
-});
-
-it("tries a rotation a busy moment refused again on its timer, while the chat sits idle after the same turn", async () => {
-  const w = start();
-  // Wide enough that a loaded machine still sees the first try refused.
-  const svc = w.service({ quietMs: 300, retryMs: 400 });
-  await svc.on("thr_main");
-  w.say("thr_main", "one");
-  w.say("thr_main", "two");
-  w.turnEnd("thr_main");
-  w.usage.set("thr_main", { usedTokens: 90, modelContextWindow: 100 });
-  w.thread("thr_child", { parentThreadId: "thr_main", updatedAt: Date.now() });
-  await svc.onIdle("thr_main");
-  expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toEqual([]);
-  await vi.waitFor(() => expect(w.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1), { timeout: 3000 });
-  await vi.waitFor(() => expect(svc.state(IDENTITY)).toMatchObject({ main: "thr_new1", previous: [] }));
-});
-
 it("logs background work when bb reports it done", async () => {
   const w = start();
   const svc = w.service();
@@ -196,49 +73,6 @@ it("logs background work when bb reports it done", async () => {
   w.emit("thr_main", "item/backgroundTask/completed", { item: { type: "backgroundTask", id: "b", status: "completed", taskType: "shell", description: "build", taskStatus: "completed", skipTranscript: false, summary: "built" } });
   await svc.catchUp(IDENTITY, "thr_main");
   expect(svc.chat(IDENTITY).msgs.map((m) => m.text).at(-1)).toBe("built");
-});
-
-it("warns when the harness compacted the chat before it could rotate, not for a compaction before memory was on", async () => {
-  const w = start();
-  const svc = w.service();
-  w.emit("thr_main", "thread/compacted", {});
-  await settle(5);
-  await svc.on("thr_main");
-  expect(svc.rows()).toEqual([{ identity: IDENTITY, warning: null }]);
-  w.emit("thr_main", "thread/compacted", {});
-  await svc.catchUp(IDENTITY, "thr_main");
-  expect(svc.rows()).toEqual([{ identity: IDENTITY, warning: "thr_main compacted before rotation" }]);
-  expect(w.harness.inspection.realtimeSignals.some((s) => s.channel === "assistant-memory")).toBe(true);
-});
-
-it("warns to rotate instead after a compact by hand, and as before for one the harness did itself", async () => {
-  const w = start();
-  const svc = w.service();
-  await svc.on("thr_main");
-  w.emit("thr_main", "client/turn/requested", { initiator: "user", senderThreadId: null, input: [{ type: "text", text: "/compact", mentions: [{ start: 0, end: 8, resource: { kind: "command", trigger: "/", name: "compact", source: "command", origin: "builtin", label: "compact", argumentHint: null } }] }] });
-  w.emit("thr_main", "thread/compacted", {});
-  await svc.catchUp(IDENTITY, "thr_main");
-  w.say("thr_main", "a long task");
-  w.emit("thr_main", "thread/compacted", {});
-  await svc.catchUp(IDENTITY, "thr_main");
-  expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual([
-    "thr_main was compacted by hand. With memory on, use bb assistants rotate thr_main instead.",
-    "thr_main compacted before rotation",
-  ]);
-  expect(svc.chat(IDENTITY).msgs.map((m) => m.text)).toEqual(["a long task"]);
-});
-
-it("rotates at start when a rotation came due while the plugin was down", async () => {
-  const w = start();
-  let svc = w.service();
-  await svc.on("thr_main");
-  w.say("thr_main", "one");
-  w.turnEnd("thr_main");
-  w.usage.set("thr_main", { usedTokens: 90, modelContextWindow: 100 });
-  await svc.dispose();
-  svc = w.service();
-  await svc.start();
-  await vi.waitFor(() => expect(svc.state(IDENTITY).main).toBe("thr_new1"));
 });
 
 it("stops at a plugin reload: logging in flight ends before it writes, and the reload waits for it", async () => {
@@ -306,7 +140,7 @@ it("leaves a memory-off assistant alone when its main chat goes away", async () 
   const w = start();
   let svc = w.service();
   await svc.on("thr_main");
-  svc.off(IDENTITY);
+  await svc.off(IDENTITY, "thr_main");
   w.say("thr_main", "after off");
   await w.bb.sdk.threads.archive({ threadId: "thr_main" });
   await svc.onGone("thr_main", "archived");
@@ -446,22 +280,6 @@ it("drops a summary that was running when a write failed, so a message that late
   const chat = svc.chat(IDENTITY);
   expect(chat.msgs.map((m) => m.text[0])).toEqual(["b"]);
   expect(chat.viewLines()[0]).not.toContain("summary of A");
-});
-
-it("ends a wait for summaries with the storage reason when a write fails", async () => {
-  const w = start();
-  const svc = w.service({ readyCapMs: 5000 }, hanging);
-  await svc.on("thr_main");
-  w.say("thr_main", "x".repeat(900));
-  await svc.catchUp(IDENTITY, "thr_main");
-  const moving = handover(svc, { identity: IDENTITY, oldThreadId: "thr_main" });
-  await settle();
-  failNextWrite();
-  w.say("thr_main", "more");
-  await expect(svc.catchUp(IDENTITY, "thr_main")).rejects.toThrow(/disk full/);
-  const started = Date.now();
-  await expect(moving).rejects.toThrow(/memory write failed: disk full/);
-  expect(Date.now() - started).toBeLessThan(1000);
 });
 
 it("ends an import a full disk stopped without an unhandled rejection, even when it cannot save why", async () => {

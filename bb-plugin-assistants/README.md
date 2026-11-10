@@ -67,11 +67,27 @@ a second project named `Assistants` is not hidden by capitalization.
 
 ## Memory
 
-Memory gives one assistant a conversation that never ends, on any harness
-(Claude Code, Codex, Pi). It is off until you turn it on for that assistant.
-It follows Victor Taelin's OptChat design: every message is logged word for
-word, a tree of one-line summaries is built over the log, and a new session
-starts with a 64-128 KB view of the whole chat.
+Memory gives one Claude Code assistant a conversation that never ends. It is
+off until you turn it on for that assistant. It follows Victor Taelin's
+OptChat design: every message is logged word for word, a tree of one-line
+summaries is built over the log, and every session starts with a 64-128 KB
+view of the whole chat.
+
+The assistant keeps one thread for good. Claude Code compacts it when its
+context fills, and a `SessionStart` hook hands it the view again: on startup,
+clear and compact, for the main chat only, it writes `memory view` to
+`<home>/nosync/bb-memory-<thread>.md` and tells the agent to read that file
+before anything else. A resume keeps its memory in context and gets nothing,
+as does every other session in the home. If the command fails, only a chat
+that already has such a file is told. `memory on` installs the hook in the
+home: the script at `.claude/hooks/bb-memory-session-start.sh` and one entry
+in `.claude/settings.json`, beside what the file already holds, and a
+placeholder memory file so even a first failed load warns. Every plugin load
+installs it again for each memory-on assistant, bringing the current script.
+`memory off` takes out only that hook and the script. A running Claude Code
+process picks the change up without a restart.
+The home syncs, so every machine gets them. **New thread with…** is closed
+while memory is on.
 
 What is logged: the main chat's user messages, the assistant's replies, its
 tool calls and their output, and reports other threads send into it. What is
@@ -90,51 +106,10 @@ session and no context files, in an empty folder. After 5 failed calls in a
 row, as when an account runs out, every summary stops for 10 minutes and each
 memory-on assistant gets a warning.
 
-Rotation: when a turn ends normally, the thread is idle and its context use
-is at or over the threshold, the plugin starts a new conversation in the same
-home with the same provider. Its first message holds the memory rules and the
-view, hidden from the timeline. **New thread with…** on a memory-on assistant
-does the same move, adding your message after the view.
+`memory off` stops logging. If you archive or delete the main chat yourself
+while memory is on, memory logs its last events, has no main chat and warns;
+run `memory on` on the thread to carry on in.
 
-The move runs in one pass, and only when nothing is in flight: the old thread
-idle (or failed) with no background work and no active goal (plan mode is
-fine), everything its archive takes along (children, threads whose lifecycle
-it owns, hidden threads made from it, and theirs, through archived ones too)
-done and quiet for 5 seconds, nothing queued on it, and no earlier old thread
-still live. An automatic rotation and `rotate` also refuse when the archive
-would take a thread of another project or another assistant's home; **New
-thread with…** goes ahead, since you chose it. It
-waits for summaries first (up to a minute for **New thread with…** and
-`rotate`, five minutes for an automatic rotation), then holds new messages to
-the old thread. Once the new thread runs, the old one's automations and held
-messages move to it, and the old one is archived. If memory cannot save the
-new thread as the main chat, it archives the new thread (or warns you to),
-and the old one stays the main chat.
-
-If anything is in the way after the new thread exists, the move stops there:
-the new thread is the main chat, the old one stays live and is still logged,
-and a warning says what to do. Nothing retries it. Rotation waits until you
-archive the old thread; its last events are logged first. A rotation refused
-because the thread was busy, a child was working or summaries were not ready
-tries again every 30 seconds while the chat sits idle after the same turn.
-Queued messages, an active goal or failed queued messages (on the old
-thread or a child), a thread of another assistant, or a live old thread give
-one warning instead. A rotation that came due while the plugin was stopped runs at start. Automatic
-rotation never follows a failed or interrupted turn, nor a session whose only
-turn is its hidden first message. `memory off` stops logging and rotation; a
-move already running finishes. If you archive or delete the main chat
-yourself while memory is on, memory logs its last events, has no main chat
-and warns; run `memory on` on the thread to carry on in. A harness can still compact in one
-very long turn; that shows as a warning (only for compactions after memory
-was turned on). With memory on, rotate, don't compact: a `/compact` is not
-logged, and it warns to use `bb assistants rotate` instead.
-
-Known gaps: **Send now** and a child's report skip the hold, so one sent in the
-seconds of a move can reach the old thread (it is logged, and the move stops if
-it starts work there). If deleting a held message from the old thread fails
-after it was copied, the new thread has a copy too. After a move that stopped,
-the new thread's view lacks what happened on the old thread since; `recall`
-reaches it.
 Each assistant's whole log and tree stay in the server's memory, read in full
 when the plugin starts, so a very long history costs RAM and start time.
 If a memory write fails, memory warns once and reads its files back at the
@@ -143,43 +118,31 @@ write stops an import; run it again to resume.
 
 | Command | Does |
 |---|---|
-| `bb assistants memory on <thread-id>` | Turn memory on; this thread becomes the main chat and is logged from its start. |
-| `bb assistants memory off <thread-id>` | Stop logging and rotating. The log, `recall` and `date` stay. |
-| `bb assistants memory status <thread-id> [--clear]` | On or off, main chat, counts, view size, summary progress, last context use, import progress, warnings. `--clear` clears warnings; a clean move to a new conversation clears them too. |
+| `bb assistants memory on <thread-id>` | Turn memory on for a Claude Code root thread and install the hook; this thread becomes the main chat and is logged from its start. |
+| `bb assistants memory off <thread-id>` | Stop logging and remove the hook. The log, `recall` and `date` stay. |
+| `bb assistants memory status <thread-id> [--clear]` | On or off, main chat, counts, view size, summary progress, import progress, warnings. `--clear` clears warnings. |
 | `bb assistants recall <id> [n]` | Open line `id+n` of the view into its two halves; `n = 1` gives the message whole. |
 | `bb assistants date <id>` | The date and time of message `id`, zone named in words first (`2026-08-17 10:30 UTC+05:30 (2026-08-17T10:30:00+05:30)`), so a model converts it to the user's time zone. |
-| `bb assistants memory rebuild <thread-id> <id>` | Summarize again every line from message `id` on, after a prompt change. Old lines serve the view until their new ones land, so rotation never waits on it; `memory status` shows the lines left. A message logged as the user's that a script sent (`[heartbeat]`, `[bb automation …]`) becomes work. Pause summaries while it starts. |
-| `bb assistants rotate <thread-id>` | Rotate the main chat now; waits up to a minute for summaries. |
+| `bb assistants memory rebuild <thread-id> <id>` | Summarize again every line from message `id` on, after a prompt change. Old lines serve the view until their new ones land; `memory status` shows the lines left. A message logged as the user's that a script sent (`[heartbeat]`, `[bb automation …]`) becomes work. Pause summaries while it starts. |
 | `bb assistants memory view --home <dir>` | From a memory-on assistant's main chat running in `<dir>`: its rules and current view, with what they cover. Empty for any other caller: helpers in its home, or a `claude` it started elsewhere. |
 | `bb assistants import <thread-id> <source>...` | Before memory is first on: seed the log from old threads (`thr_…`) or absolute JSONL paths on the server (`{kind, text, date}` per line). Runs in the background and resumes when run again. |
 
 `recall` and `date` use the calling thread's assistant; outside a thread pass
 `--assistant <thread-id>`.
 
-`hooks/memory-session-start.sh` is a Claude Code `SessionStart` hook. On
-startup, clear and compact, for a memory-on assistant's main chat, it writes
-`memory view` to `$CLAUDE_PROJECT_DIR/nosync/bb-memory-<thread>.md` and tells
-the agent to read it. A resume keeps its memory in context and gets nothing,
-as does any other session. If the command fails, only a chat that already has
-such a file is told. Install it once per machine in `~/.claude/settings.json`:
-
-```json
-{ "hooks": { "SessionStart": [{ "hooks": [{ "type": "command", "command": "/path/to/bb-plugin-assistants/hooks/memory-session-start.sh" }] }] } }
-```
-
-Settings: `rotateAtPercent` (55, 1-95), `summaryRunner` (`claude` or `pi`),
+Settings: `summaryRunner` (`claude` or `pi`),
 `summaryModel` (`haiku`; for pi `provider/model`, e.g. `zai/glm-5.3-flash`),
 `summaryPool` (8 summary calls at once across all assistants),
 `summaryTarget` (512 bytes asked per line; 512 stays the limit),
 `timeZone` (the IANA zone a summary call is told each message's send time
 in; the bb server's by default) and
-`summariesPaused` (starts no new summary call; logging and recall go on, and
-a rotation waits for summaries to catch up). `memory status` shows the
+`summariesPaused` (starts no new summary call; logging and recall go on; a
+session start refuses a view that grew past 128 KB meanwhile). `memory status` shows the
 runner, model and pool, and why summaries are not running.
 
-Warnings (a compaction before rotation, summaries not ready in time, an
-automation that could not move) show as a `!` on the assistant's Bots row and
-in `memory status`.
+Warnings (summaries that keep failing, a failed memory write, a main chat
+archived by hand) show as a `!` on the assistant's Bots row and in
+`memory status`.
 
 `scripts/eval.ts` asks a thread a list of questions and scores the answers:
 `node scripts/eval.ts <thread-id> <questions.json>`.
@@ -278,11 +241,8 @@ afterward, leaving a created thread with `thread_provisioning_failed`. Inspect
 that thread's status to verify startup. The source is archived once creation
 succeeds, without waiting for provider startup; reopen it from **Past chats**.
 
-When memory is on for the source assistant, `createReplacementThread` runs the
-memory handover instead: it refuses a `sendAt`, and refuses with a reason while
-the source is busy, an earlier old thread is still live, or its summaries are
-not ready within a minute. A move that stops after the spawn returns the new
-thread with `warning`.
+When memory is on for the source assistant, `createReplacementThread` refuses:
+the assistant keeps its one conversation.
 
 `assistantMemory({})` returns
 `{ rows: Array<{ identity: string; warning: string | null }> }`: the latest

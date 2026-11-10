@@ -16,7 +16,6 @@ import {
   repointAutomations,
   targetingAutomationsOf,
 } from "./lib/assistant-conversation";
-import { handover, type Place } from "./memory/handover";
 import { isTimeZone } from "./memory/history";
 import { MEMORY_CHANNEL, MemoryService } from "./memory/service";
 import { SUMMARY_RUNNERS } from "./memory/summarize";
@@ -43,7 +42,7 @@ export const assistantRpcContract = defineRpcContract({
       serviceTier: z.string().optional(),
       homePath: z.string().nullable(),
       homes: z.array(z.object({ name: z.string(), path: z.string() })),
-      /** Memory is on: the handover adds the view to the first message. */
+      /** Memory is on: the assistant keeps this one conversation. */
       memory: z.boolean(),
     }),
   },
@@ -229,13 +228,6 @@ export default function plugin(bb: BbPluginApi) {
   const memory = new MemoryService(bb, path.join(path.dirname(db.name), "memory"));
   bb.onDispose(() => memory.dispose());
   const memorySettings = bb.settings.define({
-    rotateAtPercent: {
-      type: "number",
-      label: "Memory: rotate at context %",
-      description: "A memory-on assistant moves to a new conversation at the end of a turn once its context is this full.",
-      default: 55,
-      experimental_schema: z.number().int().min(1).max(95),
-    },
     summaryRunner: {
       type: "select",
       label: "Memory: summary runner",
@@ -274,7 +266,7 @@ export default function plugin(bb: BbPluginApi) {
     summariesPaused: {
       type: "boolean",
       label: "Memory: pause summaries",
-      description: "Start no new summary calls; those running finish. Logging and recall go on; a rotation waits for summaries to catch up.",
+      description: "Start no new summary calls; those running finish. Logging and recall go on; a session start refuses a view grown too big meanwhile.",
       default: false,
     },
   });
@@ -288,15 +280,8 @@ export default function plugin(bb: BbPluginApi) {
     .catch((error) => bb.log.warn(`memory start: ${error instanceof Error ? error.message : String(error)}`));
   bb.events.on("experimental_thread.events", ({ thread }) => memory.onEvents(thread.id));
   bb.events.on("thread.idle", ({ thread }) => memory.onIdle(thread.id));
-  bb.events.on("thread.active", ({ thread }) => memory.onActive(thread.id));
   bb.events.on("thread.archived", ({ thread }) => memory.onGone(thread.id, "archived"));
   bb.events.on("thread.deleted", ({ thread }) => memory.onGone(thread.id, "deleted"));
-  // Messages to an old thread mid-handover wait, then move to the new one.
-  bb.experimental_hooks.on("message.dispatch", ({ thread }) =>
-    memory.holds.has(thread.id)
-      ? { action: "wait", reason: "Moving to a new conversation" }
-      : { action: "proceed" },
-  );
 
   // Any thread of an assistant names it: its home's identity.
   /** The assistant whose home `threadId` runs in, or null. */
@@ -335,7 +320,6 @@ export default function plugin(bb: BbPluginApi) {
     memory: "usage: bb assistants memory on|off|status <thread-id> [--clear] | rebuild <thread-id> <from-message-id> | view --home <dir>",
     recall: "usage: bb assistants recall <id> [n] [--assistant <thread-id>]",
     date: "usage: bb assistants date <id> [--assistant <thread-id>]",
-    rotate: "usage: bb assistants rotate <thread-id>",
     import: "usage: bb assistants import <thread-id> <thread-id|/path/to/file.jsonl>...",
   };
   const usageOf = (command: string) => USAGE[command as keyof typeof USAGE] ?? Object.values(USAGE).join("\n");
@@ -375,7 +359,7 @@ export default function plugin(bb: BbPluginApi) {
     if (action === "on") return `Memory on for ${await memory.on(threadId)}, main chat ${threadId}`;
     const identity = await memoryIdentity(threadId);
     if (action === "off") {
-      memory.off(identity);
+      await memory.off(identity, threadId);
       return `Memory off for ${identity}; its log, recall and date stay`;
     }
     if (action === "status") {
@@ -395,15 +379,6 @@ export default function plugin(bb: BbPluginApi) {
     return { identity: await memoryIdentity(threadId), numbers };
   };
 
-  const rotateCommand = async (threadId: string) => {
-    const identity = await memoryIdentity(threadId);
-    const state = memory.state(identity);
-    if (!state.on) throw new Error(`memory is off for ${identity}`);
-    if (state.main !== threadId) throw new Error(`${threadId} is not the main chat; it is ${state.main}`);
-    const result = await handover(memory, { identity, oldThreadId: threadId });
-    return `Rotated to ${result.newThreadId}${result.warning ? `\nwarning: ${result.warning}` : ""}`;
-  };
-
   bb.cli.register({
     name: "assistants",
     summary: "Assistant sidebar helpers",
@@ -412,7 +387,6 @@ export default function plugin(bb: BbPluginApi) {
       { name: "memory", summary: "Turn an assistant's endless conversation on or off, or show its state", usage: USAGE.memory },
       { name: "recall", summary: "Open a line of this assistant's memory view; n = 1 gives the message whole", usage: USAGE.recall },
       { name: "date", summary: "The date and time of a message in this assistant's memory", usage: USAGE.date },
-      { name: "rotate", summary: "Move a memory-on assistant to a new conversation now", usage: USAGE.rotate },
       { name: "import", summary: "Seed an assistant's memory with past threads or a JSONL file, before memory is on", usage: USAGE.import },
     ],
     run: async (argv, ctx) => {
@@ -436,9 +410,6 @@ export default function plugin(bb: BbPluginApi) {
             if (id === undefined) break;
             return { exitCode: 0, stdout: `${memory.date(identity, id)}\n` };
           }
-          case "rotate":
-            if (!args[0]) break;
-            return { exitCode: 0, stdout: `${await rotateCommand(args[0])}\n` };
           case "import": {
             if (args.length < 2) break;
             memory.startImport(await memoryIdentity(args[0]), args.slice(1));
@@ -584,26 +555,8 @@ export default function plugin(bb: BbPluginApi) {
       const context = await assistantConversationContext(bb, replaceThreadId);
       if (request.projectId !== context.thread.projectId)
         throw new Error("Keep the assistants project selected");
-      if (memory.isOn(context.identity)) {
-        // The handover spawns at once and holds the old thread meanwhile; a later send has no place in it.
-        if (request.sendAt !== undefined) throw new Error("Scheduled sends are not supported while memory is on");
-        return handover(memory, {
-          identity: context.identity,
-          oldThreadId: replaceThreadId,
-          composer: {
-            destination: { hostId: destinationHostId, homePath },
-            execution: {
-              providerId: request.providerId,
-              model: request.model,
-              reasoningLevel: request.reasoningLevel,
-              permissionMode: request.permissionMode,
-              serviceTier: request.serviceTier,
-              executionInputSources: request.executionInputSources,
-            },
-            visible: request.input as Place["visible"],
-          },
-        });
-      }
+      // Its memory follows its one conversation, which Claude Code compacts in place.
+      if (memory.isOn(context.identity)) throw new Error("Memory is on for this assistant, so it keeps this conversation");
       await context.validate(destinationHostId, homePath);
       // Listed before spawning, so an unreachable automations plugin refuses
       // the restart instead of stranding jobs on an archived thread.

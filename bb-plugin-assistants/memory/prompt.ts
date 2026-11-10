@@ -104,15 +104,3 @@ ${messages} messages. It replaces any earlier snapshot.
 ${viewLines.map((line) => `${line}\n`).join("")}</chat>
 `;
 }
-
-/** The first message of a rotated session: the rules, the view and the carry-on. Sent agent-only. */
-export function bootstrap(viewLines: string[]): string {
-  return `${RULES}
-
-<chat>
-${viewLines.map((line) => `${line}\n`).join("")}</chat>
-
-This is a new session of the same chat. Carry on: finish anything the last
-messages left unfinished that you were asked to do; otherwise reply with one
-short line and wait.`;
-}

@@ -1,14 +1,15 @@
 // Memory for opted-in assistants: logs each main chat from bb's event log into its tree, keeps the
-// summaries coming, and rotates the chat when its context fills. One instance per plugin load.
+// summaries coming, and gives the chat its memory at every session start. The chat never moves: Claude
+// Code compacts it, and the SessionStart hook hands it the view again. One instance per plugin load.
 import fs from "node:fs";
 import path from "node:path";
 import type { spawn } from "node:child_process";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { assistantConversationContext } from "../lib/assistant-conversation";
 import { createIdentityResolver, type ResolvedIdentity } from "../lib/assistant-identity";
-import { Busy, handover } from "./handover";
+import { setHook } from "./hook";
 import { snapshot } from "./prompt";
-import { type EventRow, isBuiltinCompact, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
+import { type EventRow, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
 import { dirName, identities, KEPT_WARNINGS, type MemoryState, readState, writeState } from "./state";
 import { Summarizer, type SummaryRunner } from "./summarize";
 import { Chat, KINDS } from "./tree";
@@ -20,7 +21,6 @@ const VIEW_READY = 128_000;
 const PAGE = 100;
 
 export type MemorySettings = {
-  rotateAtPercent: number;
   summaryRunner: string;
   summaryModel: string;
   summaryPool: number;
@@ -30,34 +30,21 @@ export type MemorySettings = {
 };
 
 export const TIMING = {
-  /** How long a rotation waits for summaries. */
-  readinessMs: 5 * 60_000,
-  /** How long a rotation someone asked for (composer, `bb assistants rotate`) waits for summaries. */
-  readyCapMs: 60_000,
-  /** How long a handover waits for the new thread to run before it moves automations. */
-  runnableMs: 2 * 60_000,
-  pollMs: 1000,
-  /** A child that changed this recently may still be reporting to its parent (bb batches reports for 2 s). */
-  quietMs: 5000,
-  /** An automatic rotation a passing obstacle refused tries again after this. */
+  /** An archived chat whose last events could not be logged tries again after this. */
   retryMs: 30_000,
 };
 export type Timing = typeof TIMING;
 
-type EventType = (typeof LOGGED_TYPES)[number] | "thread/compacted";
+type EventType = (typeof LOGGED_TYPES)[number];
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export class MemoryService {
-  /** Old threads mid-handover: their dispatches wait, so nothing starts there while the chat moves. */
-  readonly holds = new Set<string>();
-  /** The one running handover per identity. */
-  readonly ops = new Map<string, Promise<unknown>>();
   readonly retries = new Map<string, NodeJS.Timeout>();
   readonly summarizer: Summarizer;
   /** Which assistant a thread's environment belongs to, as the rest of the plugin decides it. */
   readonly identityOf: (environmentId: string) => Promise<ResolvedIdentity>;
-  settings: MemorySettings = { rotateAtPercent: 55, summaryRunner: "claude", summaryModel: "haiku", summaryPool: 8, summaryTarget: 512, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, summariesPaused: false };
+  settings: MemorySettings = { summaryRunner: "claude", summaryModel: "haiku", summaryPool: 8, summaryTarget: 512, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, summariesPaused: false };
   disposed = false;
   private readonly states = new Map<string, MemoryState>();
   private readonly chats = new Map<string, Chat>();
@@ -65,11 +52,6 @@ export class MemoryService {
   private readonly logging = new Map<string, Promise<void>>();
   /** Per identity and thread, the last event fully logged. */
   private readonly cursors = new Map<string, number>();
-  /** Cursors whose latest request was bb's manual compact, so the compaction after it was asked for. */
-  private readonly compactedByHand = new Set<string>();
-  /** Readiness waits by thread; a new turn there cancels its wait. */
-  private readonly waits = new Map<string, AbortController>();
-  private readonly usage = new Map<string, number>();
   private readonly importing = new Map<string, Promise<void>>();
   /** Per identity, archived threads whose last events are not all logged yet. */
   private readonly undrained = new Map<string, Set<string>>();
@@ -201,9 +183,22 @@ export class MemoryService {
       for (const threadId of this.logged(identity)) {
         await this.catchUp(identity, threadId).catch((e) => this.bb.log.warn(`memory ${identity}: ${message(e)}`));
       }
-      // A rotation due when the plugin stopped has no idle left to wake it.
-      void this.retry(identity);
+      // Each load brings this version's script, and puts back a hook lost meanwhile.
+      const { on, main } = this.state(identity);
+      if (on && main && !this.disposed) {
+        await this.homeOf(main)
+          .then((home) => setHook(this.bb, home, true, main))
+          .catch((e) => this.warn(identity, `memory hook not installed: ${message(e)}; run bb assistants memory on ${main}`));
+      }
     }
+  }
+
+  /** The machine and home `threadId` runs in. */
+  private async homeOf(threadId: string): Promise<{ hostId: string; home: string }> {
+    const { environmentId } = await this.bb.sdk.threads.get({ threadId });
+    const env = environmentId ? await this.bb.sdk.environments.get({ environmentId }) : null;
+    if (!env?.path) throw new Error(`${threadId} runs in no home`);
+    return { hostId: env.hostId, home: env.path };
   }
 
   /** Let go of the tracked chats bb took away while nobody was looking. */
@@ -270,7 +265,7 @@ export class MemoryService {
   catchUp(identity: string, threadId: string): Promise<void> {
     // Live logging replays from its cursor, which moves only once a page is on disk.
     const next = (this.logging.get(identity) ?? Promise.resolve()).then(async () =>
-      this.logEvents(await this.writer(identity), identity, threadId, [...LOGGED_TYPES, "thread/compacted"]),
+      this.logEvents(await this.writer(identity), identity, threadId, [...LOGGED_TYPES]),
     );
     this.logging.set(identity, next.catch(() => {}));
     return next;
@@ -293,21 +288,9 @@ export class MemoryService {
       for (const row of rows) {
         await before?.();
         this.live();
-        if (row.type === "thread/compacted") {
-          if (row.createdAt >= this.state(identity).since) {
-            this.warn(identity, this.compactedByHand.has(cursor)
-              ? `${threadId} was compacted by hand. With memory on, use bb assistants rotate ${threadId} instead.`
-              : `${threadId} compacted before rotation`);
-          }
-        } else {
-          if (row.type === "client/turn/requested") {
-            if (isBuiltinCompact(row.data)) this.compactedByHand.add(cursor);
-            else this.compactedByHand.delete(cursor);
-          }
-          // One source per event: the tree numbers its records, so a replay skips exactly the ones it has.
-          const src = { stream, at: row.seq, n: 0 };
-          for (const r of recordsOf(row)) chat.append(r.kind, r.text, r.date, src);
-        }
+        // One source per event: the tree numbers its records, so a replay skips exactly the ones it has.
+        const src = { stream, at: row.seq, n: 0 };
+        for (const r of recordsOf(row)) chat.append(r.kind, r.text, r.date, src);
       }
       // The cursor moves once the page is on disk: after a failed write the page is fetched again.
       await chat.flush();
@@ -320,17 +303,6 @@ export class MemoryService {
     }
   }
 
-  /** Every message summarized and the view inside the sawtooth: the view a new session gets is whole. */
-  ready(identity: string): boolean {
-    const chat = this.chat(identity);
-    chat.saw();
-    return chat.unsummarized === 0 && chat.viewBytes().view <= VIEW_READY;
-  }
-
-  async readyWithin(identity: string, ms: number, signal?: AbortSignal): Promise<boolean> {
-    return this.ready(identity) || this.summarizer.waitUntil(this.chat(identity), () => this.ready(identity), ms, signal);
-  }
-
   notReady(identity: string): string {
     const blocked = this.summarizer.blocked();
     if (blocked) return blocked;
@@ -338,30 +310,14 @@ export class MemoryService {
     return failed > 0 ? `Memory summaries keep failing (${failed} failed); try again later` : "Memory summaries are still running";
   }
 
-  /**
-   * One timer per identity: an automatic rotation a passing obstacle refused tries again while the main
-   * chat still sits idle after the same completed `turn`, with no lifecycle event to wake it.
-   */
-  private retryLater(identity: string, turn?: number): void {
+  /** One timer per identity: archived chats whose drain failed try again, with no event to wake them. */
+  private retryLater(identity: string): void {
     if (this.disposed || this.retries.has(identity)) return;
     const timer = setTimeout(() => {
       this.retries.delete(identity);
-      void this.retry(identity, turn);
+      void this.drain(identity);
     }, this.timing.retryMs);
     this.retries.set(identity, timer);
-  }
-
-  private async retry(identity: string, turn?: number): Promise<void> {
-    await this.drain(identity);
-    const { on, main } = this.state(identity);
-    if (!on || !main) return;
-    try {
-      // A turn running again ends at an idle, which tries again by itself.
-      if ((await this.bb.sdk.threads.get({ threadId: main })).status !== "idle") return;
-    } catch (error) {
-      return this.bb.log.warn(`memory ${identity}: ${message(error)}`);
-    }
-    await this.maybeRotate(identity, main, turn);
   }
 
   onEvents(threadId: string): void {
@@ -381,78 +337,36 @@ export class MemoryService {
       return this.bb.log.warn(`memory ${identity}: ${message(error)}`);
     }
     await this.drain(identity);
-    await this.maybeRotate(identity, threadId);
   }
 
-  onActive(threadId: string): void {
-    this.waits.get(threadId)?.abort();
-  }
-
-  /**
-   * At a completed turn's idle: rotate once the context passes the threshold and the view is ready.
-   * With `turn`, only while that is still the last completed turn. Never throws.
-   */
-  async maybeRotate(identity: string, threadId: string, turn?: number): Promise<void> {
-    const s = this.state(identity);
-    if (!s.on || s.main !== threadId || this.waits.has(threadId)) return;
-    // Registered before the first read, so a turn that starts during any of them cancels this attempt.
-    const wait = new AbortController();
-    this.waits.set(threadId, wait);
-    const sdk = this.bb.sdk.threads;
-    let last: EventRow | undefined;
-    try {
-      [last] = (await sdk.events.list({ threadId, types: ["turn/completed"], order: "desc", limit: "1" })) as unknown as EventRow[];
-      if (last?.data?.status !== "completed" || (turn !== undefined && last.seq !== turn)) return;
-      // A new session whose only request is its hidden bootstrap has nothing to carry on; rotating it would loop.
-      const requests = (await sdk.events.list({ threadId, types: ["client/turn/requested"], order: "asc", limit: "2" })) as unknown as EventRow[];
-      if (requests.length < 2 && requests.every((r) => recordsOf(r).length === 0)) return;
-      const { usage } = await sdk.context({ threadId });
-      // As a turn ends, Claude Code reports the model's largest window; its own breakdown carries the window it compacts by.
-      const breakdowns = (await sdk.events.list({ threadId, types: ["thread/contextWindowUsage/updated"], order: "desc", limit: "100" })) as unknown as EventRow[];
-      const window = breakdowns.map((r) => r.data?.contextWindowUsage?.snapshot?.contextWindowTokens).find((n) => typeof n === "number");
-      const used = usage ? usage.usedTokens / (window ?? usage.modelContextWindow) : Number.NaN;
-      if (!Number.isFinite(used)) return;
-      this.usage.set(identity, used);
-      if (used < this.settings.rotateAtPercent / 100) return;
-      if (!(await this.readyWithin(identity, this.timing.readinessMs, wait.signal))) {
-        if (wait.signal.aborted || this.disposed) return;
-        this.warn(identity, "rotation skipped: summaries not ready");
-        return this.retryLater(identity, last.seq);
-      }
-      if (wait.signal.aborted) return;
-      await handover(this, { identity, oldThreadId: threadId });
-    } catch (error) {
-      if (this.disposed) return;
-      if (!(error instanceof Busy)) return this.warn(identity, `rotation failed: ${message(error)}`);
-      if (error.lasting) return this.warn(identity, `rotation waits: ${error.message}`);
-      this.bb.log.info(`memory ${identity}: rotation waits: ${error.message}`);
-      if (last && !wait.signal.aborted) this.retryLater(identity, last.seq);
-    } finally {
-      this.waits.delete(threadId);
-    }
-  }
-
+  /** Binds `threadId` as the main chat and installs the hook that gives it its memory. Running it again repairs the hook. */
   async on(threadId: string): Promise<string> {
-    const { identity } = await assistantConversationContext(this.bb, threadId);
+    const { identity, env, thread } = await assistantConversationContext(this.bb, threadId);
+    // The view reaches a new session only through the Claude Code hook.
+    if (thread.providerId !== "claude-code") throw new Error(`memory needs a Claude Code thread; ${threadId} runs ${thread.providerId}`);
     const s = this.state(identity);
     if (this.importing.has(identity)) throw new Error("an import is running for this assistant; turn memory on when it is done");
-    if (this.ops.has(identity)) throw new Error("this assistant is moving to a new conversation; turn memory on when it is done");
+    if (s.on && s.main && s.main !== threadId && !(await this.fate(s.main))) throw new Error(`memory is already on, with main chat ${s.main}`);
+    await setHook(this.bb, { hostId: env.hostId, home: env.path! }, true, threadId);
     if (s.on && s.main && s.main !== threadId) {
-      if (!(await this.fate(s.main))) throw new Error(`memory is already on, with main chat ${s.main}`);
       // The old main chat leaves as an earlier one does: drained first, kept in `previous` until that works.
       this.update(identity, { previous: [...s.previous, s.main] });
     }
-    this.update(identity, { on: true, everOn: true, main: threadId, since: Date.now() });
-    // An earlier chat archived or deleted while memory was off would hold rotation back.
+    this.update(identity, { on: true, everOn: true, main: threadId });
+    // Earlier chats archived or deleted while memory was off are let go now.
     await this.reconcile(identity);
     await this.catchUp(identity, threadId);
     return identity;
   }
 
-  /** Stops logging and rotating; the log, `recall` and `date` stay. */
-  off(identity: string): void {
-    const { main } = this.update(identity, { on: false });
-    if (main) this.waits.get(main)?.abort();
+  /** Stops logging, then removes the hook from the home `threadId` runs in; the log, `recall` and `date` stay. */
+  async off(identity: string, threadId: string): Promise<void> {
+    this.update(identity, { on: false });
+    try {
+      await setHook(this.bb, await this.homeOf(threadId), false);
+    } catch (error) {
+      throw new Error(`memory is off for ${identity}, but its hook could not be removed: ${message(error)}`);
+    }
   }
 
   clearWarnings(identity: string): void {
@@ -483,7 +397,6 @@ export class MemoryService {
     const s = this.state(identity);
     const chat = this.existing(identity);
     const { view, lines } = chat.viewBytes();
-    const used = this.usage.get(identity);
     const blocked = this.summarizer.blocked();
     return [
       `memory: ${s.on ? "on" : "off"}`,
@@ -494,9 +407,8 @@ export class MemoryService {
       ...(chat.redoing ? [`rebuilding: ${chat.redoing} lines left`] : []),
       `summaries: ${this.summarizer.runner} ${this.summarizer.model}, ${this.summarizer.pool} at once`,
       ...(blocked ? [blocked] : []),
-      `last usage: ${used === undefined ? "-" : `${Math.round(used * 100)}%`}`,
       ...(s.import ? [`import: ${s.import.done}/${s.import.sources.length} sources${s.import.error ? `, stopped: ${s.import.error}` : ""}`] : []),
-      ...(s.previous.length ? [`kept live: ${s.previous.join(", ")} (rotation waits until archived)`] : []),
+      ...(s.previous.length ? [`earlier chats still draining: ${s.previous.join(", ")}`] : []),
       ...(s.warnings.length ? ["warnings:", ...s.warnings.map((w) => `  ${new Date(w.at).toISOString()} ${w.text}`)] : []),
     ].join("\n");
   }
@@ -575,14 +487,13 @@ export class MemoryService {
     await chat.flush();
   }
 
-  /** Lets logging, handovers and imports in flight stop at their next check, then closes the chats. */
+  /** Lets logging and imports in flight stop at their next check, then closes the chats. */
   async dispose(): Promise<void> {
     this.disposed = true;
     this.summarizer.dispose();
-    for (const wait of this.waits.values()) wait.abort();
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();
-    await Promise.allSettled([...this.logging.values(), ...this.ops.values(), ...this.importing.values()]);
+    await Promise.allSettled([...this.logging.values(), ...this.importing.values()]);
     await Promise.allSettled([...this.chats.values()].map((chat) => chat.close()));
     this.chats.clear();
   }

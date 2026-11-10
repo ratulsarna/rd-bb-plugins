@@ -18,7 +18,7 @@ it("keeps the user's words but never the agent-only view the chat started with",
       { type: "text", text: "Where were we?" },
       { type: "localFile", path: "/tmp/notes.txt", name: "notes.txt" },
     ] }),
-    // A rotation with no composer text leaves nothing to log.
+    // An old rotated session's first message, with no composer text, leaves nothing to log.
     turn({ input: [{ type: "text", text: "<chat>\n</chat>", visibility: "agent-only" }] }),
   ])).toEqual([["user", "Where were we?\n[file: notes.txt]"]]);
 });

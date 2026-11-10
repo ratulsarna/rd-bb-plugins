@@ -435,7 +435,7 @@ it("a rebuild redoes every line from its message on, shows the old lines until t
   const queued = await chat.rebuild(150);
   assert.ok(queued > 0);
   assert.deepEqual(chat.viewLines(), view, "the view changed before any new line landed");
-  assert.equal(chat.unsummarized, 0, "a rotation would wait on the rebuild");
+  assert.equal(chat.unsummarized, 0, "a session start would wait on the rebuild");
   assert.equal(chat.idle(), false);
   redrive(chat, (prompt, [l]) => {
     if (l === 0) return;
