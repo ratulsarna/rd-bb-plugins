@@ -253,7 +253,6 @@ describe("two-way sync", () => {
       await symlink("/etc/hostname", join(a!.root, "absolute"));
       await put(a!, ".git/HEAD", "ref");
       await put(a!, "web/node_modules/x/index.js", "x");
-      await put(a!, "scratch/output.txt", "useful scratch");
       for (const local of [
         ".env",
         "app/.env.local",
@@ -261,6 +260,7 @@ describe("two-way sync", () => {
         ".claude/projects/p.jsonl",
         ".claude/settings.local.json",
         "lumi/nosync/render.png",
+        "lumi/scratch/draft.md",
       ])
         await put(a!, local, "machine-local");
       await put(a!, ".claude/skills/s/SKILL.md", "portable skill");
@@ -281,7 +281,6 @@ describe("two-way sync", () => {
     expect(await linkTarget(b, "absolute")).toBeNull();
     expect(await exists(join(b.root, ".git"))).toBe(false);
     expect(await exists(join(b.root, "web/node_modules"))).toBe(false);
-    expect(await read(b, "scratch/output.txt")).toBe("useful scratch");
     expect(await read(b, ".claude/skills/s/SKILL.md")).toBe("portable skill");
     for (const local of [
       ".env",
@@ -290,6 +289,7 @@ describe("two-way sync", () => {
       ".claude/projects",
       ".claude/settings.local.json",
       "lumi/nosync",
+      "lumi/scratch",
     ])
       expect(await exists(join(b.root, local))).toBe(false);
 
