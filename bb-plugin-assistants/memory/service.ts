@@ -469,6 +469,9 @@ export class MemoryService {
     await this.catchUp(identity, threadId);
     const chat = this.existing(identity);
     chat.saw();
+    // Merges wait on summaries, so a stalled summarizer leaves a view too big to read in one go.
+    const { view } = chat.viewBytes();
+    if (view > VIEW_READY) throw new Error(`memory view is ${view} bytes, over ${VIEW_READY}: ${this.notReady(identity)}`);
     return snapshot(chat.viewLines(), { threadId, messages: chat.T, at: new Date().toISOString() });
   }
 

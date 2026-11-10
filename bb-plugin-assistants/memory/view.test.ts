@@ -1,6 +1,16 @@
+import type { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "../server";
-import { settle, world } from "./world";
+import { IDENTITY, settle, world } from "./world";
+
+/** `claude -p` that never answers, until killed: summaries stall. */
+const hanging = (() => {
+  const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() }) as any;
+  child.stdin = Object.assign(new EventEmitter(), { end: () => {} });
+  child.kill = () => setImmediate(() => child.emit("close", null, "SIGKILL"));
+  return child;
+}) as unknown as typeof spawn;
 
 const worlds: Array<ReturnType<typeof world>> = [];
 afterEach(async () => {
@@ -30,5 +40,14 @@ describe("bb assistants memory view", () => {
     }
     // A `claude` the main chat starts in another folder inherits its thread id, not its home.
     expect(await view("thr_main", "/home/someone/Developer/repo")).toMatchObject({ exitCode: 0, stdout: "" });
+  });
+
+  it("refuses a snapshot too big to read while summaries are stalled", async () => {
+    const w = world();
+    worlds.push(w);
+    const svc = w.service({}, hanging);
+    await svc.on("thr_main");
+    for (let i = 0; i < 600; i++) w.say("thr_main", `${i} ${"x".repeat(300)}`);
+    await expect(svc.snapshot(IDENTITY, "thr_main")).rejects.toThrow(/over 128000/);
   });
 });

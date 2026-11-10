@@ -321,8 +321,8 @@ export default function plugin(bb: BbPluginApi) {
     const { environmentId } = await bb.sdk.threads.get({ threadId });
     if (!environmentId) return "";
     const resolved = await identityOfEnvironment(environmentId);
-    if (!resolved.ok) throw new Error(`could not tell which assistant ${threadId} belongs to; try again`);
-    if (resolved.identity === null || resolved.awaitingSource) return "";
+    if (!resolved.ok || resolved.awaitingSource) throw new Error(`could not tell which assistant ${threadId} belongs to; try again`);
+    if (resolved.identity === null) return "";
     const s = memory.state(resolved.identity);
     if (!s.on || s.main !== threadId) return "";
     const { path: envPath } = await bb.sdk.environments.get({ environmentId });
