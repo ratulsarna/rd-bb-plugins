@@ -299,16 +299,29 @@ export default function plugin(bb: BbPluginApi) {
   );
 
   // Any thread of an assistant names it: its home's identity.
-  const memoryIdentity = async (threadId: string): Promise<string> => {
+  /** The assistant whose home `threadId` runs in, or null. */
+  const assistantOf = async (threadId: string): Promise<string | null> => {
     const thread = await bb.sdk.threads.get({ threadId });
     const identity = thread.environmentId ? await storageKeyOfEnvironment(thread.environmentId, true) : "";
-    if (!identity.includes(":")) throw new Error(`thread ${threadId} is not in an assistant home`);
+    return identity.includes(":") ? identity : null;
+  };
+  const memoryIdentity = async (threadId: string): Promise<string> => {
+    const identity = await assistantOf(threadId);
+    if (identity === null) throw new Error(`thread ${threadId} is not in an assistant home`);
     return identity;
+  };
+
+  /** The caller's memory snapshot when it is a memory-on assistant's main chat; empty for anyone else, helpers in its home included. */
+  const viewCommand = async (threadId: string | undefined): Promise<string> => {
+    const identity = threadId === undefined ? null : await assistantOf(threadId);
+    if (identity === null) return "";
+    const s = memory.state(identity);
+    return s.on && s.main === threadId ? memory.snapshot(identity, threadId) : "";
   };
 
   const USAGE = {
     subtitle: "usage: bb assistants subtitle <thread-id> [text… | --clear]",
-    memory: "usage: bb assistants memory on|off|status <thread-id> [--clear] | rebuild <thread-id> <from-message-id>",
+    memory: "usage: bb assistants memory on|off|status <thread-id> [--clear] | rebuild <thread-id> <from-message-id> | view",
     recall: "usage: bb assistants recall <id> [n] [--assistant <thread-id>]",
     date: "usage: bb assistants date <id> [--assistant <thread-id>]",
     rotate: "usage: bb assistants rotate <thread-id>",
@@ -399,6 +412,7 @@ export default function plugin(bb: BbPluginApi) {
             if (!args[0]) break;
             return await subtitleCommand(args[0], args.slice(1));
           case "memory":
+            if (args[0] === "view" && args.length === 1) return { exitCode: 0, stdout: await viewCommand(ctx?.threadId) };
             if (!args[0] || !args[1]) break;
             return { exitCode: 0, stdout: `${await memoryCommand(args[0], args[1], args[2])}\n` };
           case "recall": {

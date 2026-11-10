@@ -7,6 +7,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { assistantConversationContext } from "../lib/assistant-conversation";
 import { createIdentityResolver, type ResolvedIdentity } from "../lib/assistant-identity";
 import { Busy, handover } from "./handover";
+import { snapshot } from "./prompt";
 import { type EventRow, isBuiltinCompact, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
 import { dirName, identities, KEPT_WARNINGS, type MemoryState, readState, writeState } from "./state";
 import { Summarizer, type SummaryRunner } from "./summarize";
@@ -461,6 +462,13 @@ export class MemoryService {
 
   recall(identity: string, id: number, n: number): string {
     return this.existing(identity).zoom(id, n);
+  }
+
+  /** The memory snapshot `threadId` reads at a session start, after logging what it has already said. */
+  async snapshot(identity: string, threadId: string): Promise<string> {
+    await this.catchUp(identity, threadId);
+    const chat = this.existing(identity);
+    return snapshot(chat.viewLines(), { threadId, messages: chat.T, at: new Date().toISOString() });
   }
 
   date(identity: string, id: number): string {
