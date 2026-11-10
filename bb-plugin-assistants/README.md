@@ -150,17 +150,18 @@ write stops an import; run it again to resume.
 | `bb assistants date <id>` | The date and time of message `id`, zone named in words first (`2026-08-17 10:30 UTC+05:30 (2026-08-17T10:30:00+05:30)`), so a model converts it to the user's time zone. |
 | `bb assistants memory rebuild <thread-id> <id>` | Summarize again every line from message `id` on, after a prompt change. Old lines serve the view until their new ones land, so rotation never waits on it; `memory status` shows the lines left. A message logged as the user's that a script sent (`[heartbeat]`, `[bb automation …]`) becomes work. Pause summaries while it starts. |
 | `bb assistants rotate <thread-id>` | Rotate the main chat now; waits up to a minute for summaries. |
-| `bb assistants memory view` | From a memory-on assistant's main chat: its rules and current view, with what they cover. Empty for any other caller, helpers in its home included. |
+| `bb assistants memory view --home <dir>` | From a memory-on assistant's main chat running in `<dir>`: its rules and current view, with what they cover. Empty for any other caller: helpers in its home, or a `claude` it started elsewhere. |
 | `bb assistants import <thread-id> <source>...` | Before memory is first on: seed the log from old threads (`thr_…`) or absolute JSONL paths on the server (`{kind, text, date}` per line). Runs in the background and resumes when run again. |
 
 `recall` and `date` use the calling thread's assistant; outside a thread pass
 `--assistant <thread-id>`.
 
-`hooks/memory-session-start.sh` is a Claude Code `SessionStart` hook for every
-source (startup, resume, clear, compact). For a memory-on assistant's main chat
-it writes `memory view` to `$CLAUDE_PROJECT_DIR/nosync/bb-memory-<thread>.md`
-and tells the agent to read it; any other session gets nothing. Install it once
-per machine in `~/.claude/settings.json`:
+`hooks/memory-session-start.sh` is a Claude Code `SessionStart` hook. On
+startup, clear and compact, for a memory-on assistant's main chat, it writes
+`memory view` to `$CLAUDE_PROJECT_DIR/nosync/bb-memory-<thread>.md` and tells
+the agent to read it. A resume keeps its memory in context and gets nothing,
+as does any other session. If the command fails, only a chat that already has
+such a file is told. Install it once per machine in `~/.claude/settings.json`:
 
 ```json
 { "hooks": { "SessionStart": [{ "hooks": [{ "type": "command", "command": "/path/to/bb-plugin-assistants/hooks/memory-session-start.sh" }] }] } }

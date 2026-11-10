@@ -9,12 +9,12 @@ afterEach(async () => {
 });
 
 describe("bb assistants memory view", () => {
-  it("gives the snapshot to the assistant's main chat only, never to a helper in its home", async () => {
+  it("gives the snapshot to the assistant's main chat in its home only, never to a helper or a nested run", async () => {
     const w = world();
     worlds.push(w);
     plugin(w.bb);
     await settle();
-    const view = (threadId?: string) => w.harness.behavior.runCli(["memory", "view"], threadId === undefined ? {} : { threadId });
+    const view = (threadId?: string, home = w.home) => w.harness.behavior.runCli(["memory", "view", "--home", home], threadId === undefined ? {} : { threadId });
     w.say("thr_main", "hello");
     expect(await view("thr_main")).toMatchObject({ exitCode: 0, stdout: "" });
 
@@ -28,5 +28,7 @@ describe("bb assistants memory view", () => {
     for (const caller of ["thr_helper", "thr_homeless", undefined]) {
       expect(await view(caller)).toMatchObject({ exitCode: 0, stdout: "" });
     }
+    // A `claude` the main chat starts in another folder inherits its thread id, not its home.
+    expect(await view("thr_main", "/home/someone/Developer/repo")).toMatchObject({ exitCode: 0, stdout: "" });
   });
 });

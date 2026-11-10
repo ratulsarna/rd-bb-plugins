@@ -468,6 +468,7 @@ export class MemoryService {
   async snapshot(identity: string, threadId: string): Promise<string> {
     await this.catchUp(identity, threadId);
     const chat = this.existing(identity);
+    chat.saw();
     return snapshot(chat.viewLines(), { threadId, messages: chat.T, at: new Date().toISOString() });
   }
 
