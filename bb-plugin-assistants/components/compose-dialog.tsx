@@ -65,7 +65,7 @@ export function ComposeDialog({
     let live = true;
     setDestinationResult(null);
     setHomePath(null);
-    if (replaceThreadId && hostId && seeds) {
+    if (replaceThreadId && hostId && seeds && !seeds.memory) {
       setError(null);
       rpc.call("assistantDestination", { threadId: replaceThreadId, hostId }).then((result) => {
         if (!live) return;
@@ -117,7 +117,7 @@ export function ComposeDialog({
               its automations to the new one.
             </Dialog.Description>
 
-            {seeds && (
+            {seeds && !seeds.memory && (
               <>
                 <label className="mt-3 flex items-center gap-2 text-sm">
                   <span className="shrink-0 text-muted-foreground">Machine</span>
@@ -147,13 +147,16 @@ export function ComposeDialog({
                   </>
                 )}
                 <button type="button" disabled={submitting} onClick={() => setAttempt((value) => value + 1)} className="mt-2 text-xs text-muted-foreground underline">Refresh destination</button>
-                {seeds.memory && <p className="mt-2 text-xs text-muted-foreground">Memory is added to the first message.</p>}
               </>
             )}
 
             <div className="mt-5">
               {error ? (
                 <p className="text-sm text-destructive">{error}</p>
+              ) : seeds?.memory ? (
+                <p className="text-sm text-muted-foreground">
+                  Memory is on for {name}, so it keeps this one conversation. To start a new one, turn memory off first.
+                </p>
               ) : seeds && destination?.ready ? (
                 <NewThreadComposer
                   defaultProjectId={seeds.projectId}

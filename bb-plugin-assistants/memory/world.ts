@@ -4,21 +4,19 @@ import type { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createFakePluginHost, type FakeSdkOverrides, makeQueueEntry, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { createHash } from "node:crypto";
+import { createFakePluginHost, type FakeSdkOverrides, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import type { EventRow } from "./history";
 import { MemoryService, TIMING, type Timing } from "./service";
 
-export type FakeThread = ReturnType<typeof makeThreadResponse> & {
-  activity: { activeWorkflowCount: number; activeBackgroundAgentCount: number; activeBackgroundCommandCount: number; activePlanModeCount: number; activeGoalCount: number };
-  queuedWork: "none" | "waiting" | "failed";
-};
-export type QueueEntry = ReturnType<typeof makeQueueEntry>;
+export type FakeThread = ReturnType<typeof makeThreadResponse>;
 
-export const FAST: Timing = { readinessMs: 2000, readyCapMs: 2000, runnableMs: 300, pollMs: 10, quietMs: 50, retryMs: 100 };
+export const FAST: Timing = { retryMs: 100 };
 export const IDENTITY = "fleet:zz-test";
 export const settle = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
+const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
-export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["status"] } = {}) {
+export function world() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "memory-world-"));
   const assistantsRoot = path.join(base, "assistants");
   const vault = path.join(base, "vault");
@@ -29,23 +27,13 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
 
   const threads = new Map<string, FakeThread>();
   const events = new Map<string, EventRow[]>();
-  const queued = new Map<string, QueueEntry[]>();
-  const usage = new Map<string, { usedTokens: number; modelContextWindow: number } | null>();
-  const automations = [{ automation: { id: "beat", projectId: "fleet", name: "heartbeat", execution: { mode: "agent", targetThreadId: "thr_main" } } }];
-  const failures: { update?: Error; events?: Error } = {};
+  const failures: { events?: Error } = {};
   /** Runs on each events read, before it answers: a test can make something happen mid-read. */
-  const taps: { events?: (threadId: string) => void | Promise<void>; get?: (threadId: string) => void | Promise<void>; spawned?: (threadId: string) => void; queueRead?: (threadId: string) => void } = {};
+  const taps: { events?: (threadId: string) => void | Promise<void>; get?: (threadId: string) => void | Promise<void> } = {};
   let seq = 0;
-  let spawned = 0;
-  let rowIds = 0;
 
   const thread = (id: string, over: Partial<FakeThread> = {}): FakeThread => {
-    const t: FakeThread = {
-      ...makeThreadResponse({ id, projectId: "fleet", providerId: "codex", environmentId: "env", title: "Test" }),
-      activity: { activeWorkflowCount: 0, activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 0, activePlanModeCount: 0, activeGoalCount: 0 },
-      queuedWork: "none",
-      ...over,
-    };
+    const t: FakeThread = { ...makeThreadResponse({ id, projectId: "fleet", providerId: "claude-code", environmentId: "env", title: "Test" }), ...over };
     threads.set(id, t);
     return t;
   };
@@ -59,15 +47,8 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
   };
   const say = (threadId: string, text: string) => emit(threadId, "client/turn/requested", { initiator: "user", senderThreadId: null, input: [{ type: "text", text }] });
   const reply = (threadId: string, text: string) => emit(threadId, "item/completed", { item: { type: "agentMessage", id: `m${seq}`, text } });
-  const turnEnd = (threadId: string, status: "completed" | "failed" | "interrupted" = "completed") => emit(threadId, "turn/completed", { status });
-  const queue = (threadId: string, over: Partial<QueueEntry> = {}) => {
-    const row = makeQueueEntry({ id: `q${++rowIds}`, threadId, ...over });
-    queued.set(threadId, [...(queued.get(threadId) ?? []), row]);
-    return row;
-  };
-
   // Like bb: an archive walks children, lifecycle dependents and hidden source threads, through archived
-  // ones and never through deleted ones, and archives each live one. Queued rows stay, never sent.
+  // ones and never through deleted ones, and archives each live one.
   const archive = (id: string, at: number, seen = new Set<string>()) => {
     const t = threads.get(id)!;
     if (seen.has(id) || t.deletedAt !== null) return;
@@ -93,12 +74,7 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
           [...threads.values()]
             .filter((t) => t.deletedAt === null && (archived === undefined || archived === (t.archivedAt !== null)) && (includeHidden || t.visibility === "visible"))
             .filter((t) => (projectId === undefined || t.projectId === projectId) && (parentThreadId !== undefined ? t.parentThreadId === parentThreadId : hasParent !== false || t.parentThreadId === null))
-            // Like bb: queued work comes from the thread's queued rows.
-            .map((t) => {
-              const rows = queued.get(t.id) ?? [];
-              const work = rows.length === 0 ? t.queuedWork : rows.some((r) => r.failureReason !== null) ? "failed" : "waiting";
-              return { ...structuredClone(t), queuedWork: work };
-            }),
+            .map((t) => structuredClone(t)),
         events: {
           list: async ({ threadId, types, afterSeq, order, limit }) => {
             if (failures.events) throw failures.events;
@@ -109,32 +85,9 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
             return structuredClone(rows.slice(0, Number(limit ?? 100)));
           },
         },
-        context: async ({ threadId }) => ({ usage: usage.get(threadId) ?? null }),
-        defaultExecutionOptions: async () => ({ model: "m-1", reasoningLevel: "high", permissionMode: "full", serviceTier: "default" }),
-        spawn: async () => {
-          const t = thread(`thr_new${++spawned}`, { status: spawnStatus });
-          taps.spawned?.(t.id);
-          return structuredClone(t);
-        },
         archive: async ({ threadId }) => {
           archive(threadId, Date.now());
           return {};
-        },
-        queuedMessages: {
-          list: async ({ threadId }) => {
-            const rows = structuredClone(queued.get(threadId) ?? []);
-            taps.queueRead?.(threadId);
-            return rows;
-          },
-          create: async ({ threadId, input, ...rest }) => {
-            // Like bb: an archived thread takes no new messages.
-            if (threads.get(threadId)!.archivedAt !== null) throw new Error("Thread is archived");
-            return queue(threadId, { content: input, waitingOn: null, ...rest } as Partial<QueueEntry>);
-          },
-          delete: async ({ threadId, queuedMessageId }) => {
-            queued.set(threadId, (queued.get(threadId) ?? []).filter((r) => r.id !== queuedMessageId));
-            return { ok: true };
-          },
         },
       },
       environments: {
@@ -145,14 +98,28 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
         },
       },
       projects: { get: async () => ({ id: "fleet", name: "assistants", sources: [{ hostId: "srv", path: assistantsRoot }] }) },
-      providers: { list: async () => [{ id: "codex", available: true }] },
-      hosts: {
-        directory: async ({ path: dir }) => {
-          const resolved = fs.realpathSync(dir!);
-          return { directory: resolved, parent: path.dirname(resolved), entries: [] };
+      // Like a host: a missing file is a 404, and a write with `expectedSha256` lands only on that content (null: none).
+      files: {
+        read: async ({ path: file }) => {
+          if (!fs.existsSync(file)) throw Object.assign(new Error(`HTTP 404: Path does not exist: ${file}`), { status: 404 });
+          const content = fs.readFileSync(file, "utf8");
+          return { path: file, content, contentEncoding: "utf8", sha256: sha(content), sizeBytes: content.length };
+        },
+        write: async ({ path: file, content, createParents, expectedSha256 }) => {
+          if (expectedSha256 !== undefined) {
+            const current = fs.existsSync(file) ? sha(fs.readFileSync(file, "utf8")) : null;
+            if (current !== expectedSha256) return { outcome: "conflict", currentSha256: current };
+          }
+          if (createParents) fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, content);
+          return { outcome: "written", sha256: sha(content), sizeBytes: content.length };
+        },
+        remove: async ({ path: file }) => {
+          if (!fs.existsSync(file)) throw Object.assign(new Error(`HTTP 404: Path does not exist: ${file}`), { status: 404 });
+          fs.rmSync(file);
+          return {};
         },
       },
-      files: { read: async ({ path: file }) => ({ path: file, content: fs.readFileSync(file, "utf8"), contentEncoding: "utf8" }) },
       plugins: {
         callRpc: async ({ pluginId, method, input, outputSchema }) => {
           if (pluginId === "private-sync") {
@@ -161,13 +128,6 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
               return outputSchema.parse({ enabled: false, paused: false, configError: null, folders: [{ id: "assistants", nodes: [node(assistantsRoot)] }, { id: "vault", nodes: [node(vault)] }] });
             }
             if (method === "machineDirectory") return outputSchema.parse([{ hostId: "srv", name: "Server", connected: true }]);
-          }
-          if (pluginId === "automations") {
-            if (method === "automations_overview") return outputSchema.parse({ automations });
-            if (failures.update) throw failures.update;
-            const { automationId, agent } = input as { automationId: string; agent: { target: { threadId: string } } };
-            automations.find((a) => a.automation.id === automationId)!.automation.execution.targetThreadId = agent.target.threadId;
-            return outputSchema.parse({});
           }
           throw new Error(`unexpected rpc ${pluginId}.${method}`);
         },
@@ -187,5 +147,5 @@ export function world({ spawnStatus = "idle" }: { spawnStatus?: FakeThread["stat
     return harness.lifecycle.dispose();
   };
 
-  return { bb, harness, base, home, assistantsRoot, environments, threads, events, queued, usage, automations, failures, taps, thread, emit, say, reply, turnEnd, queue, service, dispose };
+  return { bb, harness, base, home, assistantsRoot, environments, threads, events, failures, taps, thread, emit, say, reply, service, dispose };
 }
