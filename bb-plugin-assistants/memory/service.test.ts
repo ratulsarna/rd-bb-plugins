@@ -140,7 +140,7 @@ it("leaves a memory-off assistant alone when its main chat goes away", async () 
   const w = start();
   let svc = w.service();
   await svc.on("thr_main");
-  await svc.off("thr_main");
+  await svc.off(IDENTITY, "thr_main");
   w.say("thr_main", "after off");
   await w.bb.sdk.threads.archive({ threadId: "thr_main" });
   await svc.onGone("thr_main", "archived");

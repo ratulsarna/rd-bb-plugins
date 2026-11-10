@@ -33,6 +33,9 @@ echo "Required: your memory was not carried over by any summary. Before you repl
 `;
 
 const SCRIPT = ".claude/hooks/bb-memory-session-start.sh";
+/** Where the script puts a chat's memory. */
+export const memoryFile = (home: string, threadId: string) => `${home}/nosync/bb-memory-${threadId}.md`;
+const NO_SNAPSHOT = "No memory snapshot has been loaded yet. Use `bb assistants recall` for anything from before this session.\n";
 export const HOOK_COMMAND = `sh "$CLAUDE_PROJECT_DIR/${SCRIPT}"`;
 
 type Group = { matcher?: string; hooks?: Array<{ type?: string; command?: string; timeout?: number }> };
@@ -45,10 +48,12 @@ export function withHook(settings: string | null, on: boolean): string | null {
   const parsed: unknown = settings === null || settings.trim() === "" ? {} : JSON.parse(settings);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not a JSON object");
   const json = parsed as { hooks?: Record<string, Group[]> };
-  const ours = (group: Group) => group.hooks?.some((hook) => hook.command === HOOK_COMMAND) ?? false;
+  const ours = (hook: { command?: string }) => hook.command === HOOK_COMMAND;
   const groups = json.hooks?.SessionStart ?? [];
-  if (groups.some(ours) === on) return null;
-  const kept = on ? [...groups, { hooks: [{ type: "command", command: HOOK_COMMAND, timeout: 30 }] }] : groups.filter((group) => !ours(group));
+  if (groups.some((group) => group.hooks?.some(ours)) === on) return null;
+  const kept = on
+    ? [...groups, { hooks: [{ type: "command", command: HOOK_COMMAND, timeout: 30 }] }]
+    : groups.map((group) => ({ ...group, hooks: group.hooks?.filter((hook) => !ours(hook)) })).filter((group) => group.hooks?.length !== 0);
   const { SessionStart: _, ...others } = json.hooks ?? {};
   const hooks = kept.length > 0 ? { ...others, SessionStart: kept } : others;
   const { hooks: __, ...rest } = json;
@@ -58,8 +63,12 @@ export function withHook(settings: string | null, on: boolean): string | null {
 
 const missing = (error: unknown) => (error as { status?: unknown }).status === 404;
 
-/** Installs (`on`) or removes the hook in `home` on `hostId`. A settings file that changed meanwhile is never overwritten. */
-export async function setHook(bb: BbPluginApi, { hostId, home }: { hostId: string; home: string }, on: boolean): Promise<void> {
+/**
+ * Installs (`on`) or removes the hook in `home` on `hostId`. A settings file that changed meanwhile is
+ * never overwritten. With `on`, `mainChat` gets a memory file if it has none, so the script warns it
+ * should its very first load fail.
+ */
+export async function setHook(bb: BbPluginApi, { hostId, home }: { hostId: string; home: string }, on: boolean, mainChat?: string): Promise<void> {
   const files = bb.sdk.files;
   const settingsPath = `${home}/.claude/settings.json`;
   const current = await files.read({ hostId, path: settingsPath }).catch((error: unknown) => {
@@ -74,6 +83,8 @@ export async function setHook(bb: BbPluginApi, { hostId, home }: { hostId: strin
     throw new Error(`${settingsPath}: ${error instanceof Error ? error.message : String(error)}; fix it, then try again`);
   }
   if (on) await files.write({ hostId, path: `${home}/${SCRIPT}`, content: HOOK_SCRIPT, createParents: true });
+  // Lands only where no file is yet, so a real snapshot is never replaced.
+  if (on && mainChat) await files.write({ hostId, path: memoryFile(home, mainChat), content: NO_SNAPSHOT, createParents: true, expectedSha256: null });
   if (next !== null) {
     const written = await files.write({ hostId, path: settingsPath, content: next, createParents: true, expectedSha256: current?.sha256 ?? null });
     if (written.outcome === "conflict") throw new Error(`${settingsPath} changed meanwhile; try again`);

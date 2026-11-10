@@ -183,7 +183,22 @@ export class MemoryService {
       for (const threadId of this.logged(identity)) {
         await this.catchUp(identity, threadId).catch((e) => this.bb.log.warn(`memory ${identity}: ${message(e)}`));
       }
+      // Each load brings this version's script, and puts back a hook lost meanwhile.
+      const { on, main } = this.state(identity);
+      if (on && main && !this.disposed) {
+        await this.homeOf(main)
+          .then((home) => setHook(this.bb, home, true, main))
+          .catch((e) => this.warn(identity, `memory hook not installed: ${message(e)}; run bb assistants memory on ${main}`));
+      }
     }
+  }
+
+  /** The machine and home `threadId` runs in. */
+  private async homeOf(threadId: string): Promise<{ hostId: string; home: string }> {
+    const { environmentId } = await this.bb.sdk.threads.get({ threadId });
+    const env = environmentId ? await this.bb.sdk.environments.get({ environmentId }) : null;
+    if (!env?.path) throw new Error(`${threadId} runs in no home`);
+    return { hostId: env.hostId, home: env.path };
   }
 
   /** Let go of the tracked chats bb took away while nobody was looking. */
@@ -332,7 +347,7 @@ export class MemoryService {
     const s = this.state(identity);
     if (this.importing.has(identity)) throw new Error("an import is running for this assistant; turn memory on when it is done");
     if (s.on && s.main && s.main !== threadId && !(await this.fate(s.main))) throw new Error(`memory is already on, with main chat ${s.main}`);
-    await setHook(this.bb, { hostId: env.hostId, home: env.path! }, true);
+    await setHook(this.bb, { hostId: env.hostId, home: env.path! }, true, threadId);
     if (s.on && s.main && s.main !== threadId) {
       // The old main chat leaves as an earlier one does: drained first, kept in `previous` until that works.
       this.update(identity, { previous: [...s.previous, s.main] });
@@ -344,16 +359,14 @@ export class MemoryService {
     return identity;
   }
 
-  /** Stops logging and removes the hook; the log, `recall` and `date` stay. */
-  async off(threadId: string): Promise<string> {
-    const { identity, env } = await assistantConversationContext(this.bb, threadId);
+  /** Stops logging, then removes the hook from the home `threadId` runs in; the log, `recall` and `date` stay. */
+  async off(identity: string, threadId: string): Promise<void> {
     this.update(identity, { on: false });
     try {
-      await setHook(this.bb, { hostId: env.hostId, home: env.path! }, false);
+      await setHook(this.bb, await this.homeOf(threadId), false);
     } catch (error) {
       throw new Error(`memory is off for ${identity}, but its hook could not be removed: ${message(error)}`);
     }
-    return identity;
   }
 
   clearWarnings(identity: string): void {

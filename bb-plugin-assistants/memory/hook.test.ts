@@ -72,10 +72,34 @@ describe("memory on and off install and remove the hook in the home", () => {
 
     expect(runIn(w.home, HOOK_COMMAND, { stdout: "# Memory" })).toContain("read ");
     expect(fs.readFileSync(path.join(w.home, "nosync", "bb-memory-thr_main.md"), "utf8")).toBe("# Memory\n");
+    // A command the user later puts into the same group stays at off.
+    settings.hooks.SessionStart[1].hooks.push({ type: "command", command: "echo sibling" });
+    fs.writeFileSync(settingsOf(w.home), JSON.stringify(settings));
 
-    await svc.off("thr_main");
-    expect(JSON.parse(fs.readFileSync(settingsOf(w.home), "utf8"))).toEqual(theirs);
+    await svc.off(IDENTITY, "thr_main");
+    expect(JSON.parse(fs.readFileSync(settingsOf(w.home), "utf8"))).toEqual({
+      ...theirs,
+      hooks: { ...theirs.hooks, SessionStart: [...theirs.hooks.SessionStart, { hooks: [{ type: "command", command: "echo sibling" }] }] },
+    });
     expect(fs.existsSync(path.join(w.home, ".claude", "hooks", "bb-memory-session-start.sh"))).toBe(false);
+  });
+
+  it("puts a lost hook back at the next plugin load, warns the main chat if its very first load fails, and comes off for an archived main chat", async () => {
+    const w = world();
+    worlds.push(w);
+    let svc = w.service();
+    await svc.on("thr_main");
+    await svc.dispose();
+    fs.rmSync(path.join(w.home, ".claude"), { recursive: true });
+    svc = w.service();
+    await svc.start();
+    expect(runIn(w.home, HOOK_COMMAND, { code: 1 })).toMatch(/could not be loaded .*may be stale/);
+    expect(runIn(w.home, HOOK_COMMAND, { code: 1, threadId: "thr_helper" })).toBe("");
+
+    await w.bb.sdk.threads.archive({ threadId: "thr_main" });
+    await svc.onGone("thr_main", "archived");
+    await svc.off(IDENTITY, "thr_main");
+    expect(JSON.parse(fs.readFileSync(settingsOf(w.home), "utf8"))).toEqual({});
   });
 
   it("creates the settings in a home that has none, and leaves no hooks key behind at off", async () => {
@@ -84,7 +108,7 @@ describe("memory on and off install and remove the hook in the home", () => {
     const svc = w.service();
     await svc.on("thr_main");
     expect(JSON.parse(fs.readFileSync(settingsOf(w.home), "utf8")).hooks.SessionStart).toHaveLength(1);
-    await svc.off("thr_main");
+    await svc.off(IDENTITY, "thr_main");
     expect(JSON.parse(fs.readFileSync(settingsOf(w.home), "utf8"))).toEqual({});
   });
 

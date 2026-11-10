@@ -81,8 +81,11 @@ before anything else. A resume keeps its memory in context and gets nothing,
 as does every other session in the home. If the command fails, only a chat
 that already has such a file is told. `memory on` installs the hook in the
 home: the script at `.claude/hooks/bb-memory-session-start.sh` and one entry
-in `.claude/settings.json`, beside what the file already holds; running it
-again repairs both. `memory off` takes out only that entry and the script.
+in `.claude/settings.json`, beside what the file already holds, and a
+placeholder memory file so even a first failed load warns. Every plugin load
+installs it again for each memory-on assistant, bringing the current script.
+`memory off` takes out only that hook and the script. A running Claude Code
+process picks the change up without a restart.
 The home syncs, so every machine gets them. **New thread with…** is closed
 while memory is on.
 

@@ -357,8 +357,11 @@ export default function plugin(bb: BbPluginApi) {
 
   const memoryCommand = async (action: string, threadId: string, flag?: string) => {
     if (action === "on") return `Memory on for ${await memory.on(threadId)}, main chat ${threadId}`;
-    if (action === "off") return `Memory off for ${await memory.off(threadId)}; its log, recall and date stay`;
     const identity = await memoryIdentity(threadId);
+    if (action === "off") {
+      await memory.off(identity, threadId);
+      return `Memory off for ${identity}; its log, recall and date stay`;
+    }
     if (action === "status") {
       if (flag === "--clear") memory.clearWarnings(identity);
       return memory.status(identity);
