@@ -22,4 +22,4 @@ if ! { mkdir -p "$dir" && printf '%s\n' "$out" >"$file.tmp" && mv "$file.tmp" "$
   echo "Your memory could not be written to $file. Tell the user before other work."
   exit 0
 fi
-echo "Your memory is in $file. Read the whole file with the Read tool, in chunks if needed, before anything else."
+echo "Required: your memory was not carried over by any summary. Before you reply or do anything else, read $file in full with the Read tool, in chunks if needed. Do it every time, even when the request looks answerable without it."
