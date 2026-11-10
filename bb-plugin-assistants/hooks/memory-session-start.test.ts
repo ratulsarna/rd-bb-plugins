@@ -26,7 +26,7 @@ describe("memory SessionStart hook", () => {
   it("writes the main chat's memory under nosync and points the agent at it", () => {
     const { out, file, home } = run({ stdout: "# Memory\n<chat>\n</chat>" });
     expect(fs.readFileSync(file, "utf8")).toBe("# Memory\n<chat>\n</chat>\n");
-    expect(out).toContain(`Your memory is in ${file}`);
+    expect(out).toContain(`Before you reply or do anything else, read ${file} in full`);
     expect(fs.readFileSync(path.join(home, "args"), "utf8").trim()).toBe(`assistants memory view --home ${home}`);
   });
 
