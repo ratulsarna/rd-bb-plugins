@@ -10,10 +10,10 @@ printf '%s' "$input" | grep -q '"source" *: *"resume"' && exit 0
 home="${CLAUDE_PROJECT_DIR:-$PWD}"
 dir="$home/nosync"
 file="$dir/bb-memory-$BB_THREAD_ID.md"
-if ! out=$("${BB_CLI:-bb}" assistants memory view --home "$home" 2>&1); then
+if ! out=$("${BB_CLI:-bb}" assistants memory view --home "$home" 2>/dev/null); then
   # Only a chat this hook has given memory before is known to need it; any other stays undisturbed.
   [ -f "$file" ] || exit 0
-  echo "Your memory could not be loaded ($(printf '%s' "$out" | head -c 300)). $file is from an earlier session and may be stale. Tell the user before other work, and use \`bb assistants recall\` for anything from before this session."
+  echo "Your memory could not be loaded (bb assistants memory view failed). $file is from an earlier session and may be stale. Tell the user before other work, and use \`bb assistants recall\` for anything from before this session."
   exit 0
 fi
 # Not a memory-on assistant's main chat in this home.

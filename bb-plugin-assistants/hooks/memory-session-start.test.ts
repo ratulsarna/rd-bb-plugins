@@ -42,7 +42,7 @@ describe("memory SessionStart hook", () => {
     expect(fresh.out).toBe("");
     const served = run({ stdout: "# Memory" });
     const warned = served.again({ code: 1 });
-    expect(warned).toMatch(/could not be loaded \(plugin not running\).*may be stale/);
+    expect(warned).toMatch(/could not be loaded .*may be stale/);
     expect(fs.readFileSync(served.file, "utf8")).toBe("# Memory\n");
   });
 });
