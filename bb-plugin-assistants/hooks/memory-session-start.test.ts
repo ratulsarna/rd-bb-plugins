@@ -16,7 +16,7 @@ function run({ stdout = "", code = 0, source = "startup", threadId = "thr_main" 
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, BB_CLI: bb, CLAUDE_PROJECT_DIR: home, ...(threadId ? { BB_THREAD_ID: threadId } : {}) };
   const again = (over: { stdout?: string; code?: number; source?: string } = {}) => {
     const fail = (over.code ?? code) !== 0;
-    fs.writeFileSync(bb, `#!/bin/sh\necho "$@" > "${home}/args"\nprintf '%s' '${over.stdout ?? stdout}'\n${fail ? 'echo "plugin not running" >&2; exit 1' : "exit 0"}\n`, { mode: 0o755 });
+    fs.writeFileSync(bb, `#!/bin/sh\necho "$@" > "${home}/args"\n${fail ? 'echo "plugin not running" >&2; exit 1' : `printf '%s' '${over.stdout ?? stdout}'`}\n`, { mode: 0o755 });
     return execFileSync("sh", [SCRIPT], { env, input: JSON.stringify({ source: over.source ?? source }) }).toString();
   };
   return { out: again(), home, file: path.join(home, "nosync", `bb-memory-${threadId}.md`), again };
