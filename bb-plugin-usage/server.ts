@@ -114,6 +114,10 @@ export default function plugin(bb: BbPluginApi) {
           getPrimaryHostId: async () =>
             (await bb.sdk.system.config()).primaryHostId,
           usageLimits: (args) => bb.sdk.system.usageLimits(args),
+          claudeHealth: async ({ hostId, signal }) =>
+            (await bb.sdk.system.providerStates({ hostId, signal })).providers.find(
+              (provider) => provider.providerId === "claude-code",
+            ) ?? null,
         }),
         settings.get().then(({ zaiApiKey }) => fetchZaiUsage(zaiApiKey)),
       ]);
