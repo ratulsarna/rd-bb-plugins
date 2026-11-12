@@ -33,7 +33,7 @@ npm run typecheck
 npm run build
 ```
 
-Claude Code usage is checked on every connected BB machine. Machines without Claude Code are omitted. Accounts are grouped by BB's account key, with email as a fallback when the key is missing. Accounts without either stay separate. Matching quotas are shown once, never added together. A working reading takes precedence over a failed reading from another machine on the same account. Offline machines are shown separately because their current login cannot be checked. Each refresh reads the machine list and accounts again, so login changes do not keep old account labels.
+Anthropic rate-limits usage checks per login, so Claude Code usage is checked once per account. Each connected BB machine first reports its login through BB's provider health, which makes no usage call. Each account is then checked on the primary machine if it is signed in there, otherwise on its other machines in turn until one answers, and its other machines share that reading. A machine whose health does not name an account is checked on its own. Machines without Claude Code are omitted. Accounts are grouped by BB's account key, with email as a fallback when the key is missing. Accounts without either stay separate. Matching quotas are shown once, never added together. A working reading takes precedence over a failed reading from another machine on the same account. Offline machines are shown separately because their current login cannot be checked. Each refresh reads the machine list and accounts again, so login changes do not keep old account labels.
 
 Codex uses the primary machine. Claude's manual credential recovery also runs only on the primary server. For an expired login on another machine, open Claude Code there and refresh Usage.
 

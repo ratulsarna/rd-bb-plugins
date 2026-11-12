@@ -91,6 +91,8 @@ describe("Claude accounts across machines", () => {
       ],
       getPrimaryHostId: async () => "server",
       usageLimits,
+      // No health: each machine is read on its own.
+      claudeHealth: async () => null,
     });
     expect(usageLimits.mock.calls.map(([args]) => args)).toEqual([
       { hostId: "server", signal: expect.any(AbortSignal) },
@@ -150,5 +152,60 @@ describe("Claude accounts across machines", () => {
       status: "expired",
     });
     expect(recoverClaudeCredentials).not.toHaveBeenCalled();
+  });
+
+  it("reads each account once, on the primary first, and shares that reading with its other machines", async () => {
+    const usageLimits = vi.fn(async ({ hostId }: { hostId: string }) => ({
+      codex: healthy("codex"),
+      "claude-code": healthy(hostId === "solo" ? "s" : "a", hostId === "solo" ? "s@example.com" : "a@example.com"),
+    }));
+    const health: Record<string, unknown> = {
+      laptop: { status: "ready", accountEmail: " A@example.com" },
+      desktop: { status: "ready", accountEmail: "a@example.com" },
+      stale: { status: "expired", accountEmail: "a@example.com" },
+      bare: { status: "not_installed" },
+      // Health could not say which account: read it on its own.
+      solo: { status: "unknown" },
+    };
+    const snapshot = await fetchFleetUsage({
+      listHosts: async () => ["server", "laptop", "desktop", "stale", "bare", "solo"].map((id) => host(id)),
+      getPrimaryHostId: async () => "server",
+      usageLimits,
+      claudeHealth: async ({ hostId }) => health[hostId] as never,
+    });
+    expect(usageLimits.mock.calls.map(([args]) => args.hostId)).toEqual(["server", "solo"]);
+    const result = normalizeUsage(snapshot).providers.claudeCode;
+    expect(result.map((account) => account.machines.map((m) => [m.id, m.status]))).toEqual([
+      [["server", "ok"], ["laptop", "ok"], ["desktop", "ok"], ["stale", "expired"]],
+      [["solo", "ok"]],
+    ]);
+  });
+
+  it("tries an account's next machine when a reading fails, and stops at the first that works", async () => {
+    const usageLimits = vi.fn(async ({ hostId }: { hostId: string }) => {
+      if (hostId === "laptop") throw new Error("down");
+      return {
+        codex: healthy("codex"),
+        "claude-code":
+          hostId === "server"
+            ? { status: "error", accountKey: "a", accountEmail: "a@example.com" }
+            : { ...healthy("a"), windows: [{ label: "Fable", usedPercent: 14, resetsAt: null }] },
+      };
+    });
+    const snapshot = await fetchFleetUsage({
+      listHosts: async () => ["server", "laptop", "desktop", "spare"].map((id) => host(id)),
+      getPrimaryHostId: async () => "server",
+      usageLimits,
+      claudeHealth: async () => ({ status: "ready", accountEmail: "a@example.com" }),
+    });
+    expect(usageLimits.mock.calls.map(([args]) => args.hostId)).toEqual(["server", "laptop", "desktop"]);
+    const [account] = normalizeUsage(snapshot).providers.claudeCode;
+    expect(account).toMatchObject({ status: "ok", windows: [{ label: "Fable", remainingPercent: 86 }] });
+    expect(account!.machines.map((m) => [m.id, m.status])).toEqual([
+      ["server", "error"],
+      ["laptop", "error"],
+      ["desktop", "ok"],
+      ["spare", "ok"],
+    ]);
   });
 });
