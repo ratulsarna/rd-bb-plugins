@@ -302,6 +302,27 @@ it("stops every call after 5 failures in a row, warns once with why, and takes t
   expect(h.unwarned).toEqual(h.warnings);
 });
 
+it("keeps the brake warning when a call already running at the brake works, and takes it back after the brake", async () => {
+  const first = deferred();
+  let spent = true;
+  const h = harness((_p, n) => (n === 1 ? first.promise : spent ? { code: 1 } : { out: "a line" }), undefined, 80);
+  h.summarizer.pool = 2;
+  const c = chat();
+  h.summarizer.add("a", c);
+  for (const tag of ["one", "two", "three", "four", "five", "six", "seven"]) c.append("echo", long(tag), "2026-09-01");
+  h.summarizer.pump();
+  await settle();
+  expect(h.warnings).toHaveLength(1);
+  first.resolve({ out: "a line" });
+  await settle();
+  expect(h.summarizer.blocked()).toMatch(/stopped/);
+  expect(h.unwarned).toEqual([]);
+
+  spent = false;
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(h.unwarned).toEqual(h.warnings);
+});
+
 it("starts no length retry once paused, and keeps the line it has", async () => {
   const first = deferred();
   const h = harness((_p, n) => (n === 1 ? first.promise : { out: "a line" }));

@@ -129,8 +129,11 @@ export class Summarizer {
     } else {
       chat.done(job.ref, line);
       this.failedInRow = 0;
-      if (this.brakeWarning) this.opts.unwarn(this.brakeWarning);
-      this.brakeWarning = undefined;
+      // A call that was running when the brake hit may still work; the warning holds until the brake ends.
+      if (this.brakeWarning && this.brakeUntil <= Date.now()) {
+        this.opts.unwarn(this.brakeWarning);
+        this.brakeWarning = undefined;
+      }
     }
     // A damaged chat dropped the line, and its slot still goes back to the pool.
     if (!chat.damage) chat.flush().catch((error) => this.opts.log(`memory ${identity}: summary not saved: ${error instanceof Error ? error.message : String(error)}`));
