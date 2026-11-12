@@ -43,6 +43,8 @@ export class Summarizer {
   private disposed = false;
   private failedInRow = 0;
   private brakeUntil = 0;
+  /** The brake's warning, taken back by the next call that works. */
+  private brakeWarning: string | undefined;
   private brakeTimer: NodeJS.Timeout | undefined;
   runner: SummaryRunner = "claude";
   model = "haiku";
@@ -56,6 +58,8 @@ export class Summarizer {
       log: (message: string) => void;
       /** Shown on every memory chat when the brake stops summaries. */
       warn: (message: string) => void;
+      /** Takes a `warn` back once summaries work again. */
+      unwarn: (message: string) => void;
       spawn?: typeof nodeSpawn;
       timeoutMs?: number;
       brakeMs?: number;
@@ -125,6 +129,8 @@ export class Summarizer {
     } else {
       chat.done(job.ref, line);
       this.failedInRow = 0;
+      if (this.brakeWarning) this.opts.unwarn(this.brakeWarning);
+      this.brakeWarning = undefined;
     }
     // A damaged chat dropped the line, and its slot still goes back to the pool.
     if (!chat.damage) chat.flush().catch((error) => this.opts.log(`memory ${identity}: summary not saved: ${error instanceof Error ? error.message : String(error)}`));
@@ -138,7 +144,8 @@ export class Summarizer {
     if (this.brakeUntil > Date.now()) return;
     const ms = this.opts.brakeMs ?? BRAKE_MS;
     this.brakeUntil = Date.now() + ms;
-    this.opts.warn(`Memory summaries stopped for ${Math.ceil(ms / 60_000)} min after ${BRAKE_AFTER} failed calls in a row. Last error: ${why.slice(0, 200)}`);
+    this.brakeWarning = `Memory summaries stopped for ${Math.ceil(ms / 60_000)} min after ${BRAKE_AFTER} failed calls in a row. Last error: ${why.slice(0, 200)}`;
+    this.opts.warn(this.brakeWarning);
     this.brakeTimer = setTimeout(() => {
       this.brakeUntil = 0;
       this.resume();
@@ -187,7 +194,9 @@ export class Summarizer {
       child.once("error", settle);
       child.once("close", (code, signal) => {
         if (code === 0) return settle();
-        settle(new Error(timedOut ? "timed out" : `${runner} exited ${code ?? signal}: ${err.trim().slice(0, 300)}`));
+        // A failed claude -p can leave only a sign-in notice on stderr; the reason, a spent plan for one, is then on stdout.
+        const why = [out, err].map((s) => s.trim()).filter(Boolean).join(" | ");
+        settle(new Error(timedOut ? "timed out" : `${runner} exited ${code ?? signal}: ${why.slice(0, 300)}`));
       });
       child.stdin?.on("error", () => {});
       child.stdin?.end(prompt);

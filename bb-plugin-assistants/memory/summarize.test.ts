@@ -7,7 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { Summarizer } from "./summarize";
 import { Chat } from "./tree";
 
-type Reply = { out?: string; code?: number };
+type Reply = { out?: string; err?: string; code?: number };
 type Call = { cmd: string; prompt: string; args: string[]; env: NodeJS.ProcessEnv; killed: boolean };
 
 const cleanups: Array<() => void> = [];
@@ -19,6 +19,7 @@ afterEach(() => {
 function harness(script: (prompt: string, call: number) => Reply | Promise<Reply>, timeoutMs?: number, brakeMs?: number) {
   const calls: Call[] = [];
   const warnings: string[] = [];
+  const unwarned: string[] = [];
   let live = 0;
   let peak = 0;
   const spawn = ((cmd: string, args: string[], opts: { env: NodeJS.ProcessEnv }) => {
@@ -41,9 +42,10 @@ function harness(script: (prompt: string, call: number) => Reply | Promise<Reply
     child.stdin = Object.assign(new EventEmitter(), {
       end: (prompt: string) => {
         call.prompt = prompt;
-        void Promise.resolve(script(prompt, calls.length)).then(({ out = "", code = 0 }) => {
+        void Promise.resolve(script(prompt, calls.length)).then(({ out = "", err = "", code = 0 }) => {
           if (closed) return;
           child.stdout.emit("data", out);
+          child.stderr.emit("data", err);
           close(code, null);
         });
       },
@@ -54,12 +56,13 @@ function harness(script: (prompt: string, call: number) => Reply | Promise<Reply
     scratch: fs.mkdtempSync(path.join(os.tmpdir(), "summarize-scratch-")),
     log: () => {},
     warn: (message) => warnings.push(message),
+    unwarn: (message) => unwarned.push(message),
     spawn,
     timeoutMs,
     brakeMs,
   });
   cleanups.push(() => summarizer.dispose());
-  return { summarizer, calls, warnings, peak: () => peak };
+  return { summarizer, calls, warnings, unwarned, peak: () => peak };
 }
 
 function chat(): Chat {
@@ -268,10 +271,11 @@ it("starts no call while paused, and catches up once resumed", async () => {
   expect(h.summarizer.blocked()).toBeUndefined();
 });
 
-it("stops every call after 5 failures in a row, warns once, and starts again after the brake", async () => {
-  // A spent account: every call fails until it comes back.
+it("stops every call after 5 failures in a row, warns once with why, and takes the warning back once a call works", async () => {
+  // A spent account: every call fails until it comes back, with the reason on stdout and only a notice on stderr.
   let spent = true;
-  const h = harness(() => (spent ? { code: 1 } : { out: "a line" }), undefined, 80);
+  const notice = `Warning: this sign-in ends between 2026-11-16 and 2026-11-19. ${"Run claude auth login. ".repeat(10)}`;
+  const h = harness(() => (spent ? { code: 1, out: "You've hit your limit", err: notice } : { out: "a line" }), undefined, 80);
   h.summarizer.pool = 2;
   const c = chat();
   h.summarizer.add("a", c);
@@ -282,11 +286,12 @@ it("stops every call after 5 failures in a row, warns once, and starts again aft
   expect(h.calls.length).toBeLessThanOrEqual(6);
   const braked = h.calls.length;
   expect(h.warnings).toHaveLength(1);
-  expect(h.warnings[0]).toMatch(/stopped for 1 min after 5 failed calls in a row\. Last error: claude exited 1/);
+  expect(h.warnings[0]).toMatch(/stopped for 1 min after 5 failed calls in a row\. Last error: claude exited 1: You've hit your limit/);
   expect(h.summarizer.blocked()).toMatch(/stopped for 1 more min/);
   h.summarizer.pump();
   await settle();
   expect(h.calls).toHaveLength(braked);
+  expect(h.unwarned).toEqual([]);
 
   // No new message and no readiness wait: the brake's end alone runs what failed.
   spent = false;
@@ -294,6 +299,7 @@ it("stops every call after 5 failures in a row, warns once, and starts again aft
   expect(h.summarizer.blocked()).toBeUndefined();
   expect([c.failures, c.unsummarized]).toEqual([0, 0]);
   expect(h.warnings).toHaveLength(1);
+  expect(h.unwarned).toEqual(h.warnings);
 });
 
 it("starts no length retry once paused, and keeps the line it has", async () => {

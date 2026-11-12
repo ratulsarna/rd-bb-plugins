@@ -69,6 +69,9 @@ export class MemoryService {
       warn: (m) => {
         for (const identity of this.chats.keys()) this.warn(identity, m);
       },
+      unwarn: (m) => {
+        for (const identity of this.chats.keys()) this.unwarn(identity, m);
+      },
       spawn: spawnProcess,
     });
   }
@@ -97,6 +100,14 @@ export class MemoryService {
     // A retry that fails the same way again is not news.
     if (s.warnings.at(-1)?.text === text) return;
     this.updateBestEffort(identity, { warnings: [...s.warnings, { at: Date.now(), text }].slice(-KEPT_WARNINGS) });
+    this.bb.realtime.publish(MEMORY_CHANNEL, { identity });
+  }
+
+  unwarn(identity: string, text: string): void {
+    const s = this.state(identity);
+    const warnings = s.warnings.filter((w) => w.text !== text);
+    if (warnings.length === s.warnings.length) return;
+    this.updateBestEffort(identity, { warnings });
     this.bb.realtime.publish(MEMORY_CHANNEL, { identity });
   }
 
