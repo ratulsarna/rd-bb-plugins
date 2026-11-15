@@ -96,6 +96,8 @@ it("retries a line that is too long with the cut, keeps the one that fits, and r
   const env = h.calls[0].env;
   expect(Object.keys(env).filter((k) => /^(ANTHROPIC_|BB_)|^CLAUDE_CODE_OAUTH_TOKEN$/.test(k))).toEqual([]);
   expect(env.PATH).toBe(process.env.PATH);
+  expect(h.calls[0].cmd).toBe("nice");
+  expect(h.calls[0].args.slice(0, 3)).toEqual(["-n", "19", "claude"]);
   expect(h.calls[0].args).toEqual(expect.arrayContaining(["-p", "--tools", "", "--model", "haiku"]));
 });
 
@@ -250,7 +252,7 @@ it("runs pi with the chosen model, no tools, no session and nothing loaded from 
   h.summarizer.add("a", c);
   c.append("echo", long("one"), "2026-09-01");
   expect(await h.summarizer.waitUntil(c, () => c.unsummarized === 0, 2000)).toBe(true);
-  expect(h.calls[0].cmd).toBe("pi");
+  expect(h.calls[0].args.slice(0, 3)).toEqual(["-n", "19", "pi"]);
   expect(h.calls[0].args).toEqual(expect.arrayContaining([
     "-p", "--no-session", "--no-tools", "--no-extensions", "--no-mcp", "--no-skills", "--no-context-files", "--model", "zai/glm-5.3-flash",
   ]));
