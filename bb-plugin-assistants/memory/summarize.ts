@@ -177,7 +177,9 @@ export class Summarizer {
       fs.mkdirSync(this.opts.scratch, { recursive: true });
       const runner = this.runner;
       const { args, env } = RUNNERS[runner];
-      const child = (this.opts.spawn ?? nodeSpawn)(runner, args(this.model), { cwd: this.opts.scratch, env: env(process.env), stdio: ["pipe", "pipe", "pipe"] });
+      // Lowest CPU priority: each call boots a whole CLI, and several at once would otherwise slow the
+      // bb server and the agents on the same machine. `nice` execs the runner, so the kill below still reaches it.
+      const child = (this.opts.spawn ?? nodeSpawn)("nice", ["-n", "19", runner, ...args(this.model)], { cwd: this.opts.scratch, env: env(process.env), stdio: ["pipe", "pipe", "pipe"] });
       this.procs.add(child);
       let out = "";
       let err = "";
