@@ -11,7 +11,7 @@ import { MemoryService, TIMING, type Timing } from "./service";
 
 export type FakeThread = ReturnType<typeof makeThreadResponse>;
 
-export const FAST: Timing = { retryMs: 100 };
+export const FAST: Timing = { retryMs: 100, hookGraceMs: 250 };
 export const IDENTITY = "fleet:zz-test";
 export const settle = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -27,7 +27,7 @@ export function world() {
 
   const threads = new Map<string, FakeThread>();
   const events = new Map<string, EventRow[]>();
-  const failures: { events?: Error } = {};
+  const failures: { events?: Error; files?: Error } = {};
   /** Runs on each events read, before it answers: a test can make something happen mid-read. */
   const taps: { events?: (threadId: string) => void | Promise<void>; get?: (threadId: string) => void | Promise<void> } = {};
   let seq = 0;
@@ -101,6 +101,7 @@ export function world() {
       // Like a host: a missing file is a 404, and a write with `expectedSha256` lands only on that content (null: none).
       files: {
         read: async ({ path: file }) => {
+          if (failures.files) throw failures.files;
           if (!fs.existsSync(file)) throw Object.assign(new Error(`HTTP 404: Path does not exist: ${file}`), { status: 404 });
           const content = fs.readFileSync(file, "utf8");
           return { path: file, content, contentEncoding: "utf8", sha256: sha(content), sizeBytes: content.length };
