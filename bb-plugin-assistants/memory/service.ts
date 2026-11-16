@@ -32,12 +32,16 @@ export type MemorySettings = {
 export const TIMING = {
   /** An archived chat whose last events could not be logged tries again after this. */
   retryMs: 30_000,
+  /** A hook still not back at load after this warns. bb restarts plugins before its machines reconnect. */
+  hookGraceMs: 120_000,
 };
 export type Timing = typeof TIMING;
 
 type EventType = (typeof LOGGED_TYPES)[number];
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const HOOK_WARNING = "memory hook not installed";
+const isHookWarning = (text: string) => text.startsWith(HOOK_WARNING);
 
 export class MemoryService {
   readonly retries = new Map<string, NodeJS.Timeout>();
@@ -103,9 +107,10 @@ export class MemoryService {
     this.bb.realtime.publish(MEMORY_CHANNEL, { identity });
   }
 
-  unwarn(identity: string, text: string): void {
+  unwarn(identity: string, text: string | ((text: string) => boolean)): void {
+    const matches = typeof text === "string" ? (t: string) => t === text : text;
     const s = this.state(identity);
-    const warnings = s.warnings.filter((w) => w.text !== text);
+    const warnings = s.warnings.filter((w) => !matches(w.text));
     if (warnings.length === s.warnings.length) return;
     this.updateBestEffort(identity, { warnings });
     this.bb.realtime.publish(MEMORY_CHANNEL, { identity });
@@ -196,11 +201,7 @@ export class MemoryService {
       }
       // Each load brings this version's script, and puts back a hook lost meanwhile.
       const { on, main } = this.state(identity);
-      if (on && main && !this.disposed) {
-        await this.homeOf(main)
-          .then((home) => setHook(this.bb, home, true, main))
-          .catch((e) => this.warn(identity, `memory hook not installed: ${message(e)}; run bb assistants memory on ${main}`));
-      }
+      if (on && main) this.keepHook(identity, main, Date.now());
     }
   }
 
@@ -242,7 +243,7 @@ export class MemoryService {
       } catch (error) {
         this.bb.log.warn(`memory ${identity}: ${threadId} stays tracked until its last events are logged: ${message(error)}`);
         this.undrained.set(identity, (this.undrained.get(identity) ?? new Set()).add(threadId));
-        return this.retryLater(identity);
+        return this.retryLater(identity, () => this.drain(identity));
       }
     }
     // Startup, retries and events reach here detached from `dispose`; the next plugin load owns memory.json.
@@ -321,14 +322,35 @@ export class MemoryService {
     return failed > 0 ? `Memory summaries keep failing (${failed} failed); try again later` : "Memory summaries are still running";
   }
 
-  /** One timer per identity: archived chats whose drain failed try again, with no event to wake them. */
-  private retryLater(identity: string): void {
-    if (this.disposed || this.retries.has(identity)) return;
+  /** One timer per key, for work that failed and has no event to wake it. */
+  private retryLater(key: string, run: () => unknown): void {
+    if (this.disposed || this.retries.has(key)) return;
     const timer = setTimeout(() => {
-      this.retries.delete(identity);
-      void this.drain(identity);
+      this.retries.delete(key);
+      void run();
     }, this.timing.retryMs);
-    this.retries.set(identity, timer);
+    this.retries.set(key, timer);
+  }
+
+  /**
+   * Puts the hook back in the main chat's home, trying again until it lands, while that chat is still the main one.
+   * Warns only after `hookGraceMs`, so a machine reconnecting after a bb restart stays quiet, and clears the warning once it lands.
+   */
+  private keepHook(identity: string, main: string, since: number): void {
+    const { on, main: current } = this.state(identity);
+    if (this.disposed || !on || current !== main) return;
+    this.homeOf(main)
+      .then((home) => setHook(this.bb, home, true, main))
+      .then(
+        () => {
+          if (!this.disposed) this.unwarn(identity, isHookWarning);
+        },
+        (e) => {
+          if (this.disposed) return;
+          if (Date.now() - since >= this.timing.hookGraceMs) this.warn(identity, `${HOOK_WARNING}: ${message(e)}; bb keeps trying`);
+          this.retryLater(`hook ${identity}`, () => this.keepHook(identity, main, since));
+        },
+      );
   }
 
   onEvents(threadId: string): void {
@@ -359,6 +381,7 @@ export class MemoryService {
     if (this.importing.has(identity)) throw new Error("an import is running for this assistant; turn memory on when it is done");
     if (s.on && s.main && s.main !== threadId && !(await this.fate(s.main))) throw new Error(`memory is already on, with main chat ${s.main}`);
     await setHook(this.bb, { hostId: env.hostId, home: env.path! }, true, threadId);
+    this.unwarn(identity, isHookWarning);
     if (s.on && s.main && s.main !== threadId) {
       // The old main chat leaves as an earlier one does: drained first, kept in `previous` until that works.
       this.update(identity, { previous: [...s.previous, s.main] });

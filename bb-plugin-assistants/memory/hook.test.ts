@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HOOK_COMMAND, HOOK_SCRIPT } from "./hook";
-import { IDENTITY, world } from "./world";
+import { IDENTITY, settle, world } from "./world";
 
 const dirs: string[] = [];
 const worlds: Array<ReturnType<typeof world>> = [];
@@ -93,6 +93,7 @@ describe("memory on and off install and remove the hook in the home", () => {
     fs.rmSync(path.join(w.home, ".claude"), { recursive: true });
     svc = w.service();
     await svc.start();
+    await settle();
     expect(runIn(w.home, HOOK_COMMAND, { code: 1 })).toMatch(/could not be loaded .*may be stale/);
     expect(runIn(w.home, HOOK_COMMAND, { code: 1, threadId: "thr_helper" })).toBe("");
 
@@ -100,6 +101,40 @@ describe("memory on and off install and remove the hook in the home", () => {
     await svc.onGone("thr_main", "archived");
     await svc.off(IDENTITY, "thr_main");
     expect(JSON.parse(fs.readFileSync(settingsOf(w.home), "utf8"))).toEqual({});
+  });
+
+  // bb restarts plugins before its machines reconnect, so the first try at a load often finds the machine away.
+  it("keeps putting the hook back at load while the machine is away, warning only after the grace and clearing it once it lands", async () => {
+    const w = world();
+    worlds.push(w);
+    await w.service().on("thr_main");
+    fs.rmSync(path.join(w.home, ".claude"), { recursive: true });
+    w.failures.files = new Error("HTTP 502: Host is not connected");
+    const svc = w.service();
+    await svc.start();
+    await settle(150);
+    expect(svc.state(IDENTITY).warnings).toEqual([]);
+    await settle(300);
+    expect(svc.state(IDENTITY).warnings.map((x) => x.text)).toEqual(["memory hook not installed: HTTP 502: Host is not connected; bb keeps trying"]);
+
+    delete w.failures.files;
+    await settle(250);
+    expect(JSON.parse(fs.readFileSync(settingsOf(w.home), "utf8")).hooks.SessionStart).toHaveLength(1);
+    expect(svc.state(IDENTITY).warnings).toEqual([]);
+  });
+
+  it("stops putting the hook back once memory is off", async () => {
+    const w = world();
+    worlds.push(w);
+    await w.service().on("thr_main");
+    fs.rmSync(path.join(w.home, ".claude"), { recursive: true });
+    w.failures.files = new Error("HTTP 502: Host is not connected");
+    const svc = w.service();
+    await svc.start();
+    await expect(svc.off(IDENTITY, "thr_main")).rejects.toThrow(/hook could not be removed/);
+    delete w.failures.files;
+    await settle(250);
+    expect(fs.existsSync(path.join(w.home, ".claude"))).toBe(false);
   });
 
   it("creates the settings in a home that has none, and leaves no hooks key behind at off", async () => {
