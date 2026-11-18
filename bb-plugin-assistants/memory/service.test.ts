@@ -321,3 +321,52 @@ it("ends an import with the error of its last summary's failed write", async () 
   cue.waiting[0]("the summary");
   await vi.waitFor(() => expect(svc.state(IDENTITY).import).toMatchObject({ done: 1, error: "memory write failed: disk full" }));
 });
+
+it("refreshes a memory-on main chat with a stop, then bb's compact once the stop has settled", async () => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  await svc.refresh("thr_main");
+  expect(w.actions).toEqual([{ type: "stop", threadId: "thr_main" }, { type: "compact", threadId: "thr_main" }]);
+});
+
+it("does not compact a chat whose stop its machine never confirmed", async () => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  w.stops.leave = "stopping";
+  await expect(svc.refresh("thr_main")).rejects.toThrow("Test did not finish stopping");
+  expect(w.actions).toEqual([{ type: "stop", threadId: "thr_main" }]);
+});
+
+const idle = { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 0, activeGoalCount: 0, activePlanModeCount: 0, activeWorkflowCount: 0 };
+it.each([
+  ["is in a turn", { status: "active" }],
+  ["is in a turn", { status: "active", visibility: "hidden" }],
+  ["has a failed turn a refresh would take Retry from", { status: "error" }],
+  ["is waiting for your answer", { hasPendingInteraction: true }],
+  ["has messages waiting", { queuedWork: "failed" }, ["a failed delivery", "a message scheduled after it"]],
+  ["has messages waiting", {}, ["a child thread's report"]],
+  ["is running background work", { activity: { ...idle, activeBackgroundCommandCount: 1 } }],
+  ["is running background work", { activity: { ...idle, activeWorkflowCount: 1 } }],
+] as const)("refuses a main chat that %s, without touching it (%o)", async (reason, busy, queued: readonly string[] = []) => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  Object.assign(w.threads.get("thr_main")!, busy);
+  w.queues.set("thr_main", [...queued]);
+  await expect(svc.refresh("thr_main")).rejects.toThrow(`Test ${reason}. Refresh again once it is idle.`);
+  expect(w.actions).toEqual([]);
+});
+
+it("refreshes only a memory-on assistant's main chat", async () => {
+  const w = start();
+  const svc = w.service();
+  await expect(svc.refresh("thr_main")).rejects.toThrow("not the main chat of an assistant with memory on");
+  await svc.on("thr_main");
+  w.thread("thr_helper", { parentThreadId: "thr_main" });
+  await expect(svc.refresh("thr_helper")).rejects.toThrow("not the main chat of an assistant with memory on");
+  await svc.off(IDENTITY, "thr_main");
+  await expect(svc.refresh("thr_main")).rejects.toThrow("not the main chat of an assistant with memory on");
+  expect(w.actions).toEqual([]);
+});

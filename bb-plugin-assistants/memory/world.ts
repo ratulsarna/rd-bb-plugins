@@ -9,9 +9,14 @@ import { createFakePluginHost, type FakeSdkOverrides, makeThreadResponse } from 
 import type { EventRow } from "./history";
 import { MemoryService, TIMING, type Timing } from "./service";
 
-export type FakeThread = ReturnType<typeof makeThreadResponse>;
+// With the fields bb's thread list adds, which a refresh reads to tell whether a chat is busy.
+export type FakeThread = ReturnType<typeof makeThreadResponse> & {
+  activity: { activeBackgroundAgentCount: number; activeBackgroundCommandCount: number; activeGoalCount: number; activePlanModeCount: number; activeWorkflowCount: number };
+  hasPendingInteraction: boolean;
+  queuedWork: "none" | "waiting" | "failed";
+};
 
-export const FAST: Timing = { retryMs: 100, hookGraceMs: 250 };
+export const FAST: Timing = { retryMs: 100, hookGraceMs: 250, stopWaitMs: 100 };
 export const IDENTITY = "fleet:zz-test";
 export const settle = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -31,9 +36,21 @@ export function world() {
   /** Runs on each events read, before it answers: a test can make something happen mid-read. */
   const taps: { events?: (threadId: string) => void | Promise<void>; get?: (threadId: string) => void | Promise<void> } = {};
   let seq = 0;
+  /** Stops and compacts, in the order bb got them. */
+  const actions: Array<{ type: "stop" | "compact"; threadId: string }> = [];
+  /** Per thread, its queued messages. */
+  const queues = new Map<string, unknown[]>();
+  /** The status a stop leaves: `stopping` is a stop its machine never confirmed. */
+  const stops = { leave: "idle" as FakeThread["status"] };
 
   const thread = (id: string, over: Partial<FakeThread> = {}): FakeThread => {
-    const t: FakeThread = { ...makeThreadResponse({ id, projectId: "fleet", providerId: "claude-code", environmentId: "env", title: "Test" }), ...over };
+    const t: FakeThread = {
+      ...makeThreadResponse({ id, projectId: "fleet", providerId: "claude-code", environmentId: "env", title: "Test" }),
+      activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 0, activeGoalCount: 0, activePlanModeCount: 0, activeWorkflowCount: 0 },
+      hasPendingInteraction: false,
+      queuedWork: "none",
+      ...over,
+    };
     threads.set(id, t);
     return t;
   };
@@ -89,6 +106,22 @@ export function world() {
           archive(threadId, Date.now());
           return {};
         },
+        stop: async ({ threadId }) => {
+          actions.push({ type: "stop", threadId });
+          threads.get(threadId)!.status = stops.leave;
+          return { ok: true };
+        },
+        // Like bb: settles at once when the status already matches, else times out.
+        wait: async ({ threadId, status }) => {
+          const t = threads.get(threadId)!;
+          if (t.status !== status) throw new Error(`timed out waiting for ${threadId} to be ${status}`);
+          return { matched: true, target: { kind: "status", status }, thread: structuredClone(t), threadId } as never;
+        },
+        compact: async ({ threadId }) => {
+          actions.push({ type: "compact", threadId });
+          return { ok: true };
+        },
+        queuedMessages: { list: async ({ threadId }) => (queues.get(threadId) ?? []) as never },
       },
       environments: {
         get: async ({ environmentId }) => {
@@ -148,5 +181,5 @@ export function world() {
     return harness.lifecycle.dispose();
   };
 
-  return { bb, harness, base, home, assistantsRoot, environments, threads, events, failures, taps, thread, emit, say, reply, service, dispose };
+  return { bb, harness, base, home, assistantsRoot, environments, threads, events, failures, taps, actions, queues, stops, thread, emit, say, reply, service, dispose };
 }

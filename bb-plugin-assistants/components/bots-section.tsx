@@ -20,9 +20,10 @@ import { SortableRows } from "inbox-core/components/sortable-rows";
 import type { RowReorder } from "inbox-core/components/sidebar-row";
 import { assistantDisplayOrder, projectAssistantReorder } from "@/lib/assistant-order";
 import { useAssistantAvatars } from "@/lib/use-assistant-avatars";
-import { useAssistantMemoryWarnings } from "@/lib/use-assistant-memory";
+import { useAssistantMemory } from "@/lib/use-assistant-memory";
 import type { BotsData } from "@/lib/use-bots-data";
 import { usePortalScopeProps } from "inbox-core/lib/portal-scope";
+import { toast } from "sonner";
 import type { assistantRpcContract } from "@/server";
 
 interface BotsSectionProps {
@@ -52,7 +53,8 @@ export function BotsSection({
   const { threads } = useSidebarThreads();
   const actions = useSidebarThreadActions();
   const navigate = useBbNavigate();
-  const memoryWarnings = useAssistantMemoryWarnings();
+  const memory = useAssistantMemory();
+  const rpc = useRpc<typeof assistantRpcContract>();
   const [restartThreadId, setRestartThreadId] = useState<string | null>(null);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
@@ -135,6 +137,16 @@ export function BotsSection({
     setRestartThreadId(threadId);
   }, []);
 
+  const refreshThread = useCallback(
+    (threadId: string, name: string) => {
+      rpc.call("refreshAssistant", { threadId }).then(
+        () => toast.success(`Refreshing ${name}: compaction started on the current rules`),
+        (error: unknown) => toast.error(error instanceof Error ? error.message : String(error)),
+      );
+    },
+    [rpc],
+  );
+
   const avatars = useAssistantAvatars(environmentIds);
 
   const moveBot = useCallback(
@@ -212,8 +224,14 @@ export function BotsSection({
               }
               memoryWarning={
                 (row.identity
-                  ? memoryWarnings.get(row.identity)
+                  ? memory.get(row.identity)?.warning
                   : undefined) ?? null
+              }
+              onRefresh={
+                row.identity !== null &&
+                memory.get(row.identity)?.main === row.thread.id
+                  ? () => refreshThread(row.thread.id, nameOf(row.thread))
+                  : undefined
               }
               isActive={row.thread.id === activeThreadId}
               isHidden={
@@ -257,6 +275,7 @@ function AssistantRow({
   onOpen,
   onOpenPast,
   onRestart,
+  onRefresh,
   onEditSubtitle,
   onSaveSubtitle,
   onCancelEditSubtitle,
@@ -275,6 +294,8 @@ function AssistantRow({
   onOpen: (threadId: string) => void;
   onOpenPast: (threadId: string) => void;
   onRestart: (threadId: string) => void;
+  /** Only on a memory-on assistant's main chat, which keeps its session for good. */
+  onRefresh: (() => void) | undefined;
   onEditSubtitle: () => void;
   onSaveSubtitle: (value: string) => void;
   onCancelEditSubtitle: () => void;
@@ -402,6 +423,14 @@ function AssistantRow({
             >
               {isHidden ? "Show when collapsed" : "Hide when collapsed"}
             </ContextMenu.Item>
+            {onRefresh && (
+              <ContextMenu.Item
+                onSelect={onRefresh}
+                className="cursor-pointer rounded-md px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
+              >
+                Refresh rules
+              </ContextMenu.Item>
+            )}
             <PastChats threadId={thread.id} onOpen={onOpenPast} />
           </ContextMenu.Content>
         </ContextMenu.Portal>

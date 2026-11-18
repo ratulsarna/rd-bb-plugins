@@ -130,8 +130,17 @@ export const assistantRpcContract = defineRpcContract({
   assistantMemory: {
     input: z.object({}),
     output: z.object({
-      rows: z.array(z.object({ identity: z.string(), warning: z.string().nullable() })),
+      rows: z.array(z.object({
+        identity: z.string(),
+        warning: z.string().nullable(),
+        /** The main chat while memory is on. */
+        main: z.string().nullable(),
+      })),
     }),
+  },
+  refreshAssistant: {
+    input: threadIdInput,
+    output: z.object({ ok: z.boolean() }),
   },
   pastAssistantThreads: {
     input: threadIdInput,
@@ -321,6 +330,7 @@ export default function plugin(bb: BbPluginApi) {
     recall: "usage: bb assistants recall <id> [n] [--assistant <thread-id>]",
     date: "usage: bb assistants date <id> [--assistant <thread-id>]",
     import: "usage: bb assistants import <thread-id> <thread-id|/path/to/file.jsonl>...",
+    refresh: "usage: bb assistants refresh <thread-id> | --all",
   };
   const usageOf = (command: string) => USAGE[command as keyof typeof USAGE] ?? Object.values(USAGE).join("\n");
 
@@ -388,6 +398,7 @@ export default function plugin(bb: BbPluginApi) {
       { name: "recall", summary: "Open a line of this assistant's memory view; n = 1 gives the message whole", usage: USAGE.recall },
       { name: "date", summary: "The date and time of a message in this assistant's memory", usage: USAGE.date },
       { name: "import", summary: "Seed an assistant's memory with past threads or a JSONL file, before memory is on", usage: USAGE.import },
+      { name: "refresh", summary: "Put a memory-on assistant, or all of them, on the current instructions: stop, then compact", usage: USAGE.refresh },
     ],
     run: async (argv, ctx) => {
       const [command, ...args] = argv;
@@ -409,6 +420,17 @@ export default function plugin(bb: BbPluginApi) {
             const { identity, numbers: [id] } = await readMemory(args, ctx?.threadId);
             if (id === undefined) break;
             return { exitCode: 0, stdout: `${memory.date(identity, id)}\n` };
+          }
+          case "refresh": {
+            if (args.length !== 1) break;
+            if (args[0] !== "--all") {
+              await memory.refresh(args[0]);
+              return { exitCode: 0, stdout: `Refreshing ${args[0]}: compaction started on the current instructions\n` };
+            }
+            const mains = memory.rows().flatMap(({ main }) => (main ? [main] : []));
+            const results = await Promise.allSettled(mains.map((main) => memory.refresh(main)));
+            const lines = results.map((r, i) => `${mains[i]}: ${r.status === "fulfilled" ? "compaction started" : r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+            return { exitCode: results.some((r) => r.status === "rejected") ? 1 : 0, stdout: `${lines.join("\n") || "No memory-on assistant has a main chat"}\n` };
           }
           case "import": {
             if (args.length < 2) break;
@@ -589,6 +611,10 @@ export default function plugin(bb: BbPluginApi) {
     },
     async assistantMemory() {
       return { rows: memory.rows() };
+    },
+    async refreshAssistant({ threadId }) {
+      await memory.refresh(threadId);
+      return { ok: true };
     },
     async pastAssistantThreads({ threadId }) {
       const thread = await bb.sdk.threads.get({ threadId });

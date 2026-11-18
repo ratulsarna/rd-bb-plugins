@@ -89,6 +89,21 @@ process picks the change up without a restart.
 The home syncs, so every machine gets them. **New thread with…** is closed
 while memory is on.
 
+A chat that never ends never picks up new bb instructions on its own: bb
+hands a session its instructions (plugin text such as Pipeline's model
+table, and `~/.bb/AGENTS.md`) only when the session starts, and Claude Code
+reuses the system prompt it recorded until it compacts. **Refresh rules** in
+a memory-on assistant's row menu (right-click, or long press), or `bb
+assistants refresh`, stops the main chat, waits for the stop to settle, then
+compacts it: the next session starts on today's text and the compaction
+records it. Files Claude Code reads itself, like the home's `AGENTS.md`, come
+back at any compaction. A refresh refuses a chat that is in a turn, has a
+failed turn (the compact would take its Retry), is waiting for an answer,
+holds queued messages or runs background work; try again when it is idle. A
+chat still not idle 30 seconds after bb answers the stop is reported and not
+compacted. A refresh reports the compaction started; a compaction that fails
+shows in the chat. The compact stays out of the log.
+
 What is logged: the main chat's user messages, the assistant's replies, its
 tool calls and their output, and reports other threads send into it. What is
 not: reasoning, plans, a subagent's own transcript (its call and report are
@@ -125,6 +140,7 @@ write stops an import; run it again to resume.
 | `bb assistants date <id>` | The date and time of message `id`, zone named in words first (`2026-08-17 10:30 UTC+05:30 (2026-08-17T10:30:00+05:30)`), so a model converts it to the user's time zone. |
 | `bb assistants memory rebuild <thread-id> <id>` | Summarize again every line from message `id` on, after a prompt change. Old lines serve the view until their new ones land; `memory status` shows the lines left. A message logged as the user's that a script sent (`[heartbeat]`, `[bb automation …]`) becomes work. Pause summaries while it starts. |
 | `bb assistants memory view --home <dir>` | From a memory-on assistant's main chat running in `<dir>`: its rules and current view, with what they cover. Empty for any other caller: helpers in its home, or a `claude` it started elsewhere. |
+| `bb assistants refresh <thread-id>` \| `--all` | Put a memory-on assistant's main chat, or every one, on bb's current instructions: stop, then compact. A busy chat is refused; `--all` refreshes the rest and exits 1. |
 | `bb assistants import <thread-id> <source>...` | Before memory is first on: seed the log from old threads (`thr_…`) or absolute JSONL paths on the server (`{kind, text, date}` per line). Runs in the background and resumes when run again. |
 
 `recall` and `date` use the calling thread's assistant; outside a thread pass
