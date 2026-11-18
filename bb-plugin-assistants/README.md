@@ -94,12 +94,14 @@ hands a session its instructions (plugin text such as Pipeline's model
 table, and `~/.bb/AGENTS.md`) only when the session starts, and Claude Code
 reuses the system prompt it recorded until it compacts. **Refresh rules** in
 a memory-on assistant's row menu (right-click, or long press), or `bb
-assistants refresh`, stops the main chat and sends bb's built-in `/compact`:
-the next session starts on today's text and the compaction records it. Files
-Claude Code reads itself, like the home's `AGENTS.md`, come back at any
-compaction. A refresh refuses a chat that is in a turn, waiting for an
-answer, holding queued messages or running background work; try again when
-it is idle. The `/compact` stays out of the log.
+assistants refresh`, stops the main chat, waits for the stop to settle, then
+compacts it: the next session starts on today's text and the compaction
+records it. Files Claude Code reads itself, like the home's `AGENTS.md`, come
+back at any compaction. A refresh refuses a chat whose machine is offline,
+that is in a turn, has a failed turn (the compact would take its Retry), is
+waiting for an answer, holds queued messages or runs background work; try
+again when it is idle. A stop its machine does not confirm within 30 seconds
+is reported and not compacted. The compact stays out of the log.
 
 What is logged: the main chat's user messages, the assistant's replies, its
 tool calls and their output, and reports other threads send into it. What is

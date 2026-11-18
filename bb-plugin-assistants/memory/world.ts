@@ -16,7 +16,7 @@ export type FakeThread = ReturnType<typeof makeThreadResponse> & {
   queuedWork: "none" | "waiting" | "failed";
 };
 
-export const FAST: Timing = { retryMs: 100, hookGraceMs: 250 };
+export const FAST: Timing = { retryMs: 100, hookGraceMs: 250, stopWaitMs: 100 };
 export const IDENTITY = "fleet:zz-test";
 export const settle = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -36,8 +36,12 @@ export function world() {
   /** Runs on each events read, before it answers: a test can make something happen mid-read. */
   const taps: { events?: (threadId: string) => void | Promise<void>; get?: (threadId: string) => void | Promise<void> } = {};
   let seq = 0;
-  /** Stops and sends, in the order bb got them. */
-  const actions: Array<{ type: "stop" | "send"; threadId: string; input?: unknown; mode?: string }> = [];
+  /** Stops and compacts, in the order bb got them. */
+  const actions: Array<{ type: "stop" | "compact"; threadId: string }> = [];
+  /** Per thread, its queued messages. */
+  const queues = new Map<string, unknown[]>();
+  /** The status a stop leaves: `stopping` is a stop its machine never confirmed. */
+  const stops = { leave: "idle" as FakeThread["status"] };
 
   const thread = (id: string, over: Partial<FakeThread> = {}): FakeThread => {
     const t: FakeThread = {
@@ -104,12 +108,20 @@ export function world() {
         },
         stop: async ({ threadId }) => {
           actions.push({ type: "stop", threadId });
+          threads.get(threadId)!.status = stops.leave;
           return { ok: true };
         },
-        send: async ({ threadId, input, mode }) => {
-          actions.push({ type: "send", threadId, input, mode });
-          return {} as never;
+        // Like bb: settles at once when the status already matches, else times out.
+        wait: async ({ threadId, status }) => {
+          const t = threads.get(threadId)!;
+          if (t.status !== status) throw new Error(`timed out waiting for ${threadId} to be ${status}`);
+          return { matched: true, target: { kind: "status", status }, thread: structuredClone(t), threadId } as never;
         },
+        compact: async ({ threadId }) => {
+          actions.push({ type: "compact", threadId });
+          return { ok: true };
+        },
+        queuedMessages: { list: async ({ threadId }) => (queues.get(threadId) ?? []) as never },
       },
       environments: {
         get: async ({ environmentId }) => {
@@ -169,5 +181,5 @@ export function world() {
     return harness.lifecycle.dispose();
   };
 
-  return { bb, harness, base, home, assistantsRoot, environments, threads, events, failures, taps, actions, thread, emit, say, reply, service, dispose };
+  return { bb, harness, base, home, assistantsRoot, environments, threads, events, failures, taps, actions, queues, stops, thread, emit, say, reply, service, dispose };
 }

@@ -3,7 +3,6 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { BUILTIN_COMPACT_INPUT } from "./history";
 import { IDENTITY, settle, world } from "./world";
 
 const worlds: Array<ReturnType<typeof world>> = [];
@@ -323,34 +322,41 @@ it("ends an import with the error of its last summary's failed write", async () 
   await vi.waitFor(() => expect(svc.state(IDENTITY).import).toMatchObject({ done: 1, error: "memory write failed: disk full" }));
 });
 
-it("refreshes a memory-on main chat with a stop, then bb's built-in /compact, which stays out of its memory", async () => {
+it("refreshes a memory-on main chat with a stop, then bb's compact once the stop has settled", async () => {
   const w = start();
   const svc = w.service();
   await svc.on("thr_main");
   await svc.refresh("thr_main");
-  expect(w.actions).toEqual([
-    { type: "stop", threadId: "thr_main" },
-    { type: "send", threadId: "thr_main", input: BUILTIN_COMPACT_INPUT, mode: "start" },
-  ]);
-  // bb logs the compact as a turn the user asked for.
-  w.emit("thr_main", "client/turn/requested", { initiator: "user", senderThreadId: null, input: w.actions[1]!.input });
-  await svc.onIdle("thr_main");
-  expect(svc.chat(IDENTITY).msgs).toEqual([]);
+  expect(w.actions).toEqual([{ type: "stop", threadId: "thr_main" }, { type: "compact", threadId: "thr_main" }]);
+});
+
+it("does not compact a chat whose stop its machine never confirmed", async () => {
+  const w = start();
+  const svc = w.service();
+  await svc.on("thr_main");
+  w.stops.leave = "stopping";
+  await expect(svc.refresh("thr_main")).rejects.toThrow("Test did not finish stopping");
+  expect(w.actions).toEqual([{ type: "stop", threadId: "thr_main" }]);
 });
 
 const idle = { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 0, activeGoalCount: 0, activePlanModeCount: 0, activeWorkflowCount: 0 };
 it.each([
-  ["is in a turn", { status: "active" as const }],
+  ["is on a machine that is offline", { runtime: { displayStatus: "waiting-for-host" } }],
+  ["is in a turn", { status: "active" }],
+  ["is in a turn", { status: "active", visibility: "hidden" }],
+  ["has a failed turn a refresh would take Retry from", { status: "error" }],
   ["is waiting for your answer", { hasPendingInteraction: true }],
-  ["has messages waiting", { queuedWork: "waiting" as const }],
+  ["has messages waiting", { queuedWork: "failed" }, ["a failed delivery", "a message scheduled after it"]],
+  ["has messages waiting", {}, ["a child thread's report"]],
   ["is running background work", { activity: { ...idle, activeBackgroundCommandCount: 1 } }],
   ["is running background work", { activity: { ...idle, activeWorkflowCount: 1 } }],
-])("refuses a main chat that %s, without touching it", async (reason, busy) => {
+] as const)("refuses a main chat that %s, without touching it (%o)", async (reason, busy, queued: readonly string[] = []) => {
   const w = start();
   const svc = w.service();
   await svc.on("thr_main");
   Object.assign(w.threads.get("thr_main")!, busy);
-  await expect(svc.refresh("thr_main")).rejects.toThrow(`Test ${reason}; try again when it is idle`);
+  w.queues.set("thr_main", [...queued]);
+  await expect(svc.refresh("thr_main")).rejects.toThrow(`Test ${reason}. Refresh again once it is idle.`);
   expect(w.actions).toEqual([]);
 });
 

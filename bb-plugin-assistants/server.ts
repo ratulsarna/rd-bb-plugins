@@ -430,7 +430,7 @@ export default function plugin(bb: BbPluginApi) {
             const mains = memory.rows().flatMap(({ main }) => (main ? [main] : []));
             const results = await Promise.allSettled(mains.map((main) => memory.refresh(main)));
             const lines = results.map((r, i) => `${mains[i]}: ${r.status === "fulfilled" ? "refreshing" : r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
-            return { exitCode: results.some((r) => r.status === "rejected") ? 1 : 0, stdout: `${lines.join("\n") || "No assistant has memory on"}\n` };
+            return { exitCode: results.some((r) => r.status === "rejected") ? 1 : 0, stdout: `${lines.join("\n") || "No memory-on assistant has a main chat"}\n` };
           }
           case "import": {
             if (args.length < 2) break;

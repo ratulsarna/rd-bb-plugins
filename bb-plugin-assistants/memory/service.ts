@@ -9,7 +9,7 @@ import { assistantConversationContext } from "../lib/assistant-conversation";
 import { createIdentityResolver, type ResolvedIdentity } from "../lib/assistant-identity";
 import { setHook } from "./hook";
 import { snapshot } from "./prompt";
-import { BUILTIN_COMPACT_INPUT, type EventRow, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
+import { type EventRow, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
 import { dirName, identities, KEPT_WARNINGS, type MemoryState, readState, writeState } from "./state";
 import { Summarizer, type SummaryRunner } from "./summarize";
 import { Chat, KINDS } from "./tree";
@@ -34,6 +34,8 @@ export const TIMING = {
   retryMs: 30_000,
   /** A hook still not back at load after this warns. bb restarts plugins before its machines reconnect. */
   hookGraceMs: 120_000,
+  /** A refresh's stop not settled by then is reported, not compacted. */
+  stopWaitMs: 30_000,
 };
 export type Timing = typeof TIMING;
 
@@ -41,12 +43,16 @@ type EventType = (typeof LOGGED_TYPES)[number];
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-type ListedThread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>>[number];
-/** What a stop would cut into, so a refresh waits for the user to retry. */
-const BUSY: Array<[string, (t: ListedThread) => boolean]> = [
+type ChatState = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>>[number] & { queued: number };
+/** Why a refresh leaves a chat alone: a stop would cut into its work, or the refresh could not finish. */
+const BUSY: Array<[string, (t: ChatState) => boolean]> = [
+  ["is on a machine that is offline", (t) => t.runtime.displayStatus === "waiting-for-host"],
   ["is in a turn", (t) => t.status === "active" || t.status === "starting" || t.status === "stopping"],
+  // bb retries only the latest failed turn, and the compact would become it.
+  ["has a failed turn a refresh would take Retry from", (t) => t.status === "error"],
   ["is waiting for your answer", (t) => t.hasPendingInteraction],
-  ["has messages waiting", (t) => t.queuedWork === "waiting"],
+  // The queue itself: bb's queuedWork summary hides waiting messages behind a failed one, and its own notices.
+  ["has messages waiting", (t) => t.queued > 0],
   ["is running background work", (t) => t.activity.activeBackgroundCommandCount + t.activity.activeBackgroundAgentCount + t.activity.activeWorkflowCount > 0],
 ];
 const HOOK_WARNING = "memory hook not installed";
@@ -479,15 +485,31 @@ export class MemoryService {
    * Refuses a busy chat rather than stop its work.
    */
   async refresh(threadId: string): Promise<void> {
-    const main = this.rows().find((row) => row.main === threadId);
-    if (!main) throw new Error(`${threadId} is not the main chat of an assistant with memory on`);
+    if (!this.rows().some((row) => row.main === threadId)) throw new Error(`${threadId} is not the main chat of an assistant with memory on`);
     const { projectId, title } = await this.bb.sdk.threads.get({ threadId });
-    const row = (await this.bb.sdk.threads.list({ projectId, hasParent: false })).find((t) => t.id === threadId);
-    const busy = row && BUSY.find(([, is]) => is(row));
-    if (busy) throw new Error(`${title ?? threadId} ${busy[0]}; try again when it is idle`);
+    const name = title ?? threadId;
+    const [listed, queue] = await Promise.all([
+      this.bb.sdk.threads.list({ projectId, hasParent: false, includeHidden: true }),
+      this.bb.sdk.threads.queuedMessages.list({ threadId }),
+    ]);
+    const row = listed.find((t) => t.id === threadId);
+    if (!row) throw new Error(`could not read ${name}'s state; try again`);
+    const busy = BUSY.find(([, is]) => is({ ...row, queued: queue.length }));
+    if (busy) throw new Error(`${name} ${busy[0]}. Refresh again once it is idle.`);
     await this.bb.sdk.threads.stop({ threadId });
-    await this.bb.sdk.threads.send({ threadId, input: BUILTIN_COMPACT_INPUT, mode: "start" });
+    // A stop its machine does not confirm leaves the chat stopping, which a compact refuses.
+    try {
+      await this.bb.sdk.threads.wait({ threadId, status: "idle", timeoutMs: this.timing.stopWaitMs });
+    } catch (error) {
+      throw new Error(`${name} did not finish stopping (${message(error)}), so it was not compacted. Refresh again once it is idle.`);
+    }
+    try {
+      await this.bb.sdk.threads.compact({ threadId });
+    } catch (error) {
+      throw new Error(`${name} stopped but did not compact (${message(error)}). Refresh again once it is idle.`);
+    }
   }
+
 
   /** Seed the log with past history before memory is ever on. Runs in the background; progress is in `status`. */
   startImport(identity: string, sources: string[]): void {
