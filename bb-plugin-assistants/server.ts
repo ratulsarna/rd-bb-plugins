@@ -425,11 +425,11 @@ export default function plugin(bb: BbPluginApi) {
             if (args.length !== 1) break;
             if (args[0] !== "--all") {
               await memory.refresh(args[0]);
-              return { exitCode: 0, stdout: `Refreshing ${args[0]}: compacting on the current instructions\n` };
+              return { exitCode: 0, stdout: `Refreshing ${args[0]}: compaction started on the current instructions\n` };
             }
             const mains = memory.rows().flatMap(({ main }) => (main ? [main] : []));
             const results = await Promise.allSettled(mains.map((main) => memory.refresh(main)));
-            const lines = results.map((r, i) => `${mains[i]}: ${r.status === "fulfilled" ? "refreshing" : r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+            const lines = results.map((r, i) => `${mains[i]}: ${r.status === "fulfilled" ? "compaction started" : r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
             return { exitCode: results.some((r) => r.status === "rejected") ? 1 : 0, stdout: `${lines.join("\n") || "No memory-on assistant has a main chat"}\n` };
           }
           case "import": {

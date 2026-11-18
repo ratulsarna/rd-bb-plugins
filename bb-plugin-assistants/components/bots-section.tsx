@@ -140,7 +140,7 @@ export function BotsSection({
   const refreshThread = useCallback(
     (threadId: string, name: string) => {
       rpc.call("refreshAssistant", { threadId }).then(
-        () => toast.success(`Refreshing ${name}: it compacts on the current rules`),
+        () => toast.success(`Refreshing ${name}: compaction started on the current rules`),
         (error: unknown) => toast.error(error instanceof Error ? error.message : String(error)),
       );
     },

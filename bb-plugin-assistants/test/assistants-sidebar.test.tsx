@@ -370,7 +370,7 @@ describe("Bots section", () => {
     const menu = await menuOf(/^Sam(?! on Mac)/);
     fireEvent.click(await within(menu).findByRole("menuitem", { name: "Refresh rules" }));
     await waitFor(() => expect(rpcCalls).toContainEqual({ method: "refreshAssistant", input: { threadId: "thr_sam" } }));
-    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Refreshing Sam: it compacts on the current rules"));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Refreshing Sam: compaction started on the current rules"));
   });
 
   it("shows why a refresh was refused", async () => {

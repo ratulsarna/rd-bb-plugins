@@ -44,9 +44,8 @@ type EventType = (typeof LOGGED_TYPES)[number];
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 type ChatState = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>>[number] & { queued: number };
-/** Why a refresh leaves a chat alone: a stop would cut into its work, or the refresh could not finish. */
+/** Why a refresh leaves a chat alone: the stop or the compact would cut into something. */
 const BUSY: Array<[string, (t: ChatState) => boolean]> = [
-  ["is on a machine that is offline", (t) => t.runtime.displayStatus === "waiting-for-host"],
   ["is in a turn", (t) => t.status === "active" || t.status === "starting" || t.status === "stopping"],
   // bb retries only the latest failed turn, and the compact would become it.
   ["has a failed turn a refresh would take Retry from", (t) => t.status === "error"],

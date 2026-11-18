@@ -97,11 +97,12 @@ a memory-on assistant's row menu (right-click, or long press), or `bb
 assistants refresh`, stops the main chat, waits for the stop to settle, then
 compacts it: the next session starts on today's text and the compaction
 records it. Files Claude Code reads itself, like the home's `AGENTS.md`, come
-back at any compaction. A refresh refuses a chat whose machine is offline,
-that is in a turn, has a failed turn (the compact would take its Retry), is
-waiting for an answer, holds queued messages or runs background work; try
-again when it is idle. A stop its machine does not confirm within 30 seconds
-is reported and not compacted. The compact stays out of the log.
+back at any compaction. A refresh refuses a chat that is in a turn, has a
+failed turn (the compact would take its Retry), is waiting for an answer,
+holds queued messages or runs background work; try again when it is idle. A
+chat still not idle 30 seconds after bb answers the stop is reported and not
+compacted. A refresh reports the compaction started; a compaction that fails
+shows in the chat. The compact stays out of the log.
 
 What is logged: the main chat's user messages, the assistant's replies, its
 tool calls and their output, and reports other threads send into it. What is

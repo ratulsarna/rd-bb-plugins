@@ -341,7 +341,6 @@ it("does not compact a chat whose stop its machine never confirmed", async () =>
 
 const idle = { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 0, activeGoalCount: 0, activePlanModeCount: 0, activeWorkflowCount: 0 };
 it.each([
-  ["is on a machine that is offline", { runtime: { displayStatus: "waiting-for-host" } }],
   ["is in a turn", { status: "active" }],
   ["is in a turn", { status: "active", visibility: "hidden" }],
   ["has a failed turn a refresh would take Retry from", { status: "error" }],
