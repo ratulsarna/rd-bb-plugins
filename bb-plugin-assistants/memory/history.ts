@@ -85,6 +85,17 @@ function inputText(blocks: any[]): string {
     .trim();
 }
 
+/** bb's built-in `/compact` as its composer sends it; `isBuiltinCompact` keeps it out of the log. */
+export const BUILTIN_COMPACT_INPUT = [{
+  type: "text" as const,
+  text: "/compact",
+  mentions: [{
+    start: 0,
+    end: "/compact".length,
+    resource: { kind: "command" as const, trigger: "/" as const, name: "compact", source: "command" as const, origin: "builtin" as const, label: "compact", argumentHint: null },
+  }],
+}];
+
 /** bb's own manual compact: a turn whose whole input is its built-in `/compact` command. */
 export function isBuiltinCompact(data: any): boolean {
   const blocks: any[] = (data.inputGroups ?? [data.input ?? []]).flat();

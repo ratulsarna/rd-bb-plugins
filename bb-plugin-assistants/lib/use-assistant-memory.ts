@@ -2,18 +2,23 @@ import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { assistantRpcContract } from "@/server";
 import { useLiveRead } from "@/lib/use-live-read";
 
-/** identity → latest memory warning, for assistants with memory. */
-export function useAssistantMemoryWarnings(): ReadonlyMap<string, string> {
+export interface AssistantMemoryRow {
+  /** Latest memory warning. */
+  warning: string | null;
+  /** The main chat while memory is on. */
+  main: string | null;
+}
+
+/** identity → memory state, for assistants that have had memory. */
+export function useAssistantMemory(): ReadonlyMap<string, AssistantMemoryRow> {
   const rpc = useRpc<typeof assistantRpcContract>();
-  const [warnings] = useLiveRead<ReadonlyMap<string, string>>(
+  const [rows] = useLiveRead<ReadonlyMap<string, AssistantMemoryRow>>(
     "assistant-memory",
     async () =>
       new Map(
-        (await rpc.call("assistantMemory", {})).rows.flatMap((row) =>
-          row.warning ? [[row.identity, row.warning] as const] : [],
-        ),
+        (await rpc.call("assistantMemory", {})).rows.map(({ identity, warning, main }) => [identity, { warning, main }] as const),
       ),
     new Map(),
   );
-  return warnings;
+  return rows;
 }

@@ -9,7 +9,12 @@ import { createFakePluginHost, type FakeSdkOverrides, makeThreadResponse } from 
 import type { EventRow } from "./history";
 import { MemoryService, TIMING, type Timing } from "./service";
 
-export type FakeThread = ReturnType<typeof makeThreadResponse>;
+// With the fields bb's thread list adds, which a refresh reads to tell whether a chat is busy.
+export type FakeThread = ReturnType<typeof makeThreadResponse> & {
+  activity: { activeBackgroundAgentCount: number; activeBackgroundCommandCount: number; activeGoalCount: number; activePlanModeCount: number; activeWorkflowCount: number };
+  hasPendingInteraction: boolean;
+  queuedWork: "none" | "waiting" | "failed";
+};
 
 export const FAST: Timing = { retryMs: 100, hookGraceMs: 250 };
 export const IDENTITY = "fleet:zz-test";
@@ -31,9 +36,17 @@ export function world() {
   /** Runs on each events read, before it answers: a test can make something happen mid-read. */
   const taps: { events?: (threadId: string) => void | Promise<void>; get?: (threadId: string) => void | Promise<void> } = {};
   let seq = 0;
+  /** Stops and sends, in the order bb got them. */
+  const actions: Array<{ type: "stop" | "send"; threadId: string; input?: unknown; mode?: string }> = [];
 
   const thread = (id: string, over: Partial<FakeThread> = {}): FakeThread => {
-    const t: FakeThread = { ...makeThreadResponse({ id, projectId: "fleet", providerId: "claude-code", environmentId: "env", title: "Test" }), ...over };
+    const t: FakeThread = {
+      ...makeThreadResponse({ id, projectId: "fleet", providerId: "claude-code", environmentId: "env", title: "Test" }),
+      activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 0, activeGoalCount: 0, activePlanModeCount: 0, activeWorkflowCount: 0 },
+      hasPendingInteraction: false,
+      queuedWork: "none",
+      ...over,
+    };
     threads.set(id, t);
     return t;
   };
@@ -88,6 +101,14 @@ export function world() {
         archive: async ({ threadId }) => {
           archive(threadId, Date.now());
           return {};
+        },
+        stop: async ({ threadId }) => {
+          actions.push({ type: "stop", threadId });
+          return { ok: true };
+        },
+        send: async ({ threadId, input, mode }) => {
+          actions.push({ type: "send", threadId, input, mode });
+          return {} as never;
         },
       },
       environments: {
@@ -148,5 +169,5 @@ export function world() {
     return harness.lifecycle.dispose();
   };
 
-  return { bb, harness, base, home, assistantsRoot, environments, threads, events, failures, taps, thread, emit, say, reply, service, dispose };
+  return { bb, harness, base, home, assistantsRoot, environments, threads, events, failures, taps, actions, thread, emit, say, reply, service, dispose };
 }

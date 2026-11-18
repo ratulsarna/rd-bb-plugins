@@ -35,7 +35,9 @@ export interface FakeSdkConfig {
   /** What `listAssistantSubtitles` returns; keyed by assistant identity. */
   subtitles: Array<{ identity: string; subtitle: string }>;
   /** What `assistantMemory` returns; keyed by assistant identity. */
-  memoryWarnings: Array<{ identity: string; warning: string | null }>;
+  memory: Array<{ identity: string; warning: string | null; main: string | null }>;
+  /** Why `refreshAssistant` refuses, or null to accept it. */
+  refreshRefusal: string | null;
   /**
    * RPC methods to hold open. Calls land in `pendingRpc` for the test to
    * settle by hand — the only way to make two responses race on purpose.
@@ -54,7 +56,8 @@ const DEFAULTS: FakeSdkConfig = {
   assistantIdentities: {},
   hiddenAssistants: [],
   subtitles: [],
-  memoryWarnings: [],
+  memory: [],
+  refreshRefusal: null,
   deferRpc: [],
   connectionState: "connected",
 };
@@ -211,6 +214,10 @@ const rpc = {
     if (method === "assistantSeeds") return config.assistantSeeds[(input as { threadId: string }).threadId];
     if (method === "assistantDestination") return config.assistantDestinations[(input as { hostId: string }).hostId];
     if (method === "createReplacementThread") return { newThreadId: "new-conversation" };
+    if (method === "refreshAssistant") {
+      if (config.refreshRefusal) throw new Error(config.refreshRefusal);
+      return { ok: true };
+    }
     // Fixed answers for the inbox RPCs core's board calls on render. The
     // board owns their behavior; the plugin's tests only need them to answer.
     if (method === "pipelineLeads") {
@@ -254,7 +261,7 @@ const rpc = {
       return { rows: config.subtitles };
     }
     if (method === "assistantMemory") {
-      return { rows: config.memoryWarnings };
+      return { rows: config.memory };
     }
     if (method === "listAssistantAvatars") {
       return { rows: [] };

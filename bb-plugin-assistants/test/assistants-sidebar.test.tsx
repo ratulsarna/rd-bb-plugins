@@ -319,9 +319,9 @@ describe("Bots section", () => {
       ],
       projects: [sidebarProject("project-1", "bb"), sidebarProject("assist-1", "assistants")],
       assistantIdentities: { "env-sam-mac": "proj_x:sam", "env-hands": "proj_x:hands" },
-      memoryWarnings: [
-        { identity: "proj_x:sam", warning: "Memory summaries keep failing" },
-        { identity: "proj_x:hands", warning: null },
+      memory: [
+        { identity: "proj_x:sam", warning: "Memory summaries keep failing", main: "thr_sam" },
+        { identity: "proj_x:hands", warning: null, main: null },
       ],
     });
     renderList();
@@ -330,6 +330,55 @@ describe("Bots section", () => {
     const mark = await within(bots).findByRole("img", { name: "Memory warning: Memory summaries keep failing" });
     expect(mark.closest("li")!.querySelector("[data-sidebar-thread-id]")!.getAttribute("data-sidebar-thread-id")).toBe("thr_sam");
     expect(within(bots).getAllByRole("img", { name: /^Memory warning/ })).toHaveLength(1);
+  });
+
+  const memoryFleet = (refreshRefusal: string | null = null) =>
+    configureFakeSdk({
+      threads: [
+        thread("thr_sam", { title: "Sam", projectId: "assist-1", environment: { id: "env-sam" } as BoardThread["environment"] }),
+        thread("thr_sam_mac", { title: "Sam on Mac", projectId: "assist-1", environment: { id: "env-sam-mac" } as BoardThread["environment"] }),
+        thread("thr_hands", { title: "Hands", projectId: "assist-1", environment: { id: "env-hands" } as BoardThread["environment"] }),
+      ],
+      projects: [sidebarProject("project-1", "bb"), sidebarProject("assist-1", "assistants")],
+      assistantIdentities: { "env-sam": "proj_x:sam", "env-sam-mac": "proj_x:sam", "env-hands": "proj_x:hands" },
+      memory: [
+        { identity: "proj_x:sam", warning: null, main: "thr_sam" },
+        { identity: "proj_x:hands", warning: null, main: null },
+      ],
+      refreshRefusal,
+    });
+  const menuOf = async (name: RegExp) => {
+    fireEvent.contextMenu(await within(await screen.findByRole("region", { name: "Bots" })).findByRole("link", { name }));
+    return screen.findByRole("menu");
+  };
+  const closeMenu = async () => {
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  };
+
+  it("offers Refresh rules only on a memory-on assistant's main chat, and refreshes that chat", async () => {
+    memoryFleet();
+    renderList({ isCompactViewport: true });
+    await waitFor(() => expect(rpcCalls.some((call) => call.method === "assistantMemory")).toBe(true));
+
+    for (const other of [/^Sam on Mac/, /^Hands/]) {
+      const menu = await menuOf(other);
+      expect(within(menu).queryByRole("menuitem", { name: "Refresh rules" })).toBeNull();
+      await closeMenu();
+    }
+
+    const menu = await menuOf(/^Sam(?! on Mac)/);
+    fireEvent.click(await within(menu).findByRole("menuitem", { name: "Refresh rules" }));
+    await waitFor(() => expect(rpcCalls).toContainEqual({ method: "refreshAssistant", input: { threadId: "thr_sam" } }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Refreshing Sam: it compacts on the current rules"));
+  });
+
+  it("shows why a refresh was refused", async () => {
+    memoryFleet("Sam is in a turn; try again when it is idle");
+    renderList({ isCompactViewport: true });
+    const menu = await menuOf(/^Sam(?! on Mac)/);
+    fireEvent.click(await within(menu).findByRole("menuitem", { name: "Refresh rules" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Sam is in a turn; try again when it is idle"));
   });
 
   it("orders rows by identity even when every row changed environment", async () => {

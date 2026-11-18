@@ -9,7 +9,7 @@ import { assistantConversationContext } from "../lib/assistant-conversation";
 import { createIdentityResolver, type ResolvedIdentity } from "../lib/assistant-identity";
 import { setHook } from "./hook";
 import { snapshot } from "./prompt";
-import { type EventRow, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
+import { BUILTIN_COMPACT_INPUT, type EventRow, LOGGED_TYPES, recordsOf, spokenDate } from "./history";
 import { dirName, identities, KEPT_WARNINGS, type MemoryState, readState, writeState } from "./state";
 import { Summarizer, type SummaryRunner } from "./summarize";
 import { Chat, KINDS } from "./tree";
@@ -40,6 +40,15 @@ export type Timing = typeof TIMING;
 type EventType = (typeof LOGGED_TYPES)[number];
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+type ListedThread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>>[number];
+/** What a stop would cut into, so a refresh waits for the user to retry. */
+const BUSY: Array<[string, (t: ListedThread) => boolean]> = [
+  ["is in a turn", (t) => t.status === "active" || t.status === "starting" || t.status === "stopping"],
+  ["is waiting for your answer", (t) => t.hasPendingInteraction],
+  ["has messages waiting", (t) => t.queuedWork === "waiting"],
+  ["is running background work", (t) => t.activity.activeBackgroundCommandCount + t.activity.activeBackgroundAgentCount + t.activity.activeWorkflowCount > 0],
+];
 const HOOK_WARNING = "memory hook not installed";
 const isHookWarning = (text: string) => text.startsWith(HOOK_WARNING);
 
@@ -387,6 +396,7 @@ export class MemoryService {
       this.update(identity, { previous: [...s.previous, s.main] });
     }
     this.update(identity, { on: true, everOn: true, main: threadId });
+    this.bb.realtime.publish(MEMORY_CHANNEL, { identity });
     // Earlier chats archived or deleted while memory was off are let go now.
     await this.reconcile(identity);
     await this.catchUp(identity, threadId);
@@ -396,6 +406,7 @@ export class MemoryService {
   /** Stops logging, then removes the hook from the home `threadId` runs in; the log, `recall` and `date` stay. */
   async off(identity: string, threadId: string): Promise<void> {
     this.update(identity, { on: false });
+    this.bb.realtime.publish(MEMORY_CHANNEL, { identity });
     try {
       await setHook(this.bb, await this.homeOf(threadId), false);
     } catch (error) {
@@ -455,10 +466,27 @@ export class MemoryService {
     return `Rebuilding ${lines} lines from message ${from}; old lines stay until their new ones land. Progress: bb assistants memory status`;
   }
 
-  /** Latest warning per memory identity, for the Bots rows. */
-  rows(): Array<{ identity: string; warning: string | null }> {
+  /** Latest warning and, while memory is on, the main chat, per memory identity, for the Bots rows. */
+  rows(): Array<{ identity: string; warning: string | null; main: string | null }> {
     for (const identity of identities(this.root)) this.state(identity);
-    return [...this.states.entries()].map(([identity, s]) => ({ identity, warning: s.warnings.at(-1)?.text ?? null }));
+    return [...this.states.entries()].map(([identity, s]) => ({ identity, warning: s.warnings.at(-1)?.text ?? null, main: s.on ? s.main : null }));
+  }
+
+  /**
+   * Puts a memory-on main chat on bb's current instructions. bb hands a session its instructions only when
+   * it starts, and Claude Code reuses the system prompt it recorded until a compaction: the stop makes the
+   * next session start with today's text, and the built-in `/compact` records the prompt again from it.
+   * Refuses a busy chat rather than stop its work.
+   */
+  async refresh(threadId: string): Promise<void> {
+    const main = this.rows().find((row) => row.main === threadId);
+    if (!main) throw new Error(`${threadId} is not the main chat of an assistant with memory on`);
+    const { projectId, title } = await this.bb.sdk.threads.get({ threadId });
+    const row = (await this.bb.sdk.threads.list({ projectId, hasParent: false })).find((t) => t.id === threadId);
+    const busy = row && BUSY.find(([, is]) => is(row));
+    if (busy) throw new Error(`${title ?? threadId} ${busy[0]}; try again when it is idle`);
+    await this.bb.sdk.threads.stop({ threadId });
+    await this.bb.sdk.threads.send({ threadId, input: BUILTIN_COMPACT_INPUT, mode: "start" });
   }
 
   /** Seed the log with past history before memory is ever on. Runs in the background; progress is in `status`. */
